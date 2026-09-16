@@ -904,6 +904,12 @@ static uint32_t ot_alert_reg_loc_cause_read(OtAlertState *s, unsigned reg)
     return DVAL(s->regs.shadow[reg]);
 }
 
+static void ot_alert_reg_ping_write(OtAlertState *s, unsigned reg, uint32_t val)
+{
+    ot_alert_reg_shadow_write(s, reg, val);
+    ot_alert_check_ping_timer(s);
+}
+
 static void ot_alert_fill_access_table(OtAlertState *s)
 {
     OtAlertAccess *table = s->access_table;
@@ -912,8 +918,8 @@ static void ot_alert_fill_access_table(OtAlertState *s)
     table[R_INTR_ENABLE] = R_ACC_IRQ(direct_read, direct_write);
     table[R_INTR_TEST] = R_ACC(write_only, direct_write);
     table[R_PING_TIMER_REGWEN] = R_ACC(direct_read, direct_write);
-    table[R_PING_TIMEOUT_CYC_SHADOWED] = R_ACC(shadow_read, shadow_write);
-    table[R_PING_TIMER_EN_SHADOWED] = R_ACC(shadow_read, shadow_write);
+    table[R_PING_TIMEOUT_CYC_SHADOWED] = R_ACC(shadow_read, ping_write);
+    table[R_PING_TIMER_EN_SHADOWED] = R_ACC(shadow_read, ping_write);
     OtShadowReg *first_var_reg = s->regs.alerts.regwen;
 
     unsigned offset = (unsigned)(first_var_reg - &s->regs.shadow[0]);
