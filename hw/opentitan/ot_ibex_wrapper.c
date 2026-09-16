@@ -233,6 +233,7 @@ struct OtIbexWrapperState {
     bool entropy_requested;
     bool edn_connected;
     bool esc_rx;
+    uint32_t nmi_in;
 
     char *ot_id;
     char *lc_ignore_ids;
@@ -915,6 +916,15 @@ static void ot_ibex_wrapper_cpu_enable_recv(void *opaque, int n, int level)
 
 extern void riscv_cpu_set_rnmi(CPUState *cpu, uint32_t irq, bool level);
 
+static void ot_ibex_wrapper_update_nmi(OtIbexWrapperState *s)
+{
+    s->regs.nmi_state |= s->nmi_in;
+    if (s->cpu) {
+        bool irq_nm = (s->regs.nmi_state & s->regs.nmi_enable) != 0;
+        riscv_cpu_set_rnmi(s->cpu, 31, irq_nm);
+    }
+}
+
 static void ot_ibex_wrapper_escalate_rx(void *opaque, int n, int level)
 {
     OtIbexWrapperState *s = opaque;
@@ -924,11 +934,25 @@ static void ot_ibex_wrapper_escalate_rx(void *opaque, int n, int level)
     trace_ot_ibex_wrapper_escalate_rx(s->ot_id ?: "", (bool)level);
 
     if (level) {
-        s->regs.nmi_state |= 1u;
-        if ((s->regs.nmi_enable & 1u) && s->cpu) {
-            riscv_cpu_set_rnmi(s->cpu, 31, true);
-        }
+        s->nmi_in |= NMI_ALERT_EN_MASK;
+    } else {
+        s->nmi_in &= ~NMI_ALERT_EN_MASK;
     }
+    ot_ibex_wrapper_update_nmi(s);
+}
+
+static void ot_ibex_wrapper_wdog_bark_rx(void *opaque, int n, int level)
+{
+    OtIbexWrapperState *s = opaque;
+
+    g_assert(n == 0);
+
+    if (level) {
+        s->nmi_in |= NMI_WDOG_EN_MASK;
+    } else {
+        s->nmi_in &= ~NMI_WDOG_EN_MASK;
+    }
+    ot_ibex_wrapper_update_nmi(s);
 }
 
 /*
@@ -1119,9 +1143,7 @@ static void ot_ibex_wrapper_write_nmi_enable(OtIbexWrapperState *s,
     (void)reg;
 
     s->regs.nmi_enable |= value; /* RW1S */
-    if ((s->regs.nmi_enable & 1u) && (s->regs.nmi_state & 1u) && s->cpu) {
-        riscv_cpu_set_rnmi(s->cpu, 31, true);
-    }
+    ot_ibex_wrapper_update_nmi(s);
 }
 
 static void ot_ibex_wrapper_write_nmi_state(OtIbexWrapperState *s, unsigned reg,
@@ -1129,10 +1151,8 @@ static void ot_ibex_wrapper_write_nmi_state(OtIbexWrapperState *s, unsigned reg,
 {
     (void)reg;
 
-    qemu_log_mask(LOG_UNIMP, "%s: %s: %s is not supported\n", __func__,
-                  s->ot_id, REG_NAME(s, reg));
-
     s->regs.nmi_state &= ~value; /* RW1C */
+    ot_ibex_wrapper_update_nmi(s);
 }
 
 static void ot_ibex_wrapper_write_err_status(OtIbexWrapperState *s,
@@ -1472,6 +1492,7 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->entropy_requested = false;
     s->esc_rx = false;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
+    ot_ibex_wrapper_update_nmi(s);
 
     memset(s->log_engine, 0, sizeof(*s->log_engine));
 }
@@ -1545,6 +1566,8 @@ static void ot_ibex_wrapper_init(Object *obj)
                             OT_IBEX_WRAPPER_CPU_EN, OT_IBEX_CPU_EN_COUNT);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_escalate_rx,
                             OT_ALERT_ESCALATE, 1);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_wdog_bark_rx,
+                            OT_IBEX_WRAPPER_WDOG_BARK, 1);
 
     s->log_engine = g_new0(OtIbexTestLogEngine, 1u);
 }

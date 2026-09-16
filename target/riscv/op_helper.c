@@ -418,9 +418,24 @@ target_ulong helper_mret(CPURISCVState *env)
                              (prev_priv != PRV_M);
     mstatus = set_field(mstatus, MSTATUS_MIE,
                         get_field(mstatus, MSTATUS_MPIE));
-    mstatus = set_field(mstatus, MSTATUS_MPIE, 1);
-    mstatus = set_field(mstatus, MSTATUS_MPP,
-                        riscv_has_ext(env, RVU) ? PRV_U : PRV_M);
+    if (env->nmi_mode) {
+        /*
+         * Returning from Ibex NMI restores mstack CSRs and exits nmi_mode
+         * (ibex_cs_registers.sv & ibex_controller.sv).
+         */
+        mstatus = set_field(mstatus, MSTATUS_MPIE, env->mstack_mpie);
+        mstatus = set_field(mstatus, MSTATUS_MPP, env->mstack_mpp);
+        env->mepc = env->mstack_epc;
+        env->mcause = env->mstack_cause;
+        env->nmi_mode = false;
+        if (env->rnmip) {
+            cpu_interrupt(env_cpu(env), CPU_INTERRUPT_RNMI);
+        }
+    } else {
+        mstatus = set_field(mstatus, MSTATUS_MPIE, 1);
+        mstatus = set_field(mstatus, MSTATUS_MPP,
+                            riscv_has_ext(env, RVU) ? PRV_U : PRV_M);
+    }
     mstatus = set_field(mstatus, MSTATUS_MPV, 0);
     if (riscv_cpu_cfg(env)->ext_ssdbltrp) {
         mstatus = ssdbltrp_mxret(env, mstatus, prev_priv, prev_virt);

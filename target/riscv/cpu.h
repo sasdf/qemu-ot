@@ -535,6 +535,11 @@ struct CPUArchState {
     target_ulong rnmip;
     uint64_t rnmi_irqvec;
     uint64_t rnmi_excpvec;
+    bool nmi_mode;
+    target_ulong mstack_mpie;
+    target_ulong mstack_mpp;
+    target_ulong mstack_epc;
+    target_ulong mstack_cause;
 };
 
 /*

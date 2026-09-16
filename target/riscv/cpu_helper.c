@@ -474,6 +474,14 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
     uint64_t vsbits, irq_delegated;
     int virq;
 
+    /*
+     * Interrupts including NMI are ignored while in NMI mode
+     * (ibex_controller.sv: handle_irq = ... & ~nmi_mode_q & ...).
+     */
+    if (env->nmi_mode) {
+        return RISCV_EXCP_NONE;
+    }
+
     /* Priority: RNMI > Other interrupt. */
     if (env->rnmip) {
         return ctz64(env->rnmip); /* since non-zero */
@@ -2522,6 +2530,18 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         nnmi_excep = cpu->cfg.ext_smrnmi &&
                      !get_field(env->mnstatus, MNSTATUS_NMIE) &&
                      !async;
+
+        if (async && env->rnmip && !cpu->cfg.ext_smrnmi) {
+            /*
+             * Ibex saves previous status to mstack CSRs and enters nmi_mode
+             * (ibex_cs_registers.sv & ibex_controller.sv).
+             */
+            env->mstack_mpie = get_field(env->mstatus, MSTATUS_MPIE);
+            env->mstack_mpp = get_field(env->mstatus, MSTATUS_MPP);
+            env->mstack_epc = env->mepc;
+            env->mstack_cause = env->mcause;
+            env->nmi_mode = true;
+        }
 
         s = env->mstatus;
         s = set_field(s, MSTATUS_MPIE, get_field(s, MSTATUS_MIE));
