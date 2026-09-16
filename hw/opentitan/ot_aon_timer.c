@@ -581,9 +581,17 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
     timer_del(s->wkup_timer);
     timer_del(s->wdog_timer);
 
-    memset(s->regs, 0, sizeof(s->regs));
-    s->regs[R_WDOG_REGWEN] = 1u;
-    s->wdog_bite = false;
+    if (s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) {
+        if (s->regs[R_WDOG_CTRL] & R_WDOG_CTRL_PAUSE_IN_SLEEP_MASK) {
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            int64_t pre_sleep_delta = MAX(s->wkup_origin_ns - s->wdog_origin_ns, 0);
+            s->wdog_origin_ns = now - pre_sleep_delta;
+        }
+    } else {
+        memset(s->regs, 0, sizeof(s->regs));
+        s->regs[R_WDOG_REGWEN] = 1u;
+        s->wdog_bite = false;
+    }
 
     ot_aon_timer_update_irqs(s);
     ot_aon_timer_update_alert(s);
