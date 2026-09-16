@@ -515,16 +515,9 @@ static bool ot_aes_is_mode_ready(OtAESRegisters *r, bool *need_iv)
 
 static void ot_aes_trigger_reseed(OtAESState *s)
 {
-    OtAESRegisters *r = s->regs;
-    uint32_t ctrl_aux = ot_shadow_reg_peek(&r->ctrl_aux);
-
-    if (!(ctrl_aux & R_CTRL_AUX_SHADOWED_FORCE_MASKS_MASK)) {
-        ot_aes_reseed(s);
-    } else {
-        r->trigger &= ~R_TRIGGER_PRNG_RESEED_MASK;
-        xtrace_ot_aes_info(s->ot_id, "reseed on trigger disabled");
-    }
+    ot_aes_reseed(s);
 }
+
 
 static void ot_aes_sideload_key(OtAESState *s)
 {
