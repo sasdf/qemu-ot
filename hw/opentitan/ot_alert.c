@@ -687,7 +687,9 @@ static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
                                               "disabled");
                 }
                 ot_alert_configure_phase_cycles(s, nclass);
-                qemu_bh_schedule(s->schedulers[nclass].esc_releaser);
+                if (s->schedulers[nclass].esc_tx_release) {
+                    qemu_bh_schedule(s->schedulers[nclass].esc_releaser);
+                }
             } else /* PHASE3 */ {
                 ot_alert_set_class_state(s, nclass, STATE_TERMINAL);
             }
@@ -717,7 +719,9 @@ static void ot_alert_release_esc_fn(void *opaque)
     OtAlertScheduler *scheduler = opaque;
 
     IbexIRQ *esc_tx = scheduler->esc_tx_release;
-    g_assert(esc_tx);
+    if (!esc_tx) {
+        return;
+    }
 
     if (ibex_irq_get_level(esc_tx)) {
         OtAlertState *s = scheduler->parent;
@@ -837,10 +841,63 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
+{
+    g_assert(loc_alert < LOCAL_ALERT_COUNT);
+    OtAlertArrays *loc_alerts = &s->regs.loc_alerts;
+    bool alert_en = ot_shadow_reg_peek(&loc_alerts->en_shadowed[loc_alert]);
+
+    if (!alert_en) {
+        return;
+    }
+
+    DVAL(loc_alerts->cause[loc_alert]) |= ALERT_CAUSE_EN_MASK;
+
+    unsigned nclass = ot_shadow_reg_peek(&loc_alerts->class_shadowed[loc_alert]);
+    OtAlertAClass *aclass = &s->regs.classes[nclass];
+    uint32_t ac_ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
+    bool class_en = (bool)(ac_ctrl & CLASS_CTRL_SHADOWED_EN_MASK);
+
+    DVAL(s->regs.intr->state) |= 1u << nclass;
+
+    if (class_en) {
+        if (DVAL(aclass->accum_cnt) < CLASS_ACCUM_CNT_MASK) {
+            DVAL(aclass->accum_cnt) += 1u;
+        }
+        ot_alert_fsm_update(s, nclass, false);
+    }
+
+    ot_alert_update_irqs(s);
+}
+
+static void ot_alert_check_ping_timer(OtAlertState *s)
+{
+    bool ping_en = (bool)ot_shadow_reg_peek(&s->regs.ping->timer_en_shadowed);
+    uint32_t timeout = ot_shadow_reg_peek(&s->regs.ping->timeout_cyc_shadowed);
+
+    if (ping_en && timeout > 0 && timeout <= 2) {
+        ot_alert_raise_local(s, LOCAL_ALERT_ALERT_PINGFAIL);
+        ot_alert_raise_local(s, LOCAL_ALERT_ESC_PINGFAIL);
+        ot_alert_signal_tx(s, 0, 1);
+    }
+}
+
 static uint32_t ot_alert_reg_cause_read(OtAlertState *s, unsigned reg)
 {
+    ot_alert_check_ping_timer(s);
     unsigned alert = reg - (unsigned)(s->regs.alerts.cause - &s->regs.shadow[0]);
     bool alert_en = ot_shadow_reg_peek(&s->regs.alerts.en_shadowed[alert]);
+    if (!alert_en) {
+        return 0;
+    }
+    return DVAL(s->regs.shadow[reg]);
+}
+
+static uint32_t ot_alert_reg_loc_cause_read(OtAlertState *s, unsigned reg)
+{
+    ot_alert_check_ping_timer(s);
+    unsigned loc_alert = reg - (unsigned)(s->regs.loc_alerts.cause - &s->regs.shadow[0]);
+    bool alert_en = ot_shadow_reg_peek(&s->regs.loc_alerts.en_shadowed[loc_alert]);
     if (!alert_en) {
         return 0;
     }
@@ -913,7 +970,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
     /* LOC_ALERT_CAUSE */
     for (unsigned ix = 0; ix < LOCAL_ALERT_COUNT; ix++) {
         table[offset + ix] =
-            R_ACC_M(direct_read, direct_rw1c_write, LOC_ALERT_CAUSE_EN_MASK);
+            R_ACC_M(loc_cause_read, direct_rw1c_write, LOC_ALERT_CAUSE_EN_MASK);
     }
     offset += LOCAL_ALERT_COUNT;
 

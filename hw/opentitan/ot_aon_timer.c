@@ -140,11 +140,17 @@ struct OtAonTimerClass {
     ResettablePhases parent_phases;
 };
 
+static inline uint32_t ot_aon_timer_get_clk(OtAonTimerState *s)
+{
+    return s->pclks[OT_AON_TIMER_CLOCK_SRC_AON] ?
+           s->pclks[OT_AON_TIMER_CLOCK_SRC_AON] : 200000u;
+}
+
 static uint64_t
 ot_aon_timer_ns_to_ticks(OtAonTimerState *s, uint32_t prescaler, int64_t ns)
 {
     uint64_t ticks =
-        muldiv64((uint64_t)ns, s->pclks[OT_AON_TIMER_CLOCK_SRC_AON],
+        muldiv64((uint64_t)ns, ot_aon_timer_get_clk(s),
                  NANOSECONDS_PER_SECOND);
     return ticks / (prescaler + 1u);
 }
@@ -153,7 +159,7 @@ static int64_t
 ot_aon_timer_ticks_to_ns(OtAonTimerState *s, uint32_t prescaler, uint64_t ticks)
 {
     uint64_t ns = muldiv64(ticks * (prescaler + 1u), NANOSECONDS_PER_SECOND,
-                           s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]);
+                           ot_aon_timer_get_clk(s));
     if (ns > INT64_MAX) {
         return INT64_MAX;
     }
@@ -182,12 +188,10 @@ static int64_t ot_aon_timer_compute_next_timeout(OtAonTimerState *s,
                                                  int64_t now, int64_t delta)
 {
     int64_t next;
-
-    g_assert(s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]);
+    uint32_t clk = ot_aon_timer_get_clk(s);
 
     /* wait at least 1 peripheral clock tick */
-    delta = MAX(delta, (int64_t)(NANOSECONDS_PER_SECOND /
-                                 s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]));
+    delta = MAX(delta, (int64_t)(NANOSECONDS_PER_SECOND / clk));
 
     if (sadd64_overflow(now, delta, &next)) {
         /* we overflowed the timer, just set it as large as we can */
@@ -199,12 +203,13 @@ static int64_t ot_aon_timer_compute_next_timeout(OtAonTimerState *s,
 
 static inline bool ot_aon_timer_is_wkup_enabled(OtAonTimerState *s)
 {
-    return (s->regs[R_WKUP_CTRL] & R_WKUP_CTRL_ENABLE_MASK) != 0;
+    return (bool)FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, ENABLE);
 }
 
 static inline bool ot_aon_timer_is_wdog_enabled(OtAonTimerState *s)
 {
-    return (s->regs[R_WDOG_CTRL] & R_WDOG_CTRL_ENABLE_MASK) != 0;
+    return (bool)FIELD_EX32(s->regs[R_WDOG_REGWEN], WDOG_REGWEN, REGWEN) &&
+           (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE);
 }
 
 static inline bool ot_aon_timer_wdog_register_write_enabled(OtAonTimerState *s)
@@ -234,10 +239,6 @@ static void ot_aon_timer_update_irqs(OtAonTimerState *s)
 static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
 {
     timer_del(s->wkup_timer);
-
-    if (!s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]) {
-        return;
-    }
 
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
 
@@ -280,10 +281,6 @@ static void ot_aon_timer_wkup_cb(void *opaque)
 static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
 {
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-
-    if (!s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]) {
-        return;
-    }
 
     if (reset_origin) {
         s->wdog_origin_ns = now;

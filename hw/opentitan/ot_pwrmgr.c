@@ -465,6 +465,8 @@ static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
     s->slow_regs.control = s->regs[R_CONTROL];
 }
 
+static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s);
+
 static void ot_pwrmgr_cdc_sync(void *opaque)
 {
     OtPwrMgrState *s = opaque;
@@ -472,8 +474,8 @@ static void ot_pwrmgr_cdc_sync(void *opaque)
     trace_ot_pwrmgr_cdc_sync(s->ot_id);
 
     ot_pwrmgr_sync_slow_regs(s);
-
     s->regs[R_CFG_CDC_SYNC] &= ~R_CFG_CDC_SYNC_SYNC_MASK;
+    ot_pwrmgr_check_wakeup(s);
 }
 
 static void ot_pwrmgr_rom_good(void *opaque, int irq, int level)
@@ -504,6 +506,32 @@ static void ot_pwrmgr_rom_done(void *opaque, int irq, int level)
     }
 }
 
+static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
+{
+    uint32_t active_wkup = s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
+
+    if (active_wkup && (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) {
+        CPUState *cpu = qemu_get_cpu(0);
+        if (cpu && !cpu->halted) {
+            /* Wait until CPU executes WFI (core_sleeping_i == 1) */
+            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 5000);
+            return;
+        }
+        if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] & R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+            s->regs[R_WAKE_INFO] |= active_wkup;
+        }
+        s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+        s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+        s->regs[R_INTR_STATE] |= WAKEUP_MASK;
+        ot_pwrmgr_update_irq(s);
+        if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+            ibex_irq_set(&s->reset_req,
+                         OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                 OT_RSTMGR_RESET_LOW_POWER));
+        }
+    }
+}
+
 static void ot_pwrmgr_wkup(void *opaque, int irq, int level)
 {
     OtPwrMgrState *s = opaque;
@@ -512,6 +540,16 @@ static void ot_pwrmgr_wkup(void *opaque, int irq, int level)
     assert(src < PWRMGR_WAKEUP_MAX);
 
     trace_ot_pwrmgr_wkup(s->ot_id, WAKEUP_NAME(s, src), src, (bool)level);
+
+    uint32_t wkbit = 1u << src;
+    if (level) {
+        s->regs[R_WAKE_STATUS] |= wkbit;
+    } else {
+        s->regs[R_WAKE_STATUS] &= ~wkbit;
+        return;
+    }
+
+    ot_pwrmgr_check_wakeup(s);
 }
 
 static void ot_pwrmgr_clock_enable(gpointer data, gpointer user_data)
@@ -1020,7 +1058,9 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     }
 
     timer_del(s->cdc_sync);
+    uint32_t wake_info = s->regs[R_WAKE_INFO];
     memset(s->regs, 0, REGS_SIZE);
+    s->regs[R_WAKE_INFO] = wake_info;
 
     s->regs[R_CTRL_CFG_REGWEN] = 0x1u;
     s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;
