@@ -490,80 +490,58 @@ ot_alert_reg_intr_state_write(OtAlertState *s, unsigned reg, uint32_t value)
 static void ot_alert_set_class_timer(OtAlertState *s, unsigned nclass,
                                      uint32_t timeout)
 {
-    if (s->pclks[OT_ALERT_CLOCK_SRC_IO] == 0) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: no clock\n", __func__,
-                      s->ot_id);
-        return;
+    uint32_t pclk = s->pclks[OT_ALERT_CLOCK_SRC_IO];
+    if (pclk == 0) {
+        pclk = 24000000u;
     }
     OtAlertScheduler *atimer = &s->schedulers[nclass];
     /* TODO: update running schedulers if timeout_cyc_shadowed is updated */
-    int64_t ns = (int64_t)muldiv64(timeout, NANOSECONDS_PER_SECOND,
-                                   s->pclks[OT_ALERT_CLOCK_SRC_IO]);
+    int64_t ns = (int64_t)muldiv64(timeout, NANOSECONDS_PER_SECOND, pclk);
 
     OtAlertAClassState state = ot_alert_get_class_state(s, nclass);
     trace_ot_alert_set_class_timer(s->ot_id, ACLASS(nclass), ST_NAME(state),
                                    ns / 1000, timeout);
 
     ns += qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    if (ns < timer_expire_time_ns(&atimer->timer)) {
-        timer_mod_anticipate_ns(&atimer->timer, ns);
+    timer_mod_ns(&atimer->timer, ns);
+}
+
+static int
+ot_alert_get_signal_for_phase(OtAlertState *s, unsigned nclass, unsigned phase)
+{
+    const OtAlertAClass *aclass = &s->regs.classes[nclass];
+    uint32_t ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
+
+    if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E0) &&
+        SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E0) == phase) {
+        return 0;
     }
+    if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E1) &&
+        SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E1) == phase) {
+        return 1;
+    }
+    if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E2) &&
+        SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E2) == phase) {
+        return 2;
+    }
+    if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E3) &&
+        SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E3) == phase) {
+        return 3;
+    }
+    return -1;
 }
 
 static bool
-ot_alert_is_escalation_enabled(OtAlertState *s, unsigned nclass, unsigned esc)
+ot_alert_is_escalation_enabled(OtAlertState *s, unsigned nclass, unsigned phase)
 {
-    const OtAlertAClass *aclass = &s->regs.classes[nclass];
-    uint32_t ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
-
-    bool enable;
-    switch (esc) {
-    case 0:
-        enable = (bool)SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E0);
-        break;
-    case 1:
-        enable = (bool)SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E1);
-        break;
-    case 2:
-        enable = (bool)SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E2);
-        break;
-    case 3:
-        enable = (bool)SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E3);
-        break;
-    default:
-        g_assert_not_reached();
-        break;
-    }
-
-    return enable;
+    return ot_alert_get_signal_for_phase(s, nclass, phase) >= 0;
 }
 
 static IbexIRQ *
-ot_alert_get_escalation_output(OtAlertState *s, unsigned nclass, unsigned esc)
+ot_alert_get_escalation_output(OtAlertState *s, unsigned nclass, unsigned phase)
 {
-    const OtAlertAClass *aclass = &s->regs.classes[nclass];
-    uint32_t ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
-
-    uint32_t out;
-    switch (esc) {
-    case 0:
-        out = SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E0);
-        break;
-    case 1:
-        out = SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E1);
-        break;
-    case 2:
-        out = SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E2);
-        break;
-    case 3:
-        out = SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E3);
-        break;
-    default:
-        g_assert_not_reached();
-        break;
-    }
-
-    return &s->esc_txs[out];
+    int sig = ot_alert_get_signal_for_phase(s, nclass, phase);
+    return sig >= 0 ? &s->esc_txs[sig] : NULL;
 }
 
 static void ot_alert_clear_alert(OtAlertState *s, unsigned nclass)
@@ -699,8 +677,8 @@ static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
                 state += 1;
                 esc = state - STATE_PHASE0;
                 ot_alert_set_class_state(s, nclass, state);
-                if (ot_alert_is_escalation_enabled(s, nclass, esc)) {
-                    esc_tx = ot_alert_get_escalation_output(s, nclass, esc);
+                esc_tx = ot_alert_get_escalation_output(s, nclass, esc);
+                if (esc_tx) {
                     ibex_irq_set(esc_tx, true);
                     trace_ot_alert_escalation(s->ot_id, ACLASS(nclass), esc,
                                               "activate");
@@ -1049,6 +1027,10 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
         DVAL(s->regs.classes[ix].regwen) = CLASS_REGWEN_EN_MASK;
         ot_shadow_reg_init(&s->regs.classes[ix].ctrl_shadowed, 0x393cu);
         DVAL(s->regs.classes[ix].clr_regwen) = CLASS_CLR_REGWEN_EN_MASK;
+    }
+
+    for (unsigned ix = 0; ix < PARAM_N_ESC_SEV; ix++) {
+        ibex_irq_set(&s->esc_txs[ix], 0);
     }
 
     ot_alert_update_irqs(s);

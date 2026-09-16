@@ -207,9 +207,8 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_SYSCTRL] = BIT(3),
             [OT_RSTMGR_RESET_AON_TIMER] = BIT(4),
             [OT_RSTMGR_RESET_SENSOR] = BIT(5),
-            [OT_RSTMGR_RESET_PWRMGR] = BIT(6),
-            [OT_RSTMGR_RESET_ALERT_HANDLER] = BIT(7),
-            [OT_RSTMGR_RESET_RV_DM] = BIT(8),
+            [OT_RSTMGR_RESET_ALERT_HANDLER] = BIT(6),
+            [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
         .sw_resettable_devices = {
             [0u] = { TYPE_OT_SPI_DEVICE, 0u },

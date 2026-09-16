@@ -57,6 +57,11 @@
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
+#include "exec/cpu-interrupt.h"
+
+#ifndef CPU_INTERRUPT_RNMI
+#define CPU_INTERRUPT_RNMI CPU_INTERRUPT_TGT_EXT_0
+#endif
 #include "hw/sysbus.h"
 #include "system/runstate.h"
 #include "trace.h"
@@ -908,6 +913,8 @@ static void ot_ibex_wrapper_cpu_enable_recv(void *opaque, int n, int level)
     ot_ibex_wrapper_update_exec(s);
 }
 
+extern void riscv_cpu_set_rnmi(CPUState *cpu, uint32_t irq, bool level);
+
 static void ot_ibex_wrapper_escalate_rx(void *opaque, int n, int level)
 {
     OtIbexWrapperState *s = opaque;
@@ -916,9 +923,12 @@ static void ot_ibex_wrapper_escalate_rx(void *opaque, int n, int level)
 
     trace_ot_ibex_wrapper_escalate_rx(s->ot_id ?: "", (bool)level);
 
-    s->esc_rx = (bool)level;
-
-    ot_ibex_wrapper_update_exec(s);
+    if (level) {
+        s->regs.nmi_state |= 1u;
+        if ((s->regs.nmi_enable & 1u) && s->cpu) {
+            riscv_cpu_set_rnmi(s->cpu, 31, true);
+        }
+    }
 }
 
 /*
@@ -1109,6 +1119,9 @@ static void ot_ibex_wrapper_write_nmi_enable(OtIbexWrapperState *s,
     (void)reg;
 
     s->regs.nmi_enable |= value; /* RW1S */
+    if ((s->regs.nmi_enable & 1u) && (s->regs.nmi_state & 1u) && s->cpu) {
+        riscv_cpu_set_rnmi(s->cpu, 31, true);
+    }
 }
 
 static void ot_ibex_wrapper_write_nmi_state(OtIbexWrapperState *s, unsigned reg,
@@ -1457,6 +1470,7 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     /* 'QMU_' in LE, _ is the QEMU version stored in the MSB */
     s->regs.fpga_info = 0x00554d51u + (((uint32_t)s->qemu_version) << 24u);
     s->entropy_requested = false;
+    s->esc_rx = false;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
 
     memset(s->log_engine, 0, sizeof(*s->log_engine));

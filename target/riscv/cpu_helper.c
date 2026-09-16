@@ -475,15 +475,8 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
     int virq;
 
     /* Priority: RNMI > Other interrupt. */
-    if (riscv_cpu_cfg(env)->ext_smrnmi) {
-        /* If mnstatus.NMIE == 0, all interrupts are disabled. */
-        if (!get_field(env->mnstatus, MNSTATUS_NMIE)) {
-            return RISCV_EXCP_NONE;
-        }
-
-        if (env->rnmip) {
-            return ctz64(env->rnmip); /* since non-zero */
-        }
+    if (env->rnmip) {
+        return ctz64(env->rnmip); /* since non-zero */
     }
 
     /* Determine interrupt enable state of all privilege modes */

@@ -635,9 +635,11 @@ static void ot_pwrmgr_fast_fsm_tick(OtPwrMgrState *s)
     if (s->fsm_events.escalate) {
         PWR_CHANGE_FAST_STATE(s, REQ_PWR_DN);
         trace_ot_pwrmgr_shutdown(s->ot_id, s->main);
+        s->fsm_events.escalate = false;
         if (s->main) {
-            qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_PANIC,
-                                                   EXIT_ESCALATION_PANIC);
+            ibex_irq_set(&s->reset_req,
+                         OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_FAST_DOMAIN,
+                                                 OT_RSTMGR_RESET_ALERT_HANDLER));
         }
     }
 
