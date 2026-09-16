@@ -407,7 +407,7 @@ static inline void ot_aes_load_reseed_rate(OtAESState *s)
     unsigned reseed;
 
     switch (rate) {
-    case 0x3u:
+    case 0x4u:
         /* should be "approximately" 8192 */
         reseed = 8192u;
         break;
