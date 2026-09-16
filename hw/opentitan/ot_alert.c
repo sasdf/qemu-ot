@@ -859,6 +859,16 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static uint32_t ot_alert_reg_cause_read(OtAlertState *s, unsigned reg)
+{
+    unsigned alert = reg - (unsigned)(s->regs.alerts.cause - &s->regs.shadow[0]);
+    bool alert_en = ot_shadow_reg_peek(&s->regs.alerts.en_shadowed[alert]);
+    if (!alert_en) {
+        return 0;
+    }
+    return DVAL(s->regs.shadow[reg]);
+}
+
 static void ot_alert_fill_access_table(OtAlertState *s)
 {
     OtAlertAccess *table = s->access_table;
@@ -897,7 +907,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
     /* ALERT_CAUSE */
     for (unsigned ix = 0; ix < s->n_alerts; ix++) {
         table[offset + ix] =
-            R_ACC_M(direct_read, direct_rw1c_write, ALERT_CAUSE_EN_MASK);
+            R_ACC_M(cause_read, direct_rw1c_write, ALERT_CAUSE_EN_MASK);
     }
     offset += s->n_alerts;
 

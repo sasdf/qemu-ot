@@ -218,6 +218,8 @@ typedef struct {
     bool sw_ack; /* last SW command has been completed */
     bool instantiated; /* instantiated state, not yet uninstantiated */
     bool no_fips; /* true if 1+ rcv entropy packets were no FIPS-compliant */
+    uint32_t prev_bits[OT_CSRNG_PACKET_WORD_COUNT];
+    bool prev_bits_valid;
 } OtEDNCSRNG;
 
 typedef struct OtEDNEndPoint {
@@ -1139,6 +1141,14 @@ static void ot_edn_fill_bits(void *opaque, const uint32_t *bits, bool fips)
         }
         ot_fifo32_push(&c->bits_fifo, bits[ix]);
     }
+    if (c->prev_bits_valid &&
+        memcmp(c->prev_bits, bits, sizeof(c->prev_bits)) == 0) {
+        s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_EDN_BUS_CMP_ALERT_MASK;
+        ot_edn_update_alerts(s);
+    }
+    memcpy(c->prev_bits, bits, sizeof(c->prev_bits));
+    c->prev_bits_valid = true;
+
     c->rem_packet_count -= 1u;
     c->no_fips |= !fips;
 

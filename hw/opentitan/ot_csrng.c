@@ -306,6 +306,8 @@ typedef struct {
     bool seeded; /* ready to generate randomness */
     bool no_fips;
     bool force_fips;
+    uint32_t prev_genbits[OT_CSRNG_PACKET_WORD_COUNT];
+    bool prev_genbits_valid;
 } OtCSRNGDrng;
 
 typedef struct OtCSRNGInstance {
@@ -833,6 +835,15 @@ static void ot_csrng_drng_generate(OtCSRNGInstance *inst, uint32_t *out,
     res = ecb_encrypt(drng->v_counter, (uint8_t *)out, OT_CSRNG_AES_BLOCK_SIZE,
                       &drng->ecb);
     g_assert(res == CRYPT_OK);
+
+    if (ot_csrng_get_slot(inst) == SW_INSTANCE_ID && drng->prev_genbits_valid &&
+        memcmp(drng->prev_genbits, out, sizeof(drng->prev_genbits)) == 0) {
+        OtCSRNGState *s = inst->parent;
+        s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CS_BUS_CMP_ALERT_MASK;
+        ot_csrng_update_alerts(s);
+    }
+    memcpy(drng->prev_genbits, out, sizeof(drng->prev_genbits));
+    drng->prev_genbits_valid = true;
 
     xtrace_ot_csrng_show_buffer(ot_csrng_get_slot(inst), "out", out,
                                 OT_CSRNG_AES_BLOCK_SIZE);
