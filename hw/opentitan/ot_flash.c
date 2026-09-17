@@ -802,6 +802,7 @@ typedef struct {
     unsigned info_size; /* info buffer size of a bank in bytes */
     unsigned info_part_count; /* count of info partition (per bank) */
     OtFlashInfoPart info_parts[MAX_INFO_PART_COUNT];
+    uint32_t info_page_provisioned_bm; /* bitmask of provisioned info pages */
 } OtFlashStorage;
 
 typedef struct {
@@ -1130,7 +1131,7 @@ static void ot_flash_set_error(OtFlashState *s, uint32_t ebit, uint32_t eaddr)
             s->regs[R_OP_STATUS] |= R_OP_STATUS_ERR_MASK;
             s->regs[R_INTR_STATE] |= INTR_CORR_ERR_MASK;
             s->regs[R_ERR_ADDR] = FIELD_DP32(0, ERR_ADDR, ERR_ADDR, eaddr);
-            s->regs[R_ERR_CODE] = ebit;
+            s->regs[R_ERR_CODE] |= ebit;
             s->regs[R_ALERT_TEST] |= ALERT_RECOV_ERR_MASK;
             ot_flash_update_irqs(s);
         }
@@ -1500,6 +1501,21 @@ static unsigned ot_flash_next_info_address(OtFlashState *s)
         return address;
     }
 
+    if (!s->op.hw && s->op.kind == OP_READ && cfg.scramble_en && cfg.ecc_en) {
+        unsigned info_page_idx = address / BYTES_PER_PAGE;
+        if (info_page_idx < 32u &&
+            !(storage->info_page_provisioned_bm & (1u << info_page_idx))) {
+            qemu_log_mask(
+                LOG_GUEST_ERROR,
+                "%s: %s: read error on unprovisioned scrambled/ECC info page "
+                "%u in partition %u of bank %u\n",
+                __func__, s->ot_id, page, info_partition, bank);
+            ot_flash_set_error(s, R_ERR_CODE_RD_ERR_MASK, op_address);
+            s->op.failed = true;
+            return address;
+        }
+    }
+
     return address;
 }
 
@@ -1701,7 +1717,12 @@ static void ot_flash_op_prog(OtFlashState *s)
                  ((s->op.info_part ? storage->info_size : storage->data_size) *
                   storage->bank_count));
         dest[word_address] &= word;
-        if (!s->op.info_part) {
+        if (s->op.info_part) {
+            unsigned info_page_idx = address / BYTES_PER_PAGE;
+            if (info_page_idx < 32u) {
+                storage->info_page_provisioned_bm |= (1u << info_page_idx);
+            }
+        } else {
             /*
              * for data, we must flush relevant TLB pages to ensure host reads
              * for XIP execution of mutated code in flash are correct.
@@ -1750,7 +1771,12 @@ static void ot_flash_op_erase_page(OtFlashState *s, unsigned address)
              ((s->op.info_part ? storage->info_size : storage->data_size) *
               storage->bank_count));
     memset(&dest[word_address], 0xFF, page_size);
-    if (!s->op.info_part) {
+    if (s->op.info_part) {
+        unsigned info_page_idx = page_address / BYTES_PER_PAGE;
+        if (info_page_idx < 32u) {
+            storage->info_page_provisioned_bm |= (1u << info_page_idx);
+        }
+    } else {
         /*
          * for data, we must flush relevant TLB pages to ensure host reads
          * for XIP execution of mutated code in flash are correct.
@@ -1816,6 +1842,11 @@ static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
         g_assert((info_address + bank_size) <=
                  (storage->info_size * storage->bank_count));
         memset(&storage->info[info_address], 0xFF, bank_size);
+        unsigned pages_per_bank = storage->info_size / BYTES_PER_PAGE;
+        unsigned first_page = bank * pages_per_bank;
+        for (unsigned p = 0; p < pages_per_bank && (first_page + p) < 32u; p++) {
+            storage->info_page_provisioned_bm |= (1u << (first_page + p));
+        }
         trace_ot_flash_erase(s->ot_id, true, info_address, bank_size);
 
         bank_size = storage->data_size;
@@ -3171,6 +3202,35 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
         (uint32_t *)(base + (uintptr_t)(flash->bank_count * data_size));
     flash->data_size = data_size;
     flash->info_size = info_size;
+
+    /*
+     * Secret and attestation seed info pages are not erased during factory
+     * personalization if unprovisioned, whereas certificate and general info
+     * pages are erased to all 1s. Mark all pages as provisioned by default
+     * except unprovisioned secret/seed pages:
+     *   Bank 0 Info 0 Pages 1..4 (CreatorSecret, OwnerSecret, WaferAuthSecret,
+     *                             AttestationKeySeeds) -> indices 1..4
+     *   Bank 1 Info 0 Pages 2..3 (OwnerSlot0, OwnerSlot1) -> indices 15..16
+     */
+    const uint32_t unprovisioned_default_mask =
+        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) |
+        (1u << 15) | (1u << 16);
+    unsigned words_per_page = BYTES_PER_PAGE / sizeof(uint32_t);
+    unsigned total_info_pages =
+        (flash->bank_count * flash->info_size) / BYTES_PER_PAGE;
+    flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
+    for (unsigned p = 0; p < total_info_pages && p < 32u; p++) {
+        if (!(unprovisioned_default_mask & (1u << p))) {
+            continue;
+        }
+        const uint32_t *page_words = &flash->info[p * words_per_page];
+        for (unsigned w = 0; w < words_per_page; w++) {
+            if (page_words[w] != 0xFFFFFFFFu) {
+                flash->info_page_provisioned_bm |= (1u << p);
+                break;
+            }
+        }
+    }
 }
 
 #if DATA_PART_USE_IO_OPS
