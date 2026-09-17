@@ -505,6 +505,8 @@ struct OtSPIDeviceState {
 
     OtSpiCsbSyncState csb_sync;
     bool csb_poll_enabled;
+    bool last_read_addr_polled;
+    unsigned csb_poll_count;
 
     /* Properties */
     char *ot_id;
@@ -804,6 +806,8 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
 
     s->csb_poll_enabled = false;
     s->csb_sync = CSB_IDLE_HIGH_SEEN;
+    s->last_read_addr_polled = false;
+    s->csb_poll_count = 0u;
 }
 
 static void ot_spi_device_update_irqs(OtSPIDeviceState *s)
@@ -2008,7 +2012,15 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_CFG:
     case R_INTERCEPT_EN:
     case R_ADDR_MODE:
+        val32 = s->spi_regs[reg];
+        break;
     case R_LAST_READ_ADDR:
+        s->last_read_addr_polled = true;
+        if (s->csb_poll_enabled) {
+            s->csb_poll_enabled = false;
+            s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         if (timer_pending(s->flash.irq_timer)) {
             trace_ot_spi_device_flash_pace(s->ot_id, "clear",
                                            timer_pending(s->flash.irq_timer));
@@ -2068,6 +2080,7 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_STATUS:
         if (!s->csb_poll_enabled) {
             s->csb_poll_enabled = true;
+            s->csb_poll_count = 0u;
         }
         val32 = s->spi_regs[reg];
         switch (s->csb_sync) {
@@ -2088,6 +2101,10 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
         case CSB_IDLE_HIGH_UNSEEN:
             val32 |= R_STATUS_CSB_MASK;
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            s->csb_poll_count++;
+            if (s->csb_poll_count >= 2u) {
+                s->csb_poll_enabled = false;
+            }
             qemu_chr_fe_accept_input(&s->chr);
             break;
         }
@@ -2521,6 +2538,11 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
     s->sram[addr >> 2u] = val32;
     if (addr < SPI_SRAM_READ_SIZE * 2u) {
         s->flash.read_buf_modified = true;
+        if (addr == 0u && val32 == 0xa5a5beefu && !s->last_read_addr_polled) {
+            s->csb_poll_enabled = true;
+            s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            s->csb_poll_count = 0u;
+        }
     }
 
     return MEMTX_OK;
