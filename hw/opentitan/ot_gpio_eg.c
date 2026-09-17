@@ -157,6 +157,8 @@ struct OtGpioEgState {
     uint64_t last_total_us;
     bool explicit_time;
     bool batch_mode;
+    bool in_reset;
+    bool pending_input_ack;
     GString *batch_buf;
     QEMUTimer *bb_timer;
     uint8_t *bb_wbuf;
@@ -1223,7 +1225,8 @@ static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
     int len = snprintf(buf, sizeof(buf), "T:%08x\r\nY:%08x\r\n", now_us,
                        s->regs[R_DATA_IN]);
     s->backend_state.in_m = s->regs[R_DATA_IN];
-    qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+    int written = qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+    s->pending_input_ack = (written != len);
 }
 
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
@@ -1324,7 +1327,7 @@ static void ot_gpio_eg_init_backend(OtGpioEgState *s)
 
 static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
 {
-    if (!qemu_chr_fe_backend_connected(&s->chr)) {
+    if (s->in_reset || !qemu_chr_fe_backend_connected(&s->chr)) {
         return;
     }
 
@@ -1445,7 +1448,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
      */
 
     if (!memcmp(&bstate, &s->backend_state, sizeof(OtGpioEgBackendState)) &&
-        !force) {
+        !force && !s->pending_input_ack) {
         /* do not emit new state if nothing has changed */
         return;
     }
@@ -1468,7 +1471,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     if (force || bstate.out_v != s->backend_state.out_v) {
         len += snprintf(&buf[len], sizeof(buf) - len, "O:%08x\r\n", bstate.out_v);
     }
-    if (force || bstate.in_m != s->backend_state.in_m) {
+    if (force || s->pending_input_ack || bstate.in_m != s->backend_state.in_m) {
         len += snprintf(&buf[len], sizeof(buf) - len, "Y:%08x\r\n", bstate.in_m);
     }
 
@@ -1477,8 +1480,13 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     if (len > 0) {
         if (s->batch_mode && s->batch_buf) {
             g_string_append_len(s->batch_buf, buf, (gssize)len);
+            s->pending_input_ack = false;
         } else {
-            qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
+            int written =
+                qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
+            if (written == (int)len) {
+                s->pending_input_ack = false;
+            }
         }
         /* replace CRLF so that trace is kept on a single line */
         for (size_t i = 0; i + 1 < len; i++) {
@@ -1607,8 +1615,12 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
     s->bb_wbuf = NULL;
     s->bb_rbuf = NULL;
 
+    s->in_reset = true;
+
     memset(s->regs, 0, sizeof(s->regs));
-    memset(&s->backend_state, 0, sizeof(s->backend_state));
+    if (s->wipe || type == RESET_TYPE_COLD) {
+        memset(&s->backend_state, 0, sizeof(s->backend_state));
+    }
 
     /* reset_* fields are properties, never get reset */
     s->data_ii = s->reset_in;
@@ -1655,9 +1667,11 @@ static void ot_gpio_eg_reset_exit(Object *obj, ResetType type)
         c->parent_phases.exit(obj, type);
     }
 
+    s->in_reset = false;
+
     ot_gpio_eg_init_backend(s);
     ot_gpio_eg_update_data_out(s);
-    ot_gpio_eg_update_backend(s, true);
+    ot_gpio_eg_update_backend(s, s->wipe || type == RESET_TYPE_COLD);
 
     /*
      * do not reset the input backend buffer as external GPIO changes is fully

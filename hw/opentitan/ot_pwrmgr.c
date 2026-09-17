@@ -1350,6 +1350,8 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     s->regs[R_CTRL_CFG_REGWEN] = 0x1u;
     s->fsm_events.bitmap = 0;
     s->fsm_events.holdon_fetch = s->fetch_ctrl;
+    s->reset_request.domain = OT_PWRMGR_NO_DOMAIN;
+    s->reset_request.req = 0;
     s->boot_status.i32 = 0;
     s->boot_status.rom_mask = (1u << s->num_rom) - 1u;
     ot_pwrmgr_sync_slow_regs(s);

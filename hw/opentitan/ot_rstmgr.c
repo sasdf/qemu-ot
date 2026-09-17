@@ -574,9 +574,14 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
              * Schedule software reset request with a short delay (1 us) to model
              * pwrmgr synchronization latency, allowing software to execute
              * trailing instructions (e.g. wfi) before reset assertion.
+             * Do not re-arm if already pending, as tight shutdown loops (e.g.
+             * ROM shutdown_hang) repeatedly write R_RESET_REQ in < 1 us and
+             * would otherwise postpone the reset timer indefinitely.
              */
-            timer_mod(s->sw_reset_timer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            if (!timer_pending(s->sw_reset_timer)) {
+                timer_mod(s->sw_reset_timer,
+                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            }
             if (s->fatal_reset) {
                 s->fatal_reset--;
                 if (!s->fatal_reset) {

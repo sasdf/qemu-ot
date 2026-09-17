@@ -808,6 +808,7 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
     s->csb_sync = CSB_IDLE_HIGH_SEEN;
     s->last_read_addr_polled = false;
     s->csb_poll_count = 0u;
+    qemu_chr_fe_accept_input(&s->chr);
 }
 
 static void ot_spi_device_update_irqs(OtSPIDeviceState *s)
@@ -3063,17 +3064,24 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
     memset(s->spi_regs, 0u, SPI_REGS_SIZE);
     memset(s->tpm_regs, 0u, TPM_REGS_SIZE);
 
-    fifo8_reset(&bus->chr_fifo);
     /* not sure if the following FIFOs should be reset on clear_modes instead */
     ot_fifo32_reset(&f->cmd_fifo);
     ot_fifo32_reset(&f->address_fifo);
 
-    ot_spi_device_release(s);
     s->spi_regs[R_CONTROL] = 0x10u;
     s->spi_regs[R_STATUS] = 0x60u;
     s->spi_regs[R_JEDEC_CC] = 0x7fu;
     for (unsigned ix = 0u; ix < PARAM_NUM_CMD_INFO; ix++) {
         s->spi_regs[R_CMD_INFO_0 + ix] = 0x7000u;
+    }
+
+    if (bus->state != SPI_BUS_IDLE) {
+        BUS_CHANGE_STATE(s, DISCARD);
+        bus->failed_transaction = true;
+        s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
+        ot_pinmux_eg_dio_pad_in(13u, 0);
+    } else {
+        ot_spi_device_release(s);
     }
 
     memset(&f->cmd_params, 0u, sizeof(OtSpiCommandParams));
@@ -3085,6 +3093,7 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
 
     ot_spi_device_update_irqs(s);
     ot_spi_device_update_alerts(s);
+    qemu_chr_fe_accept_input(&s->chr);
 }
 
 static void ot_spi_device_realize(DeviceState *dev, Error **errp)
