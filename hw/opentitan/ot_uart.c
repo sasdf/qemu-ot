@@ -782,16 +782,18 @@ static void ot_uart_xmit(OtUARTState *s)
                 /* get a continuous buffer from the FIFO */
                 buf = fifo8_peek_bufptr(&s->tx_fifo,
                                         fifo8_num_used(&s->tx_fifo), &size);
-                /* send all buffered characters */
-                ret = qemu_chr_fe_write_all(tx_chr, buf, (int)size);
+                /* send as much as possible */
+                ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
                 /* if some characters were sent, remove them from the FIFO */
                 if (ret > 0) {
                     fifo8_drop(&s->tx_fifo, ret);
-                } else {
-                    if (!s->watch_tag) {
+                }
+                if (ret < (int)size) {
+                    if (s->watch_tag == 0) {
                         /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
-                        s->watch_tag = qemu_chr_fe_add_watch(
-                            tx_chr, G_IO_OUT | G_IO_HUP, ot_uart_watch_cb, s);
+                        s->watch_tag =
+                            qemu_chr_fe_add_watch(tx_chr, G_IO_OUT | G_IO_HUP,
+                                                  ot_uart_watch_cb, s);
                     }
                     break;
                 }
@@ -890,6 +892,11 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
             s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         }
         ot_uart_step_rx(s);
+    }
+
+    if (!fifo8_is_empty(&s->tx_fifo) && !s->tx_busy &&
+        ot_uart_is_tx_enabled(s)) {
+        ot_uart_xmit(s);
     }
 
     hwaddr reg = R32_OFF(addr);
