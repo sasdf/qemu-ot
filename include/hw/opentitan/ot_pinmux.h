@@ -37,6 +37,7 @@
 #define OT_PINMUX_MIO       TYPE_OT_PINMUX "-mio"
 #define OT_PINMUX_PAD       TYPE_OT_PINMUX "-pad" /* for devices using pinmux pad */
 #define OT_PINMUX_PAD_IN    TYPE_OT_PINMUX "-pad-in"
+#define OT_PINMUX_GPIO_IN   TYPE_OT_PINMUX "-gpio-in"
 #define OT_PINMUX_WKUP      TYPE_OT_PINMUX "-wkup"
 #define OT_PINMUX_SYSRST_IN TYPE_OT_PINMUX "-sysrst-in"
 #define OT_PINMUX_SLEEP_EN  TYPE_OT_PINMUX "-sleep-en"

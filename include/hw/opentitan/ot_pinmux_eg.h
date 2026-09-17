@@ -33,4 +33,7 @@
 #define TYPE_OT_PINMUX_EG TYPE_OT_PINMUX "-eg"
 OBJECT_DECLARE_TYPE(OtPinmuxEgState, OtPinmuxEgClass, OT_PINMUX_EG)
 
+int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad);
+void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level);
+
 #endif /* HW_OPENTITAN_OT_PINMUX_EG_H */

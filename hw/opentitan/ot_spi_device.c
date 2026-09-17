@@ -37,6 +37,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_fifo32.h"
+#include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_spi_device.h"
 #include "hw/opentitan/ot_spi_host.h"
 #include "hw/qdev-properties-system.h"
@@ -907,6 +908,7 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     bus->failed_transaction = false;
 
     s->spi_regs[R_STATUS] = R_STATUS_CSB_MASK | R_STATUS_TPM_CSB_MASK;
+    ot_pinmux_eg_dio_pad_in(13u, 1);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_ACTIVE_LOW_UNSEEN) {
             s->csb_sync = CSB_RELEASED_LOW_UNSEEN;
@@ -2510,10 +2512,16 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
     /* @todo: also update the TPM CSB value when used in the protocol */
     s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
+    ot_pinmux_eg_dio_pad_in(13u, 0);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_IDLE_HIGH_SEEN) {
             s->csb_sync = CSB_ACTIVE_LOW_UNSEEN;
         }
+    }
+
+    if (ot_pinmux_eg_get_dio_sleep_val(6u) >= 0) {
+        BUS_CHANGE_STATE(s, DISCARD);
+        return;
     }
 
     /* discard the packet if we're within a failed transaction */
@@ -2544,7 +2552,10 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
 static void ot_spi_device_chr_send_discard(OtSPIDeviceState *s, unsigned count)
 {
-    const uint8_t buf[1u] = { SPI_DEFAULT_TX_RX_VALUE };
+    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
+    uint8_t val = (sleep_val == 0) ? 0x00u :
+                  (sleep_val == 1) ? 0xffu : SPI_DEFAULT_TX_RX_VALUE;
+    const uint8_t buf[1u] = { val };
 
     while (count--) {
         if (qemu_chr_fe_backend_connected(&s->chr)) {

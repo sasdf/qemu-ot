@@ -201,7 +201,9 @@ struct OtPinmuxEgState {
     IbexIRQ *mios;
     IbexIRQ *gpio_pads;
     IbexIRQ *sysrst_inputs;
+    IbexIRQ *gpio_inputs;
     uint64_t pad_in_level;
+    uint32_t dio_in_level;
     uint8_t mio_latched_sleep_mode[PARAM_N_MIO_PADS];
     uint8_t dio_latched_sleep_mode[PARAM_N_DIO_PADS];
 
@@ -213,6 +215,8 @@ struct OtPinmuxEgClass {
     ResettablePhases parent_phases;
 };
 
+static OtPinmuxEgState *ot_pinmux_eg_instance;
+
 static int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
 {
     const OtPinmuxEgStateRegs *regs = s->regs;
@@ -220,12 +224,9 @@ static int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
     if (outsel >= 3u && outsel < 35u) {
         return (int)(outsel - 3u);
     }
-    for (unsigned g = 0; g < 32u; g++) {
-        if (regs->mio_periph_insel[g] == pad + 2u) {
-            return (int)g;
-        }
-    }
     switch (pad) {
+    case 0u ... 8u: /* IOA0..IOA8 */
+        return (int)pad;
     case 9u ... 12u: /* IOB0..IOB3 */
         return (int)(pad - 9u);
     case 22u: /* IOC0 */
@@ -243,13 +244,40 @@ static int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
     case 46u: /* IOR13 */
         return 13;
     default:
-        return -1;
+        break;
     }
+    for (unsigned g = 0; g < 32u; g++) {
+        if (regs->mio_periph_insel[g] == pad + 2u) {
+            return (int)g;
+        }
+    }
+    return -1;
+}
+
+static bool ot_pinmux_eg_pad_is_configured(const OtPinmuxEgState *s,
+                                           unsigned pad)
+{
+    const OtPinmuxEgStateRegs *regs = s->regs;
+    bool sleep_active =
+        (regs->mio_pad_sleep_status[pad / 32u] >> (pad % 32u)) & 1u;
+    if (sleep_active || regs->mio_pad_attr[pad] != 0 ||
+        regs->mio_pad_sleep[pad] != 0 || regs->mio_outsel[pad] != 2u) {
+        return true;
+    }
+    for (unsigned i = 0; i < PARAM_N_MIO_PERIPH_IN; i++) {
+        if (regs->mio_periph_insel[i] == pad + 2u) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
 {
     OtPinmuxEgStateRegs *regs = s->regs;
+    uint32_t gpio_cfg[32] = { 0 };
+    bool gpio_cfg_set[32] = { false };
+
     for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
         uint32_t cfg = PAD_ATTR_TO_IRQ(regs->mio_pad_attr[pad]);
         bool sleep_active =
@@ -278,8 +306,17 @@ static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
         ibex_irq_set(&s->mios[pad], (int)cfg);
         int gpio_idx = ot_pinmux_eg_mio_to_gpio(s, pad);
         if (gpio_idx >= 0 && gpio_idx < 32) {
-            ibex_irq_set(&s->gpio_pads[gpio_idx], (int)cfg);
+            bool configured = ot_pinmux_eg_pad_is_configured(s, pad);
+            if (configured || !gpio_cfg_set[gpio_idx]) {
+                gpio_cfg[gpio_idx] = cfg;
+                if (configured) {
+                    gpio_cfg_set[gpio_idx] = true;
+                }
+            }
         }
+    }
+    for (unsigned g = 0; g < 32u; g++) {
+        ibex_irq_set(&s->gpio_pads[g], (int)gpio_cfg[g]);
     }
 }
 
@@ -322,30 +359,49 @@ static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
     }
 }
 
-static void ot_pinmux_eg_pad_in(void *opaque, int irq, int level)
+static void ot_pinmux_eg_update_gpio_inputs(OtPinmuxEgState *s)
 {
-    OtPinmuxEgState *s = opaque;
+    for (unsigned i = 0; i < 32u; i++) {
+        uint32_t insel = s->regs->mio_periph_insel[i];
+        int level = -1;
+        if (insel == 1u) {
+            level = 1;
+        } else if (insel >= 2u && (insel - 2u) < PARAM_N_MIO_PADS) {
+            unsigned pad = insel - 2u;
+            uint32_t outsel = s->regs->mio_outsel[pad];
+            if (outsel == 0u) {
+                level = 0;
+            } else if (outsel == 1u) {
+                level = 1;
+            } else if (outsel >= 3u && outsel < 3u + 32u) {
+                unsigned g = outsel - 3u;
+                if (g != i) {
+                    level = (int)((s->pad_in_level >> g) & 1u);
+                }
+            } else {
+                int mapped_gpio = ot_pinmux_eg_mio_to_gpio(s, pad);
+                if (mapped_gpio >= 0 && (unsigned)mapped_gpio != i) {
+                    level = (int)((s->pad_in_level >> pad) & 1u);
+                }
+            }
+        }
+        ibex_irq_set(&s->gpio_inputs[i], level);
+    }
+}
+
+static void ot_pinmux_eg_check_wkup_detectors(OtPinmuxEgState *s, bool is_dio,
+                                              uint32_t target_padsel, int prev,
+                                              int level)
+{
     OtPinmuxEgStateRegs *regs = s->regs;
 
-    g_assert((unsigned)irq < PARAM_N_MIO_PADS);
-
-    uint64_t bit = 1ULL << irq;
-    int prev = (int)((s->pad_in_level >> irq) & 1u);
-    if (level) {
-        s->pad_in_level |= bit;
-    } else {
-        s->pad_in_level &= ~bit;
-    }
-
-    ot_pinmux_eg_update_sysrst_inputs(s);
-
-    if (prev == level) {
-        return;
-    }
-
-    uint32_t target_padsel = (uint32_t)irq + 2u;
     for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
         if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
+            continue;
+        }
+        bool det_dio =
+            (bool)(regs->wkup_detector_cfg[i] & R_WKUP_DETECTOR_CFG_MIODIO_MASK);
+        if (det_dio != is_dio) {
             continue;
         }
         if (regs->wkup_detector_padsel[i] != target_padsel) {
@@ -377,6 +433,92 @@ static void ot_pinmux_eg_pad_in(void *opaque, int irq, int level)
             ibex_irq_set(&s->wkup, 1);
         }
     }
+}
+
+int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad)
+{
+    OtPinmuxEgState *s = ot_pinmux_eg_instance;
+    if (!s || dio_pad >= PARAM_N_DIO_PADS) {
+        return -1;
+    }
+    OtPinmuxEgStateRegs *regs = s->regs;
+    bool sleep_active =
+        (bool)((regs->dio_pad_sleep_status[dio_pad / 32u] >> (dio_pad % 32u)) &
+               1u);
+    if (!sleep_active) {
+        return -1;
+    }
+    switch (s->dio_latched_sleep_mode[dio_pad]) {
+    case 0u: /* Drive Low */
+        return 0;
+    case 1u: /* Drive High */
+    default:
+        return 1;
+    }
+}
+
+void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level)
+{
+    OtPinmuxEgState *s = ot_pinmux_eg_instance;
+    if (!s || dio_pad >= PARAM_N_DIO_PADS) {
+        return;
+    }
+
+    uint32_t bit = 1u << dio_pad;
+    int prev = (int)((s->dio_in_level >> dio_pad) & 1u);
+    if (level) {
+        s->dio_in_level |= bit;
+    } else {
+        s->dio_in_level &= ~bit;
+    }
+
+    if (prev == level) {
+        return;
+    }
+
+    ot_pinmux_eg_check_wkup_detectors(s, true, dio_pad, prev, level);
+}
+
+static void ot_pinmux_eg_set_mio_pad_in(OtPinmuxEgState *s, unsigned pad,
+                                        int level)
+{
+    uint64_t bit = 1ULL << pad;
+    int prev = (int)((s->pad_in_level >> pad) & 1u);
+    if (level) {
+        s->pad_in_level |= bit;
+    } else {
+        s->pad_in_level &= ~bit;
+    }
+    if (prev != level) {
+        ot_pinmux_eg_check_wkup_detectors(s, false, pad + 2u, prev, level);
+    }
+}
+
+static void ot_pinmux_eg_pad_in(void *opaque, int irq, int level)
+{
+    OtPinmuxEgState *s = opaque;
+
+    g_assert((unsigned)irq < PARAM_N_MIO_PADS);
+
+    ot_pinmux_eg_set_mio_pad_in(s, (unsigned)irq, level);
+    if (irq <= 3) {
+        ot_pinmux_eg_set_mio_pad_in(s, (unsigned)irq + 9u, level);
+    } else if (irq == 6) {
+        ot_pinmux_eg_set_mio_pad_in(s, 41u, level);
+    } else if (irq == 7) {
+        ot_pinmux_eg_set_mio_pad_in(s, 42u, level);
+    } else if (irq == 8) {
+        ot_pinmux_eg_set_mio_pad_in(s, 44u, level);
+    } else if (irq == 10) {
+        ot_pinmux_eg_set_mio_pad_in(s, 43u, level);
+    } else if (irq == 12) {
+        ot_pinmux_eg_set_mio_pad_in(s, 45u, level);
+    } else if (irq == 13) {
+        ot_pinmux_eg_set_mio_pad_in(s, 46u, level);
+    }
+
+    ot_pinmux_eg_update_sysrst_inputs(s);
+    ot_pinmux_eg_update_gpio_inputs(s);
 }
 
 static uint32_t ot_pinmux_eg_sel_mask(unsigned val)
@@ -515,6 +657,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             regs->mio_periph_insel[reg - R_MIO_PERIPH_INSEL] = val32;
             ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
             ot_pinmux_eg_update_sysrst_inputs(s);
+            ot_pinmux_eg_update_gpio_inputs(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -536,6 +679,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             regs->mio_outsel[reg - R_MIO_OUTSEL] = val32;
             ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
             ot_pinmux_eg_update_pads(s);
+            ot_pinmux_eg_update_gpio_inputs(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -692,7 +836,6 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     memcpy(dio_sleep_st, regs->dio_pad_sleep_status, sizeof(dio_sleep_st));
 
     memset(regs, 0, sizeof(*regs));
-
     if (type != RESET_TYPE_COLD) {
         regs->wkup_cause = wkup_cause;
         memcpy(regs->mio_pad_sleep_status, mio_sleep_st, sizeof(mio_sleep_st));
@@ -701,6 +844,7 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
         memset(s->mio_latched_sleep_mode, 0, sizeof(s->mio_latched_sleep_mode));
         memset(s->dio_latched_sleep_mode, 0, sizeof(s->dio_latched_sleep_mode));
     }
+    s->dio_in_level = (1u << 13u);
 
     for (unsigned ix = 0; ix < PARAM_N_MIO_PERIPH_IN; ix++) {
         regs->mio_periph_insel_regwen[ix] = 0x1u;
@@ -723,6 +867,7 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
 
     ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
     ot_pinmux_eg_update_sysrst_inputs(s);
+    ot_pinmux_eg_update_gpio_inputs(s);
     ot_pinmux_eg_update_pads(s);
     ibex_irq_set(&s->wkup, (int)(bool)regs->wkup_cause);
     ibex_irq_set(&s->alert, 0);
@@ -756,6 +901,7 @@ static void ot_pinmux_eg_init(Object *obj)
     s->mios = g_new(IbexIRQ, PARAM_N_MIO_PADS);
     s->gpio_pads = g_new(IbexIRQ, 32u);
     s->sysrst_inputs = g_new(IbexIRQ, 6u);
+    s->gpio_inputs = g_new(IbexIRQ, 32u);
     ibex_qdev_init_irqs_default(obj, s->dios, OT_PINMUX_DIO, PARAM_N_DIO_PADS,
                                 PAD_ATTR_ENABLE(false));
     ibex_qdev_init_irqs_default(obj, s->mios, OT_PINMUX_MIO, PARAM_N_MIO_PADS,
@@ -763,10 +909,13 @@ static void ot_pinmux_eg_init(Object *obj)
     ibex_qdev_init_irqs_default(obj, s->gpio_pads, OT_PINMUX_GPIO_PAD, 32u, 0);
     ibex_qdev_init_irqs_default(obj, s->sysrst_inputs, OT_PINMUX_SYSRST_IN, 6u,
                                 0);
+    ibex_qdev_init_irqs_default(obj, s->gpio_inputs, OT_PINMUX_GPIO_IN, 32u,
+                                -1);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_pad_in, OT_PINMUX_PAD_IN,
                             PARAM_N_MIO_PADS);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_sleep_en,
                             OT_PINMUX_SLEEP_EN, 1u);
+    ot_pinmux_eg_instance = s;
 }
 
 static void ot_pinmux_eg_class_init(ObjectClass *klass, const void *data)

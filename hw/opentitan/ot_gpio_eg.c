@@ -191,7 +191,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 {
     uint32_t prev = s->regs[R_DATA_IN];
 
-    uint32_t ii_mask = s->connected & ~s->data_gi & ~s->data_oe;
+    uint32_t ii_mask = s->connected & ~s->data_gi;
     uint32_t bi_mask = ~s->connected & ~s->data_bi & ~s->data_oe;
     uint32_t pi_mask = s->connected & s->data_gi & s->data_bi & ~s->data_oe;
 
@@ -209,8 +209,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     /* apply inversion if any */
     data_in ^= s->invert;
 
-    /* inject back output pin values into input */
-    uint32_t data_mix = data_in | (s->data_out & s->data_oe);
+    /* inject back output pin values into input only for non-muxed pins */
+    uint32_t data_mix = data_in | (s->data_out & s->data_oe & ~s->connected);
 
     s->regs[R_DATA_IN] = data_mix;
 
@@ -242,6 +242,10 @@ static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
     /* if open drain is active and output is high, disable output enable */
     out_en &= ~(s->opendrain & outv);
 
+    /* Apply PINMUX sleep retention force overrides */
+    out_en = (out_en & ~s->force_en) | (s->force_oe & s->force_en);
+    outv = (outv & ~s->force_en) | (s->force_out & s->force_en);
+
     /* keep non- opendrain high values */
     outv &= out_en;
 
@@ -269,13 +273,8 @@ static void ot_gpio_eg_in_change(void *opaque, int no, int level)
     bool on = (bool)level;
     uint32_t bit = 1u << no;
 
-    /*
-     * any time a signal is received from a remote device the pin is considered
-     * as connected and backend no longer may update its state.
-     */
-    s->connected |= bit;
-
     if (!ignore) {
+        s->connected |= bit;
         if (on) {
             s->data_ii |= bit;
         } else {
@@ -283,6 +282,7 @@ static void ot_gpio_eg_in_change(void *opaque, int no, int level)
         }
         s->data_gi &= ~bit;
     } else {
+        s->connected &= ~bit;
         s->data_gi |= bit;
     }
 
@@ -358,7 +358,6 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
         s->force_out &= ~bit;
         break;
     }
-
     trace_ot_gpio_pad_attr_change(s->ot_id, no, cfg, confstr);
 
     ot_gpio_eg_update_data_in(s);
@@ -794,6 +793,9 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
     s->pull_sel = 0;
     s->invert = 0;
     s->connected = 0;
+    s->force_en = 0;
+    s->force_oe = 0;
+    s->force_out = 0;
 
     s->regs[R_DATA_IN] = s->reset_in;
     s->regs[R_DIRECT_OUT] = s->reset_out;
