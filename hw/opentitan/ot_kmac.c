@@ -474,7 +474,8 @@ static void ot_kmac_cancel_bh(OtKMACState *s)
 
 static void ot_kmac_update_irq(OtKMACState *s)
 {
-    uint32_t level = s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE];
+    uint32_t state = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+    uint32_t level = state & s->regs[R_INTR_ENABLE];
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->irqs); ix++) {
         ibex_irq_set(&s->irqs[ix], (int)((level >> ix) & 0x1u));
     }
@@ -671,6 +672,7 @@ static void ot_kmac_return_to_idle(OtKMACState *s)
 {
     /* flush state */
     ot_kmac_change_fsm_state(s, KMAC_ST_IDLE);
+    s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
     ot_kmac_reset_state(s);
     ot_kmac_cancel_bh(s);
     /* now is a good time to check for pending app requests */
@@ -794,6 +796,7 @@ static void ot_kmac_process(void *opaque)
 
             /* assert KMAC Done interrupt */
             s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
+            s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
         }
 
         break;
@@ -1269,6 +1272,8 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->entropy_refresh_threshold);
         break;
     case R_INTR_STATE:
+        val32 = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+        break;
     case R_INTR_ENABLE:
     case R_ENTROPY_PERIOD:
     case R_ENTROPY_REFRESH_HASH_CNT:
@@ -1358,7 +1363,7 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs[R_INTR_STATE] &= ~(val32 & INTR_MASK);
+        s->regs[R_INTR_STATE] &= ~(val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK));
         ot_kmac_update_irq(s);
         break;
     case R_INTR_ENABLE:
@@ -1366,7 +1371,8 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         ot_kmac_update_irq(s);
         break;
     case R_INTR_TEST:
-        s->regs[R_INTR_STATE] |= val32 & INTR_MASK;
+        s->regs[R_INTR_TEST] = val32 & INTR_FIFO_EMPTY_MASK;
+        s->regs[R_INTR_STATE] |= val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK);
         ot_kmac_update_irq(s);
         break;
     case R_ALERT_TEST:

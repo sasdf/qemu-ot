@@ -741,6 +741,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             IBEX_DEV_BOOL_PROP("warn-once", true)
         ),
         .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 122),
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(1, PLIC, 123),
             OT_EG_SOC_GPIO_ALERT(0, 9)
         )
     },
@@ -1028,11 +1030,13 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "sysrst_ctrl"),
             IBEX_DEV_UINT_PROP("size", 0x100u),
+            IBEX_DEV_UINT_PROP("irq-ro-mask", 0x1u),
             IBEX_DEV_UINT_PROP("irq-count", 1u),
             IBEX_DEV_UINT_PROP("alert-count", 1u),
             IBEX_DEV_BOOL_PROP("warn-once", true)
         ),
         .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 154),
             OT_EG_SOC_GPIO_ALERT(0, 27)
         )
     },
@@ -1045,11 +1049,13 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "adc_ctrl"),
             IBEX_DEV_UINT_PROP("size", 0x80u),
+            IBEX_DEV_UINT_PROP("irq-ro-mask", 0x1u),
             IBEX_DEV_UINT_PROP("irq-count", 1u),
             IBEX_DEV_UINT_PROP("alert-count", 1u),
             IBEX_DEV_BOOL_PROP("warn-once", true)
         ),
         .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 155),
             OT_EG_SOC_GPIO_ALERT(0, 28)
         )
     },
@@ -1115,6 +1121,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             { .base = 0x40490000u }
         ),
         .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 158),
+            OT_EG_SOC_GPIO_SYSBUS_IRQ(1, PLIC, 159),
             OT_EG_SOC_GPIO_ALERT(0, 32),
             OT_EG_SOC_GPIO_ALERT(1, 33)
         ),

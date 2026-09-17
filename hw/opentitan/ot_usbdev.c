@@ -263,10 +263,12 @@ REG32(COUNT_ERRORS, 0xa8u)
      USBDEV_INTR_FRAME_MASK | USBDEV_INTR_POWERED_MASK | \
      USBDEV_INTR_LINK_OUT_ERR_MASK)
 
-#define USBDEV_INTR_MASK \
-    (USBDEV_INTR_RW1C_MASK | USBDEV_INTR_PKT_RECEIVED_MASK | \
-     USBDEV_INTR_PKT_SENT_MASK | USBDEV_INTR_AV_OUT_EMPTY_MASK | \
-     USBDEV_INTR_RX_FULL_MASK | USBDEV_INTR_AV_SETUP_EMPTY_MASK)
+#define USBDEV_INTR_STATUS_MASK \
+    (USBDEV_INTR_PKT_RECEIVED_MASK | USBDEV_INTR_PKT_SENT_MASK | \
+     USBDEV_INTR_AV_OUT_EMPTY_MASK | USBDEV_INTR_RX_FULL_MASK | \
+     USBDEV_INTR_AV_SETUP_EMPTY_MASK)
+
+#define USBDEV_INTR_MASK (USBDEV_INTR_RW1C_MASK | USBDEV_INTR_STATUS_MASK)
 
 #define USBDEV_USBCTRL_R_MASK \
     (R_USBCTRL_ENABLE_MASK | R_USBCTRL_DEVICE_ADDRESS_MASK)
@@ -706,7 +708,9 @@ static void ot_usbdev_update_status_irqs(OtUsbdevState *s)
      * @todo The BFM says that 'Disconnected' is held at 1 during IP
      * reset, need to investigate this detail.
      */
-    s->regs[R_USBDEV_INTR_STATE] |= set_mask;
+    s->regs[R_USBDEV_INTR_STATE] =
+        (s->regs[R_USBDEV_INTR_STATE] & ~USBDEV_INTR_STATUS_MASK) | set_mask |
+        (s->regs[R_USBDEV_INTR_TEST] & USBDEV_INTR_STATUS_MASK);
 }
 
 /*
@@ -1974,7 +1978,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_USBDEV_INTR_TEST:
         val32 &= USBDEV_INTR_MASK;
-        s->regs[R_USBDEV_INTR_STATE] |= val32;
+        s->regs[R_USBDEV_INTR_STATE] |= val32 & USBDEV_INTR_RW1C_MASK;
+        s->regs[R_USBDEV_INTR_TEST] = val32 & USBDEV_INTR_STATUS_MASK;
         ot_usbdev_update_irqs(s);
         break;
     case R_ALERT_TEST:

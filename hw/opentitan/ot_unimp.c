@@ -85,7 +85,8 @@ static inline hwaddr ot_unimp_alert_test_reg(const OtUnimpState *s)
 
 static void ot_unimp_update_irqs(OtUnimpState *s)
 {
-    uint32_t level = s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE];
+    uint32_t level = (s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST]) &
+                     s->regs[R_INTR_ENABLE];
 
     for (unsigned ix = 0; ix < s->irq_count; ix++) {
         int lvl = (int)((level >> ix) & 0x1u);
@@ -119,6 +120,7 @@ static uint64_t ot_unimp_io_read(void *opaque, hwaddr addr, unsigned size)
     if (s->irq_count) {
         switch (reg) {
         case R_INTR_STATE:
+            return s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
         case R_INTR_ENABLE:
             return s->regs[reg];
         case R_INTR_TEST:
@@ -179,7 +181,8 @@ static void ot_unimp_io_write(void *opaque, hwaddr addr, uint64_t value,
             return;
         case R_INTR_TEST:
             val32 &= (1u << s->irq_count) - 1u;
-            s->regs[R_INTR_STATE] |= val32;
+            s->regs[R_INTR_STATE] |= val32 & ~s->irq_ro_mask;
+            s->regs[R_INTR_TEST] = val32 & s->irq_ro_mask;
             ot_unimp_update_irqs(s);
             return;
         default:

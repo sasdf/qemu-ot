@@ -790,7 +790,8 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
 
 static void ot_spi_device_update_irqs(OtSPIDeviceState *s)
 {
-    uint32_t levels = s->spi_regs[R_INTR_STATE] & s->spi_regs[R_INTR_ENABLE];
+    uint32_t state = s->spi_regs[R_INTR_STATE] | s->spi_regs[R_INTR_TEST];
+    uint32_t levels = state & s->spi_regs[R_INTR_ENABLE];
     for (unsigned ix = 0; ix < PARAM_NUM_IRQS; ix++) {
         bool level = (bool)((levels >> ix) & 0x1u);
         if (level != (bool)ibex_irq_get_level(&s->irqs[ix])) {
@@ -1922,6 +1923,8 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_INTR_STATE:
+        val32 = s->spi_regs[R_INTR_STATE] | s->spi_regs[R_INTR_TEST];
+        break;
     case R_INTR_ENABLE:
     case R_CONTROL:
     case R_CFG:
@@ -2065,7 +2068,8 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
         break;
     case R_INTR_TEST:
         val32 &= INTR_MASK;
-        s->spi_regs[R_INTR_STATE] |= val32;
+        s->spi_regs[R_INTR_TEST] = val32 & INTR_TPM_HEADER_NOT_EMPTY_MASK;
+        s->spi_regs[R_INTR_STATE] |= val32 & ~INTR_TPM_HEADER_NOT_EMPTY_MASK;
         ot_spi_device_update_irqs(s);
         break;
     case R_ALERT_TEST:

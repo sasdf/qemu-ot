@@ -709,7 +709,6 @@ static bool ot_spi_host_update_event(OtSPIHostState *s)
 
     bool event = (bool)eff_events;
     event |= (bool)(s->regs[R_INTR_TEST] & INTR_SPI_EVENT_MASK);
-    s->regs[R_INTR_TEST] &= ~INTR_SPI_EVENT_MASK;
     if (event) {
         s->regs[R_INTR_STATE] |= INTR_SPI_EVENT_MASK;
     } else {

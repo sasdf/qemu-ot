@@ -257,7 +257,8 @@ static uint32_t ot_uart_status_intr_bits(OtUARTState *s)
 static uint32_t ot_uart_intr_state(OtUARTState *s)
 {
     return (s->regs[R_INTR_STATE] & ~INTR_STATUS_MASK) |
-           ot_uart_status_intr_bits(s);
+           ot_uart_status_intr_bits(s) |
+           (s->regs[R_INTR_TEST] & INTR_STATUS_MASK);
 }
 
 static void ot_uart_update_irqs(OtUARTState *s)
@@ -630,7 +631,8 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_INTR_TEST:
         val32 &= INTR_MASK;
-        s->regs[R_INTR_STATE] |= val32;
+        s->regs[R_INTR_STATE] |= val32 & ~INTR_STATUS_MASK;
+        s->regs[R_INTR_TEST] = val32 & INTR_STATUS_MASK;
         ot_uart_update_irqs(s);
         break;
     case R_ALERT_TEST:
