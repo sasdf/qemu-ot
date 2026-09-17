@@ -345,6 +345,22 @@ static void ot_pinmux_eg_sleep_en(void *opaque, int irq, int level)
     }
 }
 
+uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad)
+{
+    if (!s || !s->regs || mio_pad >= PARAM_N_MIO_PADS) {
+        return 0;
+    }
+    return s->regs->mio_outsel[mio_pad];
+}
+
+uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in)
+{
+    if (!s || !s->regs || periph_in >= PARAM_N_MIO_PERIPH_IN) {
+        return 0;
+    }
+    return s->regs->mio_periph_insel[periph_in];
+}
+
 static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
 {
     for (unsigned i = 0; i < 6u; i++) {

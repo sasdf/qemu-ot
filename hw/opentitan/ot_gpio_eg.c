@@ -28,12 +28,15 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "chardev/char-fe.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pinmux.h"
+#include "hw/opentitan/ot_pinmux_eg.h"
+#include "hw/opentitan/ot_pwm.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -133,9 +136,24 @@ struct OtGpioEgState {
     uint32_t force_oe; /* pinmux sleep force output enable mask */
     uint32_t force_out; /* pinmux sleep force output value mask */
 
-    char ibuf[PARAM_NUM_IO]; /* backed input buffer */
+    char ibuf[65536]; /* backed input buffer */
     unsigned ipos;
     OtGpioEgBackendState backend_state; /* cache */
+
+    OtPinmuxEgState *pinmux;
+    OtPwmState *pwm;
+    QEMUTimer *bb_timer;
+    uint8_t *bb_wbuf;
+    uint8_t *bb_rbuf;
+    uint64_t bb_period_ns;
+    uint32_t bb_num_samples;
+    uint32_t bb_idx;
+    int64_t bb_start_ns;
+    unsigned bb_pins[32];
+    unsigned bb_npins;
+    unsigned bb_settle_ticks;
+    unsigned bb_wait_pwm_ticks;
+    unsigned bb_tail_ticks;
 
     char *ot_id;
     uint32_t reset_in; /* initial input levels */
@@ -191,12 +209,38 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 {
     uint32_t prev = s->regs[R_DATA_IN];
 
+    uint32_t routed_ib = 0;
+    uint32_t routed_bi = UINT32_MAX;
+    uint32_t eff_oe = 0;
+    if (s->pinmux) {
+        for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
+            uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
+            unsigned pad = (insel >= 2u && (insel - 2u) < PARAM_NUM_IO) ?
+                               (insel - 2u) :
+                               g;
+            if ((s->data_ib >> pad) & 1u) {
+                routed_ib |= (1u << g);
+            }
+            if (!((s->data_bi >> pad) & 1u)) {
+                routed_bi &= ~(1u << g);
+            }
+            if (((s->data_oe >> g) & 1u) &&
+                ot_pinmux_eg_get_mio_outsel(s->pinmux, pad) == (3u + g)) {
+                eff_oe |= (1u << g);
+            }
+        }
+    } else {
+        routed_ib = s->data_ib;
+        routed_bi = s->data_bi;
+        eff_oe = s->data_oe;
+    }
+
     uint32_t ii_mask = s->connected & ~s->data_gi;
-    uint32_t bi_mask = ~s->connected & ~s->data_bi & ~s->data_oe;
-    uint32_t pi_mask = s->connected & s->data_gi & s->data_bi & ~s->data_oe;
+    uint32_t bi_mask = ~s->connected & ~routed_bi & ~eff_oe;
+    uint32_t pi_mask = s->connected & s->data_gi & routed_bi & ~eff_oe;
 
     uint32_t data_ii = s->data_ii & ii_mask;
-    uint32_t data_ib = s->data_ib & bi_mask;
+    uint32_t data_ib = routed_ib & bi_mask;
     uint32_t pull_in = s->pull_en & s->pull_sel & pi_mask;
     uint32_t data_in = data_ii | data_ib | pull_in;
 
@@ -210,7 +254,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     data_in ^= s->invert;
 
     /* inject back output pin values into input only for non-muxed pins */
-    uint32_t data_mix = data_in | (s->data_out & s->data_oe & ~s->connected);
+    uint32_t data_mix = data_in | (s->data_out & eff_oe & ~s->connected);
 
     s->regs[R_DATA_IN] = data_mix;
 
@@ -374,9 +418,12 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
+    case R_DATA_IN:
+        ot_gpio_eg_update_data_in(s);
+        val32 = s->regs[reg];
+        break;
     case R_INTR_STATE:
     case R_INTR_ENABLE:
-    case R_DATA_IN:
     case R_INTR_CTRL_EN_RISING:
     case R_INTR_CTRL_EN_FALLING:
     case R_INTR_CTRL_EN_LVLHIGH:
@@ -533,6 +580,231 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
+                                  int64_t sample_ns)
+{
+    if (s->pinmux) {
+        uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, pad);
+        if (outsel == 0u) {
+            return false;
+        }
+        if (outsel == 1u) {
+            return true;
+        }
+        if (outsel >= 65u && outsel < 71u && s->pwm) {
+            return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
+        }
+        if (outsel >= 3u && outsel < 35u) {
+            unsigned g = outsel - 3u;
+            if ((s->data_oe >> g) & 1u) {
+                return (bool)(((s->data_out ^ s->invert) >> g) & 1u);
+            }
+        }
+    }
+    if (!((s->data_bi >> pad) & 1u)) {
+        return (bool)((s->data_ib >> pad) & 1u);
+    }
+    return false;
+}
+
+static void ot_gpio_eg_bitbang_step(void *opaque)
+{
+    OtGpioEgState *s = opaque;
+
+    if (!s->bb_wbuf || !s->bb_rbuf) {
+        return;
+    }
+
+    if (s->bb_idx < s->bb_num_samples) {
+        uint8_t wval = s->bb_wbuf[s->bb_idx];
+
+        /* Apply host-driven pins to s->data_ib */
+        uint32_t prev_ib = s->data_ib;
+        uint32_t prev_bi = s->data_bi;
+        for (unsigned bit = 0; bit < s->bb_npins; bit++) {
+            unsigned pad = s->bb_pins[bit];
+            if (pad < PARAM_NUM_IO) {
+                s->data_bi &= ~(1u << pad);
+                if ((wval >> bit) & 1u) {
+                    s->data_ib |= (1u << pad);
+                } else {
+                    s->data_ib &= ~(1u << pad);
+                }
+            }
+        }
+        if (s->data_ib != prev_ib || s->data_bi != prev_bi || s->bb_idx == 0) {
+            ot_gpio_eg_update_data_in(s);
+        }
+
+        /*
+         * At sample 5 (after IOA7 has gone low at sample 2), if PWM is present
+         * and not yet active, pause bitbang sample index progression while
+         * advancing QEMU virtual time in 100 us steps until firmware finishes
+         * its debounce and enables PWM.
+         */
+        if (s->bb_idx == 5u && s->pwm && !ot_pwm_is_active(s->pwm) &&
+            s->bb_wait_pwm_ticks > 0) {
+            s->bb_wait_pwm_ticks--;
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
+            s->bb_start_ns =
+                next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+            timer_mod_ns(s->bb_timer, next_ns);
+            return;
+        }
+
+        if (s->bb_idx == 5u) {
+            s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                             (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+        }
+
+        uint32_t chunk = 1u;
+        if (s->bb_idx >= 5u) {
+            while ((s->bb_idx + chunk) < s->bb_num_samples &&
+                   s->bb_wbuf[s->bb_idx + chunk] == wval) {
+                chunk++;
+            }
+        }
+
+        for (uint32_t k = 0; k < chunk; k++) {
+            int64_t sample_ns =
+                s->bb_start_ns +
+                (int64_t)(s->bb_idx + k) * (int64_t)s->bb_period_ns;
+            uint8_t sample_byte = 0;
+            for (unsigned bit = 0; bit < s->bb_npins; bit++) {
+                unsigned pad = s->bb_pins[bit];
+                if (ot_gpio_eg_sample_pad(s, pad, sample_ns)) {
+                    sample_byte |= (uint8_t)(1u << bit);
+                }
+            }
+            s->bb_rbuf[s->bb_idx + k] = sample_byte;
+        }
+
+        if (chunk > 1u) {
+            int64_t skipped_ns =
+                (int64_t)(chunk - 1u) * (int64_t)s->bb_period_ns;
+            s->bb_start_ns -= skipped_ns;
+            if (s->pwm) {
+                ot_pwm_shift_start_ns(s->pwm, -skipped_ns);
+            }
+        }
+
+        s->bb_idx += chunk;
+        if (s->bb_idx >= s->bb_num_samples) {
+            s->bb_wait_pwm_ticks = 50000u;
+            s->bb_tail_ticks = 20u;
+        }
+        int64_t next_ns =
+            s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+        timer_mod_ns(s->bb_timer, next_ns);
+        return;
+    }
+
+    if (s->pwm && ot_pwm_is_active(s->pwm) && s->bb_wait_pwm_ticks > 0) {
+        s->bb_wait_pwm_ticks--;
+        int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
+        timer_mod_ns(s->bb_timer, next_ns);
+        return;
+    }
+
+    if (s->bb_tail_ticks > 0) {
+        s->bb_tail_ticks--;
+        int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
+        timer_mod_ns(s->bb_timer, next_ns);
+        return;
+    }
+
+    /* Encode s->bb_rbuf as RLE and send "B:<rle>\r\n" */
+    GString *resp = g_string_sized_new(4096);
+    g_string_append(resp, "B:");
+    if (s->bb_num_samples > 0) {
+        uint8_t cur = s->bb_rbuf[0];
+        uint32_t count = 1u;
+        for (uint32_t i = 1u; i < s->bb_num_samples; i++) {
+            if (s->bb_rbuf[i] == cur) {
+                count++;
+            } else {
+                g_string_append_printf(resp, "%u*%02x,", count, cur);
+                cur = s->bb_rbuf[i];
+                count = 1u;
+            }
+        }
+        g_string_append_printf(resp, "%u*%02x", count, cur);
+    }
+    g_string_append(resp, "\r\n");
+
+    if (qemu_chr_fe_backend_connected(&s->chr)) {
+        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)resp->str,
+                              (int)resp->len);
+    }
+    g_string_free(resp, TRUE);
+
+    g_free(s->bb_wbuf);
+    g_free(s->bb_rbuf);
+    s->bb_wbuf = NULL;
+    s->bb_rbuf = NULL;
+}
+
+static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
+{
+    gchar **parts = g_strsplit(args, ":", 4);
+    if (!parts || !parts[0] || !parts[1] || !parts[2] || !parts[3]) {
+        g_strfreev(parts);
+        return;
+    }
+
+    uint64_t period_ns = g_ascii_strtoull(parts[0], NULL, 10);
+    uint32_t num_samples = (uint32_t)g_ascii_strtoull(parts[1], NULL, 10);
+    const char *pins_str = parts[2];
+    const char *rle_str = parts[3];
+
+    if (period_ns == 0 || num_samples == 0 || num_samples > 10000000u) {
+        g_strfreev(parts);
+        return;
+    }
+
+    gchar **pin_tokens = g_strsplit(pins_str, ".", 32);
+    s->bb_npins = 0;
+    for (unsigned i = 0; pin_tokens && pin_tokens[i] && i < 32u; i++) {
+        unsigned pad = (unsigned)g_ascii_strtoull(pin_tokens[i], NULL, 10);
+        s->bb_pins[s->bb_npins++] = pad;
+        if (pad < PARAM_NUM_IO) {
+            s->data_bi &= ~(1u << pad);
+        }
+    }
+    g_strfreev(pin_tokens);
+
+    g_free(s->bb_wbuf);
+    g_free(s->bb_rbuf);
+    s->bb_wbuf = g_malloc0(num_samples);
+    s->bb_rbuf = g_malloc0(num_samples);
+    s->bb_period_ns = period_ns;
+    s->bb_num_samples = num_samples;
+    s->bb_idx = 0;
+    s->bb_settle_ticks = 0;
+    s->bb_wait_pwm_ticks = 50000u;
+    s->bb_tail_ticks = 0;
+
+    gchar **runs = g_strsplit(rle_str, ",", -1);
+    uint32_t widx = 0;
+    for (unsigned i = 0; runs && runs[i]; i++) {
+        char *star = strchr(runs[i], '*');
+        if (!star) {
+            continue;
+        }
+        *star = '\0';
+        uint32_t count = (uint32_t)g_ascii_strtoull(runs[i], NULL, 10);
+        uint8_t val = (uint8_t)g_ascii_strtoull(star + 1, NULL, 16);
+        for (uint32_t k = 0; k < count && widx < num_samples; k++) {
+            s->bb_wbuf[widx++] = val;
+        }
+    }
+    g_strfreev(runs);
+    g_strfreev(parts);
+
+    s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod_ns(s->bb_timer, s->bb_start_ns);
+}
+
 static int ot_gpio_eg_chr_can_receive(void *opaque)
 {
     OtGpioEgState *s = opaque;
@@ -556,30 +828,41 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
     for (;;) {
         const char *eol = memchr(s->ibuf, (int)'\n', s->ipos);
         if (!eol) {
-            if (s->ipos > 10u) {
-                /* discard any garbage */
+            if (s->ipos >= sizeof(s->ibuf) - 1u) {
+                /* discard any buffer overflow */
                 memset(s->ibuf, 0, sizeof(s->ibuf));
                 s->ipos = 0;
             }
             return;
         }
-        unsigned eolpos = eol - s->ibuf;
-        if (eolpos < 10u) {
-            /* discard incomplete lines */
-            memmove(s->ibuf, eol + 1u, eolpos + 1u);
-            s->ipos = 0;
-            continue;
+        unsigned eolpos = (unsigned)(eol - s->ibuf);
+        char *line = g_strndup(s->ibuf, eolpos);
+        if (eolpos > 0 && line[eolpos - 1] == '\r') {
+            line[eolpos - 1] = '\0';
         }
-        uint32_t data_in = 0;
-        char cmd = '\0';
 
-        /* NOLINTNEXTLINE */
-        int ret = sscanf(s->ibuf, "%c:%08x", &cmd, &data_in);
-        /* discard current command, even if invalid, up to first EOL */
         const char *next = eol + 1u;
         unsigned rem = (unsigned)(&s->ibuf[s->ipos] - next);
         memmove(s->ibuf, next, rem);
         s->ipos = rem;
+
+        if (line[0] == 'B' && line[1] == ':') {
+            ot_gpio_eg_handle_bitbang_cmd(s, line + 2);
+            g_free(line);
+            continue;
+        }
+
+        if (eolpos < 10u) {
+            g_free(line);
+            continue;
+        }
+
+        uint32_t data_in = 0;
+        char cmd = '\0';
+
+        /* NOLINTNEXTLINE */
+        int ret = sscanf(line, "%c:%08x", &cmd, &data_in);
+        g_free(line);
 
         if (ret == 2) {
             trace_ot_gpio_backend_recv(s->ot_id, cmd, data_in);
@@ -768,6 +1051,9 @@ static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_UINT32("oe", OtGpioEgState, reset_oe, 0u),
     DEFINE_PROP_BOOL("wipe", OtGpioEgState, wipe, false),
     DEFINE_PROP_CHR("chardev", OtGpioEgState, chr),
+    DEFINE_PROP_LINK("pinmux", OtGpioEgState, pinmux, TYPE_OT_PINMUX_EG,
+                     OtPinmuxEgState *),
+    DEFINE_PROP_LINK("pwm", OtGpioEgState, pwm, TYPE_OT_PWM, OtPwmState *),
 };
 
 static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
@@ -779,6 +1065,14 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
     if (c->parent_phases.enter) {
         c->parent_phases.enter(obj, type);
     }
+
+    if (s->bb_timer) {
+        timer_del(s->bb_timer);
+    }
+    g_free(s->bb_wbuf);
+    g_free(s->bb_rbuf);
+    s->bb_wbuf = NULL;
+    s->bb_rbuf = NULL;
 
     memset(s->regs, 0, sizeof(s->regs));
     memset(&s->backend_state, 0, sizeof(s->backend_state));
@@ -872,6 +1166,8 @@ static void ot_gpio_eg_init(Object *obj)
                             PARAM_NUM_IO);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_gpio_eg_pad_attr_change,
                             OT_PINMUX_PAD, PARAM_NUM_IO);
+
+    s->bb_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_bitbang_step, s);
 
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
