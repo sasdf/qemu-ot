@@ -1435,6 +1435,33 @@ static bool ot_flash_data_ecc_enabled(const OtFlashState *s, unsigned address)
            OT_MULTIBITBOOL4_TRUE;
 }
 
+static bool
+ot_flash_data_scramble_enabled(const OtFlashState *s, unsigned address)
+{
+    unsigned page = address / BYTES_PER_PAGE;
+    for (unsigned region = 0u; region < NUM_REGIONS; region++) {
+        unsigned r_region_cfg = R_MP_REGION_CFG_0 + region;
+        if (SHARED_FIELD_EX32(s->regs[r_region_cfg], MP_REGION_CFG_EN) !=
+            OT_MULTIBITBOOL4_TRUE) {
+            continue;
+        }
+        unsigned r_region = R_MP_REGION_0 + region;
+        unsigned region_base_page =
+            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_BASE);
+        unsigned region_size =
+            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_SIZE);
+        if (page < region_base_page ||
+            page >= (region_base_page + region_size)) {
+            continue;
+        }
+        return SHARED_FIELD_EX32(s->regs[r_region_cfg],
+                                 MP_REGION_CFG_SCRAMBLE_EN) ==
+               OT_MULTIBITBOOL4_TRUE;
+    }
+    return FIELD_EX32(s->regs[R_DEFAULT_REGION], DEFAULT_REGION, SCRAMBLE_EN) ==
+           OT_MULTIBITBOOL4_TRUE;
+}
+
 static bool ot_flash_is_ecc_corrupted(const OtFlashState *s, hwaddr address)
 {
     hwaddr aligned_offset = address & ~7ULL;
@@ -1859,15 +1886,24 @@ static void ot_flash_op_prog(OtFlashState *s)
                  ((s->op.info_part ? storage->info_size : storage->data_size) *
                   storage->bank_count));
         uint32_t prev_word = dest[word_address];
+        dest[word_address] &= word;
         if (!s->op.info_part && word_address < storage->total_data_words) {
-            if (test_bit(word_address, storage->word_prog_bm) &&
-                word != prev_word &&
-                ot_flash_data_ecc_enabled(s, address)) {
+            bool scrambled = ot_flash_data_scramble_enabled(s, address);
+            unsigned aligned_word = word_address & ~1u;
+            bool both_zero = (dest[aligned_word] == 0u) &&
+                             (dest[aligned_word + 1u] == 0u);
+            if (both_zero && !scrambled) {
+                ot_flash_clear_ecc_faults_range(s, address & ~7ULL, 8u);
+            } else if (test_bit(word_address, storage->word_prog_bm) &&
+                       word != prev_word &&
+                       (word != 0u || scrambled) &&
+                       ot_flash_data_ecc_enabled(s, address)) {
                 ot_flash_add_ecc_fault(s, address);
             }
-            set_bit(word_address, storage->word_prog_bm);
+            if (word != 0xFFFFFFFFu || scrambled) {
+                set_bit(word_address, storage->word_prog_bm);
+            }
         }
-        dest[word_address] &= word;
         if (s->op.info_part) {
             unsigned info_page_idx = address / BYTES_PER_PAGE;
             if (info_page_idx < 32u) {
