@@ -2184,6 +2184,21 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
         qdev_realize_and_unref(stretch, i2cbus, &error_fatal);
         g_free(stretch_name);
 
+        /* PMOD I2C Sensor devices (Power Monitor, Accelerometer, ALS, Compass, HDC1080, SGP30) */
+        static const uint8_t pmod_sensor_addrs[] = {
+            0x10u, 0x1du, 0x29u, 0x30u, 0x40u, 0x59u
+        };
+        for (size_t s_idx = 0; s_idx < ARRAY_SIZE(pmod_sensor_addrs); s_idx++) {
+            DeviceState *sensor = qdev_new("pmod-i2c-sensor");
+            qdev_prop_set_uint8(sensor, "address", pmod_sensor_addrs[s_idx]);
+            char *sensor_name = g_strdup_printf("pmod-sensor%u-%02x", i2c_idx,
+                                                pmod_sensor_addrs[s_idx]);
+            object_property_add_child(OBJECT(board), sensor_name,
+                                      OBJECT(sensor));
+            qdev_realize_and_unref(sensor, i2cbus, &error_fatal);
+            g_free(sensor_name);
+        }
+
         g_free(busname);
     }
 }

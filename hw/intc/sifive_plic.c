@@ -91,6 +91,11 @@ static void sifive_plic_set_claimed(SiFivePLICState *plic, int irq, bool level)
     }
 }
 
+static bool sifive_plic_is_claimed(SiFivePLICState *plic, int irq)
+{
+    return (plic->claimed[irq >> 5] & (1 << (irq & 31))) != 0;
+}
+
 static uint32_t sifive_plic_claimed(SiFivePLICState *plic, uint32_t addrid)
 {
     uint32_t max_irq = 0;
@@ -269,8 +274,14 @@ static void sifive_plic_write(void *opaque, hwaddr addr, uint64_t value,
             }
         } else if (contextid == 4) {
             if (value < plic->num_sources) {
-                sifive_plic_set_claimed(plic, value, false);
-                sifive_plic_update(plic);
+                if (sifive_plic_is_claimed(plic, value)) {
+                    sifive_plic_set_claimed(plic, value, false);
+                    if (!plic->edge_triggered &&
+                        sifive_plic_get_level(plic, value)) {
+                        sifive_plic_set_pending(plic, value, true);
+                    }
+                    sifive_plic_update(plic);
+                }
             }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -383,11 +394,14 @@ static void sifive_plic_irq_request(void *opaque, int irq, int level)
 
     if (s->edge_triggered) {
         if (level && !sifive_plic_get_level(s, irq)) {
-            sifive_plic_set_pending(s, irq, true);
+            if (!sifive_plic_is_claimed(s, irq)) {
+                sifive_plic_set_pending(s, irq, true);
+            }
         }
         sifive_plic_set_level(s, irq, !!level);
     } else {
-        if (level > 0) {
+        sifive_plic_set_level(s, irq, !!level);
+        if (level > 0 && !sifive_plic_is_claimed(s, irq)) {
             sifive_plic_set_pending(s, irq, true);
         }
     }
