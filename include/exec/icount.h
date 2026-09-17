@@ -55,6 +55,7 @@ int64_t icount_get(void);
  * runtime in adaptive mode.
  */
 int64_t icount_to_ns(int64_t icount);
+void icount_set_clock_freq(uint64_t freq_hz);
 
 /**
  * icount_configure: configure the icount options, including "shift"
