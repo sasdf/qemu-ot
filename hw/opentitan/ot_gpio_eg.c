@@ -1607,7 +1607,7 @@ static void ot_gpio_eg_init(Object *obj)
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
     s->data_bi = UINT32_MAX;
-    s->host_pull = 0u;
+    s->host_pull = (1u << 7);
     ot_gpio_eg_instance = s;
 }
 
