@@ -158,6 +158,16 @@ static void ot_sysrst_ctrl_get_inverted(const OtSysrstCtrlState *s,
 
 static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
 {
+    bool intr_event_status = (s->regs[R_ULP_STATUS] |
+                              s->regs[R_COMBO_INTR_STATUS] |
+                              s->regs[R_KEY_INTR_STATUS]) != 0;
+    bool test_q = (s->regs[R_INTR_TEST] & 1u) != 0;
+    if (intr_event_status || test_q) {
+        s->regs[R_INTR_STATE] |= R_INTR_STATE_EVENT_DETECTED_MASK;
+    } else {
+        s->regs[R_INTR_STATE] &= ~R_INTR_STATE_EVENT_DETECTED_MASK;
+    }
+
     bool irq_level = (s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE]) != 0;
     ibex_irq_set(&s->irq, (int)irq_level);
 
@@ -206,7 +216,6 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
             }
             if (out_ctl & R_COM_OUT_CTL_0_INTERRUPT_MASK) {
                 s->regs[R_COMBO_INTR_STATUS] |= (1u << k);
-                s->regs[R_INTR_STATE] |= R_INTR_STATE_EVENT_DETECTED_MASK;
                 s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
             }
         }
@@ -218,7 +227,6 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
     uint32_t active_events = key_events & (s->regs[R_KEY_INTR_CTL] & 0x3fffu);
     if (active_events) {
         s->regs[R_KEY_INTR_STATUS] |= active_events;
-        s->regs[R_INTR_STATE] |= R_INTR_STATE_EVENT_DETECTED_MASK;
         s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
     }
 
@@ -239,6 +247,10 @@ static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
     if (reg >= REGS_COUNT) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
                       (uint32_t)addr);
+        return 0;
+    }
+
+    if (reg == R_INTR_TEST || reg == R_ALERT_TEST) {
         return 0;
     }
 
@@ -265,18 +277,15 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs[R_INTR_STATE] &= ~(val32 & 1u);
-        ot_sysrst_ctrl_update_outputs(s);
+        /* INTR_STATE is RO (Status-type interrupt) */
         break;
     case R_INTR_ENABLE:
         s->regs[R_INTR_ENABLE] = val32 & 1u;
         ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_INTR_TEST:
-        if (val32 & 1u) {
-            s->regs[R_INTR_STATE] |= 1u;
-            ot_sysrst_ctrl_update_outputs(s);
-        }
+        s->regs[R_INTR_TEST] = val32 & 1u;
+        ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_ALERT_TEST:
         if (val32 & 1u) {
@@ -291,6 +300,7 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_COMBO_INTR_STATUS:
     case R_KEY_INTR_STATUS:
         s->regs[reg] &= ~val32;
+        ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_WKUP_STATUS:
         s->regs[R_WKUP_STATUS] &= ~(val32 & 1u);
