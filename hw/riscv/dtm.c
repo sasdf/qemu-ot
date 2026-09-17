@@ -507,6 +507,13 @@ static void riscv_dtm_reset_enter(Object *obj, ResetType type)
     RISCVDTMClass *c = RISCV_DTM_GET_CLASS(obj);
     RISCVDTMState *s = RISCV_DTM(obj);
 
+    RISCVDebugModule *dm;
+    QLIST_FOREACH(dm, &s->dms, entry) {
+        if (dm->dev && dm->dev->in_ndmreset) {
+            return;
+        }
+    }
+
     if (c->parent_phases.enter) {
         c->parent_phases.enter(obj, type);
     }

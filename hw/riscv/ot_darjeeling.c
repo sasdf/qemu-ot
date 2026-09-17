@@ -536,6 +536,10 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
     [OT_DJ_SOC_DEV_DM] = {
         .type = TYPE_RISCV_DM,
         .cfg = &ot_dj_soc_dm_configure,
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_DJ_SOC_SIGNAL(RISCV_DM_NDMRESET_LINE, 0, PWRMGR,
+                             OT_PWRMGR_NDM_RST, 0)
+        ),
         .link = IBEXDEVICELINKDEFS(
             OT_DJ_SOC_DEVLINK("dtm", DTM)
         ),

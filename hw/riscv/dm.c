@@ -61,6 +61,7 @@
 #include "hw/riscv/debug.h"
 #include "hw/riscv/dm.h"
 #include "hw/riscv/dtm.h"
+#include "hw/riscv/ibex_irq.h"
 #include "system/hw_accel.h"
 #include "system/runstate.h"
 #include "target/riscv/cpu.h"
@@ -344,6 +345,7 @@ struct RISCVDMState {
     bool cmd_busy; /* A command is being executed */
     bool dtm_ok; /* DTM is available */
     bool in_ndmreset; /* System reset triggered by DMCONTROL.ndmreset */
+    IbexIRQ ndmreset;
 
     /* config */
     RISCVDTMState *dtm;
@@ -1343,6 +1345,8 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
 
     if (cur_ndmreset) {
         dm->in_ndmreset = true;
+        RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
+        ibex_irq_set(&dm->ndmreset, 1);
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
             RISCVDMHartState *hart = &dm->harts[ix];
             CPUState *cs = CPU(hart->cpu);
@@ -1351,12 +1355,17 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             dm->unavailable_bm |= 1u << ix;
             hart->halted = false;
             hart->resumed = false;
-            hart->have_reset = true;
         }
     } else if (prev_ndmreset) {
         dm->in_ndmreset = true;
-        qemu_system_reset(SHUTDOWN_CAUSE_GUEST_RESET);
+        RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
+        if (ibex_irq_is_connected(&dm->ndmreset)) {
+            ibex_irq_set(&dm->ndmreset, 0);
+        } else {
+            qemu_system_reset(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
         dm->in_ndmreset = false;
+        RISCV_DEBUG_DEVICE(dm)->in_ndmreset = false;
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
             RISCVDMHartState *hart = &dm->harts[ix];
             uint64_t hartbit = 1u << ix;
@@ -1567,6 +1576,10 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "nonexistent");
             continue;
         }
+        if (hart->have_reset) {
+            trace_riscv_dm_status(dm->soc, cs->cpu_index, "have reset");
+            havereset += 1;
+        }
         /*
          * The hart may have been started since last poll. There is no way
          * for the hart to inform the DM in this case, so rely on polling
@@ -1610,10 +1623,6 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
         if (hart->resumed) {
             resumeack += 1;
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "resumed");
-        }
-        if (hart->have_reset) {
-            trace_riscv_dm_status(dm->soc, cs->cpu_index, "have reset");
-            havereset += 1;
         }
         if (hart->halted) {
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "halted");
@@ -2804,6 +2813,7 @@ static void riscv_dm_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in_named(dev, &riscv_dm_acknowledge, RISCV_DM_ACK_LINES,
                             ACK_COUNT);
+    ibex_qdev_init_irq(OBJECT(dev), &dm->ndmreset, RISCV_DM_NDMRESET_LINE);
 
     dm->soc = object_get_canonical_path_component(OBJECT(dev)->parent);
     dm->unavailable_bm = (1u << dm->hart_count) - 1u;

@@ -265,6 +265,7 @@ struct OtPwrMgrState {
     bool fetch_ctrl;
     bool lc_dft_en;
     bool lc_hw_debug_en;
+    bool ndm_reset_req;
 };
 
 struct OtPwrMgrClass {
@@ -846,6 +847,26 @@ static void ot_pwrmgr_sw_rst_req(void *opaque, int irq, int level)
     }
 }
 
+static void ot_pwrmgr_ndm_rst_req(void *opaque, int irq, int level)
+{
+    OtPwrMgrState *s = opaque;
+    (void)irq;
+
+    if (level) {
+        s->ndm_reset_req = true;
+    } else if (s->ndm_reset_req) {
+        s->ndm_reset_req = false;
+        trace_ot_pwrmgr_rst_req(s->ot_id, "NDM", 0);
+        if (!s->lc_hw_debug_en) {
+            return;
+        }
+        ibex_irq_set(&s->reset_req,
+                     OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_FAST_DOMAIN,
+                                             OT_RSTMGR_RESET_RV_DM));
+        ibex_irq_set(&s->reset_req, 0);
+    }
+}
+
 
 static void ot_pwrmgr_slow_fsm_tick(OtPwrMgrState *s)
 {
@@ -1402,6 +1423,8 @@ static void ot_pwrmgr_init(Object *obj)
                             PWRMGR_WAKEUP_MAX);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pwrmgr_sw_rst_req,
                             OT_PWRMGR_SW_RST, NUM_SW_RST_REQ);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_pwrmgr_ndm_rst_req,
+                            OT_PWRMGR_NDM_RST, 1);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pwrmgr_pwr_lc_rsp,
                             OT_PWRMGR_LC_RSP, 1);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pwrmgr_pwr_otp_rsp,

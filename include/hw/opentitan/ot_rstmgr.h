@@ -68,5 +68,6 @@ typedef enum {
 
 bool ot_rstmgr_is_low_power_exit(void);
 bool ot_rstmgr_is_por_reset(void);
+bool ot_rstmgr_is_ndm_reset(void);
 
 #endif /* HW_OPENTITAN_OT_RSTMGR_H */

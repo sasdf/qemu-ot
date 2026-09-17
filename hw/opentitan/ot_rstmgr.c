@@ -192,6 +192,7 @@ struct OtRstMgrClass {
 static bool ot_rstmgr_pending_internal_reset;
 static bool ot_rstmgr_last_reset_por = true;
 static bool ot_rstmgr_last_reset_low_power;
+static bool ot_rstmgr_last_reset_ndm;
 
 bool ot_rstmgr_is_low_power_exit(void)
 {
@@ -201,6 +202,11 @@ bool ot_rstmgr_is_low_power_exit(void)
 bool ot_rstmgr_is_por_reset(void)
 {
     return !ot_rstmgr_pending_internal_reset || ot_rstmgr_last_reset_por;
+}
+
+bool ot_rstmgr_is_ndm_reset(void)
+{
+    return ot_rstmgr_pending_internal_reset && ot_rstmgr_last_reset_ndm;
 }
 
 typedef struct {
@@ -449,12 +455,16 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         ot_rstmgr_pending_internal_reset = true;
         ot_rstmgr_last_reset_por = (level == OT_RSTMGR_RESET_POR);
         ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
+        ot_rstmgr_last_reset_ndm = (level == OT_RSTMGR_RESET_RV_DM);
     } else {
         if (level == OT_RSTMGR_RESET_POR) {
             ot_rstmgr_last_reset_por = true;
         }
         if (level == OT_RSTMGR_RESET_LOW_POWER) {
             ot_rstmgr_last_reset_low_power = true;
+        }
+        if (level == OT_RSTMGR_RESET_RV_DM) {
+            ot_rstmgr_last_reset_ndm = true;
         }
     }
 
@@ -464,7 +474,11 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         cpu_pause(s->cpu);
     }
 
-    qemu_bh_schedule(s->bus_reset_bh);
+    if (level == OT_RSTMGR_RESET_RV_DM) {
+        ot_rstmgr_reset_bus(s);
+    } else {
+        qemu_bh_schedule(s->bus_reset_bh);
+    }
 }
 
 static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -701,6 +715,7 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
             R_RESET_INFO_POR_MASK | (reset_info & R_RESET_INFO_LOW_POWER_EXIT_MASK);
         s->por = false;
         ot_rstmgr_last_reset_low_power = false;
+        ot_rstmgr_last_reset_ndm = false;
     } else {
         s->regs[R_RESET_INFO] = reset_info;
     }

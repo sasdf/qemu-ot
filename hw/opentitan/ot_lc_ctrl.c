@@ -40,6 +40,7 @@
 #include "hw/opentitan/ot_lc_ctrl.h"
 #include "hw/opentitan/ot_otp_if.h"
 #include "hw/opentitan/ot_pwrmgr.h"
+#include "hw/opentitan/ot_rstmgr.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
@@ -869,8 +870,17 @@ static void ot_lc_ctrl_update_broadcast(OtLcCtrlState *s)
     s->km_div_type = div_type;
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->broadcasts); ix++) {
-        bool level = (bool)(sigbm & (1u << ix));
         bool curlvl = (bool)ibex_irq_get_level(&s->broadcasts[ix]);
+        bool level = (bool)(sigbm & (1u << ix));
+        if (s->state == ST_RESET && ix == OT_LC_HW_DEBUG_EN &&
+            ot_rstmgr_is_ndm_reset()) {
+            /*
+             * In RTL (pinmux_strap_sampling.sv), pinmux_hw_debug_en is latched
+             * under rst_sys_ni (which is not asserted during an NDM reset) so
+             * that RV_DM JTAG and TAP remain live across an NDM reset cycle.
+             */
+            level = curlvl;
+        }
         if (level != curlvl) {
             trace_ot_lc_ctrl_update_broadcast(s->ot_id,
                                               LC_FSM_STATE_NAME(s->state),
@@ -2316,6 +2326,14 @@ static void ot_lc_ctrl_reset_enter(Object *obj, ResetType type)
     ot_lc_ctrl_update_alerts(s);
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->broadcasts); ix++) {
+        if (ix == OT_LC_HW_DEBUG_EN && ot_rstmgr_is_ndm_reset()) {
+            /*
+             * In RTL (pinmux_strap_sampling.sv), pinmux_hw_debug_en is latched
+             * under rst_sys_ni (which is not asserted during an NDM reset) so
+             * that RV_DM JTAG and TAP remain live across an NDM reset cycle.
+             */
+            continue;
+        }
         ibex_irq_set(&s->broadcasts[ix], 0);
     }
 
