@@ -62,6 +62,7 @@ impl VecMemory {
 }
 
 impl Memory for VecMemory {
+    #[inline(always)]
     fn read_mem(&mut self, addr: u32) -> Option<u32> {
         if (addr & 0x3) != 0 {
             panic!("Memory read must be aligned");
@@ -77,6 +78,7 @@ impl Memory for VecMemory {
         Some(read_data)
     }
 
+    #[inline(always)]
     fn write_mem(&mut self, addr: u32, store_data: u32) -> bool {
         // Calculate a mask and shift needed to update 32-bit word
         if (addr & 0x3) != 0 {
@@ -105,22 +107,24 @@ impl Memory for VecMemory {
 }
 
 pub struct MemoryRegion {
-    memory: Box<dyn Memory>,
+    memory: VecMemory,
 }
 
 impl MemoryRegion {
     pub fn new(size: usize) -> Self {
         Self {
-            memory: Box::new(VecMemory::new(size)),
+            memory: VecMemory::new(size),
         }
     }
 }
 
 impl Memory for MemoryRegion {
+    #[inline(always)]
     fn read_mem(&mut self, addr: u32) -> Option<u32> {
         self.memory.read_mem(addr)
     }
 
+    #[inline(always)]
     fn write_mem(&mut self, addr: u32, store_data: u32) -> bool {
         self.memory.write_mem(addr, store_data)
     }

@@ -33,6 +33,7 @@
 #include <zlib.h> /* for CRC-32 */
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "block/aio.h"
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
@@ -522,6 +523,11 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_STATUS:
         val32 = ot_otbn_proxy_get_status(s->proxy);
+        if (val32 != OT_OTBN_STATUS_IDLE) {
+            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+                val32 = ot_otbn_proxy_get_status(s->proxy);
+            }
+        }
         break;
     case R_ERR_BITS:
         val32 = ot_otbn_proxy_get_err_bits(s->proxy);

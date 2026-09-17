@@ -85,6 +85,7 @@ pub struct HartState {
     pub csr_set: csrs::CSRSet,
     /// Track state changes (debug)
     pub updated: StateTracker,
+    pub track_state: bool,
 }
 
 impl HartState {
@@ -96,6 +97,7 @@ impl HartState {
             loopstack: Vec::with_capacity(8),
             hwstack: Vec::with_capacity(8),
             updated: StateTracker::default(),
+            track_state: false,
             csr_set: csrs::CSRSet::new(urnd, rnd, key),
         }
     }
@@ -114,7 +116,7 @@ impl HartState {
         }
 
         self.registers[reg_index] = data;
-        self.updated.gpr = Some(reg_index);
+        if self.track_state { self.updated.gpr = Some(reg_index); }
         Ok(())
     }
 
@@ -140,7 +142,7 @@ impl HartState {
     /// register handling
     fn write_wide_register(&mut self, reg_index: usize, data: u256) -> Result<(), InstructionTrap> {
         self.wregisters[reg_index] = data;
-        self.updated.wgpr = Some(reg_index);
+        if self.track_state { self.updated.wgpr = Some(reg_index); }
         Ok(())
     }
 
@@ -162,7 +164,7 @@ impl HartState {
         if let Err(exc) = csr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(csr_addr)));
         }
-        self.updated.csr = Some((false, csr_addr));
+        if self.track_state { self.updated.csr = Some((false, csr_addr)); }
         Ok(())
     }
 
@@ -191,7 +193,7 @@ impl HartState {
         if let Err(exc) = wsr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(wsr_addr)));
         }
-        self.updated.csr = Some((true, wsr_addr));
+        if self.track_state { self.updated.csr = Some((true, wsr_addr)); }
         Ok(())
     }
 
@@ -530,7 +532,7 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
     /// Returns `Ok` where instruction execution was successful. `Err` with the relevant
     /// [InstructionTrap] is returned when the instruction execution causes a trap.
     pub fn step(&mut self) -> Result<(), InstructionTrap> {
-        self.hart_state.updated.clear();
+        if self.hart_state.track_state { self.hart_state.updated.clear(); }
 
         if let Some(next_insn) = self.imem.read_mem(self.hart_state.pc) {
             // Fetch next instruction from memory and eecute the instruction if fetch was
@@ -547,8 +549,10 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
                                 if hwloop.end == self.hart_state.pc {
                                     // one less iteration to go
                                     hwloop.count -= 1;
-                                    self.hart_state.updated.loophead =
-                                        Some((loopdepth, hwloop.count));
+                                    if self.hart_state.track_state {
+                                        self.hart_state.updated.loophead =
+                                            Some((loopdepth, hwloop.count));
+                                    }
                                     if hwloop.count == 0 {
                                         // loop exhausted, should be removed
                                         lstack.pop();

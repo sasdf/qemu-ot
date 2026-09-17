@@ -93,19 +93,17 @@ impl CSRNG for Rnd {
 
     fn get_csrng_u256(&self) -> (u256, bool, bool) {
         let mut cache = self.cache.lock().unwrap();
-        let mut fetch = false;
-        loop {
-            let result = self
-                .wait
-                .wait_timeout(cache, Duration::from_millis(50))
-                .unwrap();
-            cache = result.0;
-            if cache.available {
-                break;
-            }
-            if !fetch {
-                self.fetch();
-                fetch = true;
+        if !cache.available {
+            self.fetch();
+            while !cache.available {
+                let result = self
+                    .wait
+                    .wait_timeout(cache, Duration::from_millis(50))
+                    .unwrap();
+                cache = result.0;
+                if result.1.timed_out() && !cache.available {
+                    self.fetch();
+                }
             }
         }
 
@@ -186,17 +184,18 @@ impl SyncUrnd {
     }
 
     pub fn wait_reseed(&self) {
-        loop {
-            let sync = self.sync.lock().unwrap();
-            let mut go = self
+        let mut sync = self.sync.lock().unwrap();
+        while !*sync {
+            let result = self
                 .wait
                 .wait_timeout(sync, Duration::from_millis(5))
                 .unwrap();
-            if *go.0 {
-                *go.0 = false;
-                break;
+            sync = result.0;
+            if result.1.timed_out() && !*sync {
+                self.request_reseed();
             }
         }
+        *sync = false;
     }
 
     pub fn sync_reseed(&self) {
