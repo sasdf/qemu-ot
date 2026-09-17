@@ -208,6 +208,73 @@ static void ot_gpio_eg_update_intr_edge(OtGpioEgState *s, uint32_t prev)
     s->regs[R_INTR_STATE] |= intr_state;
 }
 
+static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
+{
+    uint32_t periph_out_v = s->data_out ^ s->invert;
+    uint32_t periph_out_en = s->data_oe & ~(s->opendrain & periph_out_v);
+    periph_out_en =
+        (periph_out_en & ~s->force_en) | (s->force_oe & s->force_en);
+    periph_out_v =
+        (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
+    periph_out_v &= periph_out_en;
+
+    uint32_t periph_pull_en = s->pull_en & ~s->force_en;
+    uint32_t periph_pull_v = s->pull_sel;
+
+    for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
+        bool driven_by_dev = false;
+        int level = 0;
+
+        if (s->pinmux) {
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
+            unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
+                              (unsigned)g_pull :
+                              p;
+            if ((s->force_en >> gp) & 1u) {
+                if ((s->force_oe >> gp) & 1u) {
+                    driven_by_dev = true;
+                    level = (int)((s->force_out >> gp) & 1u);
+                }
+            } else if (outsel == 0u) {
+                driven_by_dev = true;
+                level = 0;
+            } else if (outsel == 1u) {
+                driven_by_dev = true;
+                level = 1;
+            } else if (outsel >= 3u && outsel < 35u) {
+                unsigned g = outsel - 3u;
+                if ((periph_out_en >> g) & 1u) {
+                    driven_by_dev = true;
+                    level = (int)((periph_out_v >> g) & 1u);
+                }
+            }
+            if (!driven_by_dev) {
+                if ((s->connected & ~s->data_gi) & (1u << p)) {
+                    level = (int)((s->data_ii >> p) & 1u);
+                } else if (!((s->data_bi >> p) & 1u)) {
+                    level = (int)((s->data_ib >> p) & 1u);
+                } else if ((periph_pull_en >> gp) & 1u) {
+                    level = (int)((periph_pull_v >> gp) & 1u);
+                } else {
+                    level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
+                }
+            }
+        } else {
+            if ((periph_out_en >> p) & 1u) {
+                level = (int)((periph_out_v >> p) & 1u);
+            } else {
+                level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
+            }
+        }
+
+        if (level != ibex_irq_get_level(&s->gpos[p])) {
+            trace_ot_gpio_out_update_line_bool(s->ot_id, p, level);
+            ibex_irq_set(&s->gpos[p], level);
+        }
+    }
+}
+
 static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 {
     uint32_t prev = s->regs[R_DATA_IN];
@@ -292,14 +359,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_intr_edge(s, prev);
     ot_gpio_eg_update_irqs(s);
 
-    for (unsigned ix = 0; ix < PARAM_NUM_IO; ix++) {
-        if (!((s->data_oe >> ix) & 1u)) {
-            int level = (int)((data_mix >> ix) & 1u);
-            if (level != ibex_irq_get_level(&s->gpos[ix])) {
-                ibex_irq_set(&s->gpos[ix], level);
-            }
-        }
-    }
+    ot_gpio_eg_update_pad_in_lines(s);
 }
 
 static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
@@ -321,15 +381,7 @@ static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
     outv &= out_en;
 
     trace_ot_gpio_out_update(s->ot_id, outv, 0, 0);
-    for (unsigned ix = 0; ix < PARAM_NUM_IO; ix++) {
-        int level = ((out_en >> ix) & 1u) ?
-                        (int)((outv >> ix) & 1u) :
-                        (int)((s->regs[R_DATA_IN] >> ix) & 1u);
-        if (level != ibex_irq_get_level(&s->gpos[ix])) {
-            trace_ot_gpio_out_update_line_bool(s->ot_id, ix, level);
-            ibex_irq_set(&s->gpos[ix], level);
-        }
-    }
+    ot_gpio_eg_update_pad_in_lines(s);
 }
 
 static void ot_gpio_eg_in_change(void *opaque, int no, int level)
@@ -1036,7 +1088,14 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             if ((periph_pull_v >> gp) & 1u) {
                 pull_v |= (1u << p);
             }
-            if (outsel == 0u) {
+            if ((s->force_en >> gp) & 1u) {
+                if ((s->force_oe >> gp) & 1u) {
+                    out_en |= (1u << p);
+                }
+                if ((s->force_out >> gp) & 1u) {
+                    out_v |= (1u << p);
+                }
+            } else if (outsel == 0u) {
                 out_en |= (1u << p);
             } else if (outsel == 1u) {
                 out_en |= (1u << p);
