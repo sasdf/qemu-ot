@@ -479,6 +479,12 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
                 ));
             }
         };
+        if !self.dmem.is_valid(addr) {
+            return Err(InstructionTrap::Exception(
+                ExceptionCause::EFatal,
+                Some(super::otbn::ErrBits::DMEM_INTG_VIOLATION.bits()),
+            ));
+        }
 
         // Sign extend loaded data if required
         if signed {
@@ -535,6 +541,12 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
         if self.hart_state.track_state { self.hart_state.updated.clear(); }
 
         if let Some(next_insn) = self.imem.read_mem(self.hart_state.pc) {
+            if !self.imem.is_valid(self.hart_state.pc) {
+                return Err(InstructionTrap::Exception(
+                    ExceptionCause::EFatal,
+                    Some(super::otbn::ErrBits::IMEM_INTG_VIOLATION.bits()),
+                ));
+            }
             // Fetch next instruction from memory and eecute the instruction if fetch was
             // successful
             let step_result = insn_decode::decoder(self, next_insn);
@@ -913,6 +925,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let mut bytes = [0; size_of::<U256>()];
         const RSIZE: usize = size_of::<u32>();
         for (pos, bchunk) in (0..bytes.len()).step_by(RSIZE).zip(bytes.chunks_mut(RSIZE)) {
+            if !self.dmem.is_valid(src + pos as u32) {
+                return Err(InstructionTrap::Exception(
+                    ExceptionCause::EFatal,
+                    Some(super::otbn::ErrBits::DMEM_INTG_VIOLATION.bits()),
+                ));
+            }
             let word = self.dmem.read_mem(src + pos as u32).unwrap();
             bchunk.copy_from_slice(&word.to_le_bytes()[..]);
         }

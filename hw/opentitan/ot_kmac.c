@@ -495,6 +495,16 @@ static void ot_kmac_update_alert(OtKMACState *s)
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
     }
+
+    s->regs[R_ALERT_TEST] = 0u;
+    uint32_t perm_level = (s->regs[R_STATUS] & R_STATUS_ALERT_FATAL_FAULT_MASK)
+                              ? (1u << ALERT_FATAL)
+                              : 0u;
+    if (level != perm_level) {
+        for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
+            ibex_irq_set(&s->alerts[ix], (int)((perm_level >> ix) & 0x1u));
+        }
+    }
 }
 
 static void ot_kmac_report_error(OtKMACState *s, int code, uint32_t info)
@@ -1075,6 +1085,9 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
 {
     bool err_processed = (cmd_reg & R_CMD_ERR_PROCESSED_MASK) != 0;
+    if (err_processed) {
+        s->regs[R_STATUS] &= ~R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
+    }
     int cmd = (int)FIELD_EX32(cmd_reg, CMD, CMD);
     if (s->error_awaiting_sw) {
         if (err_processed) {
@@ -1243,7 +1256,9 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->cfg);
         break;
     case R_STATUS:
-        val32 = 0u;
+        val32 = s->regs[R_STATUS] &
+                (R_STATUS_ALERT_FATAL_FAULT_MASK |
+                 R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK);
         switch (s->state) {
         case KMAC_ST_IDLE:
             val32 |= R_STATUS_SHA3_IDLE_MASK;

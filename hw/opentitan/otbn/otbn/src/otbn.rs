@@ -270,7 +270,7 @@ impl Executer {
         // Stall OTBN execution till entropy is injected
         self.syncurnd.sync_reseed();
         match self.do_execute(dump) {
-            insn_exec::InstructionTrap::Exception(cause, _val) => {
+            insn_exec::InstructionTrap::Exception(cause, val) => {
                 let mut error: u32;
                 // let mut registers = self.registers.lock().unwrap();
                 (fatal, error) = match cause {
@@ -283,9 +283,11 @@ impl Executer {
                     ExceptionCause::EKeyInvalid => (false, ErrBits::KEY_INVALID.bits()),
                     ExceptionCause::ERndRepChkFail => (false, ErrBits::RND_REP_CHK_FAIL.bits()),
                     ExceptionCause::ERndFipsChkFail => (false, ErrBits::RND_FIPS_CHK_FAIL.bits()),
-                    ExceptionCause::EFatal => {
-                        (true, self.registers.fatal_bits.load(Ordering::Relaxed))
-                    }
+                    ExceptionCause::EFatal => (
+                        true,
+                        self.registers.fatal_bits.load(Ordering::Relaxed)
+                            | val.unwrap_or(0),
+                    ),
                 };
 
                 const SW_ERR_MASK: u32 = ErrBits::BAD_DATA_ADDR.bits()
