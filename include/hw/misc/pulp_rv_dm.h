@@ -35,7 +35,8 @@
 #define TYPE_PULP_RV_DM "pulp-rv-dm"
 OBJECT_DECLARE_SIMPLE_TYPE(PulpRVDMState, PULP_RV_DM)
 
-#define PULP_RV_DM_ACK_OUT_LINES TYPE_PULP_RV_DM ".ack-out"
+#define PULP_RV_DM_ACK_OUT_LINES  TYPE_PULP_RV_DM ".ack-out"
+#define PULP_RV_DM_LC_HW_DEBUG_EN TYPE_PULP_RV_DM ".lc-hw-debug-en"
 
 /* Configuration */
 #define PULP_RV_DM_NSCRATCH_COUNT        2u

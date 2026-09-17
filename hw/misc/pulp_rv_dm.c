@@ -131,6 +131,7 @@ struct PulpRVDMState {
 
     MemoryRegion regs; /* MMIO */
     MemoryRegion mem; /* Container for the following: */
+    MemoryRegion mem_disabled; /* High-priority overlay when debug is disabled */
     MemoryRegion dmact; /* MMIO */
     MemoryRegion prog; /* ROM device */
     MemoryRegion dmflag; /* MMIO */
@@ -142,6 +143,7 @@ struct PulpRVDMState {
     uint32_t dmflag_regs[PULP_RV_DM_DMFLAG_SIZE / sizeof(uint32_t)];
     uint32_t late_debug_enable_regwen;
     uint32_t late_debug_enable;
+    bool lc_hw_debug_en;
 
     unsigned hart_count;
     uint64_t idle_bm;
@@ -507,6 +509,47 @@ static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
     .impl.max_access_size = 4,
 };
 
+static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)addr;
+    (void)val64;
+    (void)size;
+    (void)attrs;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult pulp_rv_dm_disabled_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)addr;
+    (void)val64;
+    (void)size;
+    (void)attrs;
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps pulp_rv_dm_disabled_ops = {
+    .read_with_attrs = &pulp_rv_dm_disabled_read_with_attrs,
+    .write_with_attrs = &pulp_rv_dm_disabled_write_with_attrs,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static void pulp_rv_dm_lc_hw_debug_en_in(void *opaque, int n, int level)
+{
+    PulpRVDMState *s = opaque;
+    (void)n;
+    bool en = (bool)level;
+    if (s->lc_hw_debug_en != en) {
+        s->lc_hw_debug_en = en;
+        memory_region_set_enabled(&s->mem_disabled, !en);
+    }
+}
+
 static void pulp_rv_dm_reset(DeviceState *dev)
 {
     PulpRVDMState *s = PULP_RV_DM(dev);
@@ -517,6 +560,7 @@ static void pulp_rv_dm_reset(DeviceState *dev)
     memset(s->dmflag_regs, 0, sizeof(s->dmflag_regs));
     s->late_debug_enable_regwen = 1u;
     s->late_debug_enable = OT_MULTIBITBOOL32_FALSE;
+    memory_region_set_enabled(&s->mem_disabled, !s->lc_hw_debug_en);
 
     s->idle_bm = 0;
 }
@@ -528,6 +572,7 @@ static void pulp_rv_dm_init(Object *obj)
     MachineState *ms = MACHINE(qdev_get_machine());
     unsigned max_cpus = ms->smp.max_cpus;
     s->hart_count = MIN(max_cpus, 64u);
+    s->lc_hw_debug_en = true;
 
     /* Top-level container */
     memory_region_init(&s->mem, obj, TYPE_PULP_RV_DM, 0x1000);
@@ -539,6 +584,11 @@ static void pulp_rv_dm_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
 
     /* Mem container content */
+    memory_region_init_io(&s->mem_disabled, obj, &pulp_rv_dm_disabled_ops, s,
+                          TYPE_PULP_RV_DM ".disabled", 0x1000);
+    memory_region_add_subregion_overlap(&s->mem, 0, &s->mem_disabled, 10);
+    memory_region_set_enabled(&s->mem_disabled, false);
+
     memory_region_init_io(&s->dmact, obj, &pulp_rv_dm_dmact_ops, s,
                           TYPE_PULP_RV_DM ".act", PULP_RV_DM_DMACT_SIZE);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_DMACT_BASE, &s->dmact);
@@ -559,6 +609,8 @@ static void pulp_rv_dm_init(Object *obj)
     s->ack_out = g_new0(qemu_irq, ACK_COUNT);
     qdev_init_gpio_out_named(DEVICE(obj), s->ack_out, PULP_RV_DM_ACK_OUT_LINES,
                              ACK_COUNT);
+    qdev_init_gpio_in_named(DEVICE(obj), &pulp_rv_dm_lc_hw_debug_en_in,
+                            PULP_RV_DM_LC_HW_DEBUG_EN, 1);
 
     pulp_rv_dm_load_rom(s);
 
