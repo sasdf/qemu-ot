@@ -938,8 +938,13 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 
     if (s->access_table[reg].wpost & BIT(PWA_CLEAR_ALERT)) {
-        unsigned nclass = ot_alert_get_nclass_from_reg(s, reg);
-        ot_alert_clear_alert(s, nclass);
+        if (!s->regs.shadow[reg].staged_p &&
+            (ot_shadow_reg_peek(&s->regs.shadow[reg]) &
+             CLASS_CLR_SHADOWED_EN_MASK)) {
+            unsigned nclass = ot_alert_get_nclass_from_reg(s, reg);
+            ot_alert_clear_alert(s, nclass);
+            ot_shadow_reg_init(&s->regs.shadow[reg], 0);
+        }
     }
 };
 

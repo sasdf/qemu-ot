@@ -233,6 +233,8 @@ struct OtIbexWrapperState {
     uint8_t cpu_en_bm;
     bool entropy_requested;
     bool edn_connected;
+    uint32_t rnd_inval_reads;
+    uint64_t rnd_inval_until_ns;
     bool esc_rx;
     uint32_t nmi_in;
 
@@ -991,6 +993,19 @@ static uint32_t ot_ibex_wrapper_read_reg(OtIbexWrapperState *s, unsigned reg)
     return *s->access_regs[reg];
 }
 
+static bool ot_ibex_wrapper_rnd_is_fetching(OtIbexWrapperState *s)
+{
+    if (s->rnd_inval_reads > 0) {
+        if (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) >= s->rnd_inval_until_ns) {
+            s->rnd_inval_reads = 0;
+            return false;
+        }
+        s->rnd_inval_reads--;
+        return true;
+    }
+    return false;
+}
+
 static uint32_t
 ot_ibex_wrapper_read_rnd_data(OtIbexWrapperState *s, unsigned reg)
 {
@@ -1001,15 +1016,24 @@ ot_ibex_wrapper_read_rnd_data(OtIbexWrapperState *s, unsigned reg)
         return 0;
     }
 
-    uint32_t value = s->regs.rnd_data;
+    if (ot_ibex_wrapper_rnd_is_fetching(s)) {
+        return 0;
+    }
+
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
+        ot_ibex_wrapper_request_entropy(s);
+    }
+
+    uint32_t value = s->regs.rnd_data;
+    if (s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK) {
+        s->regs.rnd_data = 0;
+        s->regs.rnd_status = 0;
+        s->rnd_inval_reads = 3;
+        s->rnd_inval_until_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500;
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Read invalid entropy data 0x%08x\n",
                       __func__, value);
     }
-    s->regs.rnd_data = 0;
-    s->regs.rnd_status = 0;
-
-    ot_ibex_wrapper_request_entropy(s);
 
     return value;
 }
@@ -1021,6 +1045,10 @@ ot_ibex_wrapper_read_rnd_status(OtIbexWrapperState *s, unsigned reg)
 
     if (!ot_ibex_wrapper_has_edn(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: No EDN connection\n", __func__);
+        return 0;
+    }
+
+    if (ot_ibex_wrapper_rnd_is_fetching(s)) {
         return 0;
     }
 
@@ -1524,6 +1552,8 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     /* 'QMU_' in LE, _ is the QEMU version stored in the MSB */
     s->regs.fpga_info = 0x00554d51u + (((uint32_t)s->qemu_version) << 24u);
     s->entropy_requested = false;
+    s->rnd_inval_reads = 0;
+    s->rnd_inval_until_ns = 0;
     s->esc_rx = false;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
     if (s->cpu) {

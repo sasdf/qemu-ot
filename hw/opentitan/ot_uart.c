@@ -585,6 +585,10 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
 
 static void ot_uart_reset_tx_fifo(OtUARTState *s)
 {
+    if (s->tx_timer) {
+        timer_del(s->tx_timer);
+    }
+    s->tx_busy = false;
     fifo8_reset(&s->tx_fifo);
 }
 
@@ -913,8 +917,10 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
-        s->regs[reg] = val32;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     case R_CTRL:
         if (val32 & ~CTRL_SUP_MASK) {
