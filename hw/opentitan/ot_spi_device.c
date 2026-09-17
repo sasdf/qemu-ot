@@ -243,6 +243,7 @@ REG32(TPM_READ_FIFO, 0x34u)
  * potentially keeping a small additional delay on a buffer flip.
  */
 #define SPI_BUS_FLASH_READ_DELAY_NS 10000000
+#define SPI_BUS_FLASH_POLL_DELAY_NS 500000
 
 /*
  * Memory layout extracted from the documentation:
@@ -435,6 +436,7 @@ typedef struct {
     bool loop; /* Keep reading the buffer if end is reached */
     bool watermark_crossed; /* Read watermark hit, used as flip-flop */
     bool new_cmd; /* New command has been pushed in current SPI transaction */
+    bool read_buf_modified; /* Read buffer modified by SW since last SPI read */
 } SpiDeviceFlash;
 
 typedef struct {
@@ -782,6 +784,7 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
     f->len = 0u;
     f->watermark_crossed = false;
     f->new_cmd = false;
+    f->read_buf_modified = false;
     g_assert(s->sram);
     f->payload = &((uint8_t *)s->sram)[SPI_SRAM_PAYLOAD_OFFSET];
     memset(f->buffer, 0u, SPI_FLASH_BUFFER_SIZE);
@@ -896,6 +899,23 @@ ot_spi_device_is_mailbox_match(const OtSPIDeviceState *s, uint32_t addr)
     return (addr & R_MAILBOX_ADDR_UPPER_MASK) == mailbox_addr;
 }
 
+static void ot_spi_device_flash_pace_spibus_ns(OtSPIDeviceState *s,
+                                               int64_t delay_ns)
+{
+    SpiDeviceFlash *f = &s->flash;
+
+    timer_del(f->irq_timer);
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    trace_ot_spi_device_flash_pace(s->ot_id, "set",
+                                   timer_pending(f->irq_timer));
+    timer_mod(f->irq_timer, now + delay_ns);
+}
+
+static void ot_spi_device_flash_pace_spibus(OtSPIDeviceState *s)
+{
+    ot_spi_device_flash_pace_spibus_ns(s, SPI_BUS_FLASH_READ_DELAY_NS);
+}
+
 static void ot_spi_device_release(OtSPIDeviceState *s)
 {
     SpiDeviceFlash *f = &s->flash;
@@ -918,6 +938,7 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     }
 
     bool update_irq = false;
+    bool was_active = (f->state != SPI_FLASH_IDLE);
 
     OtSpiDeviceMode mode = ot_spi_device_get_mode(s);
 
@@ -957,8 +978,15 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
          * "does not show the commands falling into the mailbox region or
          *  Read SFDP command’s address."
          */
-        if (f->slot >= SLOT_HW_READ_NORMAL && f->slot <= SLOT_HW_READ_QUAD_IO &&
+        if (was_active &&
+            f->slot >= SLOT_HW_READ_NORMAL && f->slot <= SLOT_HW_READ_QUAD_IO &&
             !ot_spi_device_is_mailbox_match(s, f->last_read_addr)) {
+            if (!f->read_buf_modified &&
+                s->spi_regs[R_LAST_READ_ADDR] == f->last_read_addr) {
+                ot_spi_device_flash_pace_spibus_ns(
+                    s, SPI_BUS_FLASH_POLL_DELAY_NS);
+            }
+            f->read_buf_modified = false;
             trace_ot_spi_device_update_last_read_addr(s->ot_id,
                                                       f->last_read_addr);
             s->spi_regs[R_LAST_READ_ADDR] = f->last_read_addr;
@@ -998,20 +1026,14 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
         }
     }
 
+    if (was_active && (f->slot <= SLOT_HW_READ_STATUS3 || upload_intr) &&
+        (s->spi_regs[R_FLASH_STATUS] & R_FLASH_STATUS_BUSY_MASK)) {
+        ot_spi_device_flash_pace_spibus_ns(s, SPI_BUS_FLASH_POLL_DELAY_NS);
+    }
+
     if (update_irq) {
         ot_spi_device_update_irqs(s);
     }
-}
-
-static void ot_spi_device_flash_pace_spibus(OtSPIDeviceState *s)
-{
-    SpiDeviceFlash *f = &s->flash;
-
-    timer_del(f->irq_timer);
-    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    trace_ot_spi_device_flash_pace(s->ot_id, "set",
-                                   timer_pending(f->irq_timer));
-    timer_mod(f->irq_timer, now + SPI_BUS_FLASH_READ_DELAY_NS);
 }
 
 static void ot_spi_device_flash_clear_readbuffer(OtSPIDeviceState *s)
@@ -1954,6 +1976,14 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_INTERCEPT_EN:
     case R_ADDR_MODE:
     case R_LAST_READ_ADDR:
+        if (timer_pending(s->flash.irq_timer)) {
+            trace_ot_spi_device_flash_pace(s->ot_id, "clear",
+                                           timer_pending(s->flash.irq_timer));
+            timer_del(s->flash.irq_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
+        val32 = s->spi_regs[reg];
+        break;
     case R_FLASH_STATUS:
     case R_JEDEC_CC:
     case R_JEDEC_ID:
@@ -2208,6 +2238,13 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
         s->spi_regs[reg] &= val32 & FLASH_STATUS_RW0C_MASK; /* RW0C */
         s->spi_regs[reg] &= ~FLASH_STATUS_RW_MASK;
         s->spi_regs[reg] |= val32 & FLASH_STATUS_RW_MASK; /* RW */
+        if (!(s->spi_regs[reg] & R_FLASH_STATUS_BUSY_MASK) &&
+            timer_pending(s->flash.irq_timer)) {
+            trace_ot_spi_device_flash_pace(s->ot_id, "clear",
+                                           timer_pending(s->flash.irq_timer));
+            timer_del(s->flash.irq_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         break;
     case R_JEDEC_CC:
         val32 &= JEDEC_CC_MASK;
@@ -2456,6 +2493,9 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
     s->sram[addr >> 2u] = val32;
+    if (addr < SPI_SRAM_READ_SIZE * 2u) {
+        s->flash.read_buf_modified = true;
+    }
 
     return MEMTX_OK;
 }
@@ -2796,7 +2836,9 @@ static int ot_spi_device_chr_can_receive(void *opaque)
 
     switch (bus->state) {
     case SPI_BUS_IDLE:
-        if (s->csb_poll_enabled &&
+        if (timer_pending(s->flash.irq_timer)) {
+            length = 0u;
+        } else if (s->csb_poll_enabled &&
             (s->csb_sync == CSB_RELEASED_LOW_UNSEEN ||
              s->csb_sync == CSB_IDLE_HIGH_UNSEEN)) {
             length = 0u;
