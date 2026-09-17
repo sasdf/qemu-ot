@@ -54,4 +54,10 @@ bool ot_i2c_get_override_pin_level(OtI2CState *s, bool is_sda,
                                    int64_t sample_ns);
 void ot_i2c_consume_override_waveform(OtI2CState *s);
 
+I2CBus *ot_i2c_get_active_target_bus(I2CBus *default_bus, uint8_t address);
+bool ot_i2c_is_target_enabled(OtI2CState *s);
+bool ot_i2c_is_target_polling_acq(OtI2CState *s);
+void ot_i2c_reset_bitbang_target(OtI2CState *s);
+bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in);
+
 #endif /* HW_OPENTITAN_OT_I2C_H */

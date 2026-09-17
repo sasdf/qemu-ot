@@ -30,6 +30,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/typedefs.h"
 #include "qom/object.h"
+#include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
@@ -542,6 +543,31 @@ static void ot_pinmux_eg_check_wkup_detectors(OtPinmuxEgState *s, bool is_dio,
     }
 }
 
+bool ot_pinmux_eg_trigger_mio_wkup(unsigned mio_pad)
+{
+    OtPinmuxEgState *s = ot_pinmux_eg_instance;
+    if (!s || !s->regs || mio_pad >= PARAM_N_MIO_PADS) {
+        return false;
+    }
+    CPUState *cpu = first_cpu;
+    if (!cpu || !cpu->halted) {
+        return false;
+    }
+    OtPinmuxEgStateRegs *regs = s->regs;
+    bool triggered = false;
+    for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
+        if ((regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK) &&
+            !(regs->wkup_detector_cfg[i] & R_WKUP_DETECTOR_CFG_MIODIO_MASK) &&
+            regs->wkup_detector_padsel[i] == mio_pad + 2u) {
+            regs->wkup_cause |= (1u << i);
+            ibex_irq_set(&s->wkup, 0);
+            ibex_irq_set(&s->wkup, 1);
+            triggered = true;
+        }
+    }
+    return triggered;
+}
+
 int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad)
 {
     OtPinmuxEgState *s = ot_pinmux_eg_instance;
@@ -968,7 +994,8 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     }
 
     OtPinmuxEgStateRegs *regs = s->regs;
-    if (type != RESET_TYPE_COLD && ot_rstmgr_is_low_power_exit()) {
+    bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
+    if (!is_por && ot_rstmgr_is_low_power_exit()) {
         s->low_power_exit = false;
         ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
         ot_pinmux_eg_update_sysrst_inputs(s);
@@ -988,7 +1015,7 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     memcpy(dio_sleep_st, regs->dio_pad_sleep_status, sizeof(dio_sleep_st));
 
     memset(regs, 0, sizeof(*regs));
-    if (type != RESET_TYPE_COLD) {
+    if (!is_por) {
         regs->wkup_cause = wkup_cause;
         memcpy(regs->mio_pad_sleep_status, mio_sleep_st, sizeof(mio_sleep_st));
         memcpy(regs->dio_pad_sleep_status, dio_sleep_st, sizeof(dio_sleep_st));

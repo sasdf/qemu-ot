@@ -187,11 +187,18 @@ struct OtRstMgrClass {
     ResettablePhases parent_phases;
 };
 
+static bool ot_rstmgr_pending_internal_reset;
+static bool ot_rstmgr_last_reset_por = true;
 static bool ot_rstmgr_last_reset_low_power;
 
 bool ot_rstmgr_is_low_power_exit(void)
 {
-    return ot_rstmgr_last_reset_low_power;
+    return ot_rstmgr_pending_internal_reset && ot_rstmgr_last_reset_low_power;
+}
+
+bool ot_rstmgr_is_por_reset(void)
+{
+    return !ot_rstmgr_pending_internal_reset || ot_rstmgr_last_reset_por;
 }
 
 typedef struct {
@@ -426,6 +433,8 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         s->por = true;
     }
     s->regs[R_RESET_INFO] |= req;
+    ot_rstmgr_pending_internal_reset = true;
+    ot_rstmgr_last_reset_por = (level == OT_RSTMGR_RESET_POR);
     ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
@@ -655,7 +664,7 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
 
     memset(s->regs, 0, REGS_SIZE);
 
-    if (s->por) {
+    if (s->por || ot_rstmgr_is_por_reset()) {
         memset(s->cpu_info_dump, 0, sizeof(s->cpu_info_dump));
         memset(s->alert_info_dump, 0, sizeof(s->alert_info_dump));
         s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK;
@@ -697,6 +706,8 @@ static void ot_rstmgr_reset_exit(Object *obj, ResetType type)
     OtRstMgrState *s = OT_RSTMGR(obj);
 
     trace_ot_rstmgr_reset(s->ot_id, "exit");
+
+    ot_rstmgr_pending_internal_reset = false;
 
     if (c->parent_phases.exit) {
         c->parent_phases.exit(obj, type);

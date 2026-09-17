@@ -1192,6 +1192,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
 
     qemu_bh_cancel(s->fsm_tick_bh);
     timer_del(s->cdc_sync);
+    bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
     uint32_t wake_info = s->regs[R_WAKE_INFO];
     uint32_t wake_info_dis = s->regs[R_WAKE_INFO_CAPTURE_DIS];
     uint32_t wakeup_en = s->regs[R_WAKEUP_EN];
@@ -1202,7 +1203,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     uint32_t control = s->regs[R_CONTROL] & ~R_CONTROL_LOW_POWER_HINT_MASK;
 
     memset(s->regs, 0, REGS_SIZE);
-    if (type != RESET_TYPE_COLD) {
+    if (!is_por) {
         s->regs[R_WAKE_INFO] = wake_info;
         s->regs[R_WAKE_INFO_CAPTURE_DIS] = wake_info_dis;
         s->regs[R_WAKEUP_EN] = wakeup_en;

@@ -750,6 +750,28 @@ static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
     return NULL;
 }
 
+static OtI2CState *ot_gpio_eg_get_active_target_i2c(OtGpioEgState *s)
+{
+    bool has_i2c_pad = false;
+    for (unsigned i = 0; i < s->bb_npins; i++) {
+        unsigned pad = s->bb_pins[i];
+        if (pad == 7u || pad == 8u) {
+            has_i2c_pad = true;
+            break;
+        }
+    }
+    if (!has_i2c_pad) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < 3u; i++) {
+        if (s->i2c[i] && ot_i2c_is_target_enabled(s->i2c[i]) &&
+            !ot_i2c_is_override_enabled(s->i2c[i])) {
+            return s->i2c[i];
+        }
+    }
+    return NULL;
+}
+
 static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
                                   int64_t sample_ns)
 {
@@ -799,10 +821,24 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     bool uses_spi_host1 = ot_gpio_eg_bitbang_uses_spi_host1(s);
     OtI2CState *active_i2c =
         uses_spi_host1 ? NULL : ot_gpio_eg_get_active_override_i2c(s);
-    bool uses_pwm = !uses_spi_host1 && !active_i2c && (s->pwm != NULL);
+    OtI2CState *target_i2c = (uses_spi_host1 || active_i2c) ?
+                                 NULL :
+                                 ot_gpio_eg_get_active_target_i2c(s);
+    bool uses_pwm =
+        !uses_spi_host1 && !active_i2c && !target_i2c && (s->pwm != NULL);
 
     if (s->bb_idx < s->bb_num_samples) {
         uint8_t wval = s->bb_wbuf[s->bb_idx];
+
+        if (target_i2c && s->bb_idx == 0u &&
+            !ot_i2c_is_target_polling_acq(target_i2c) &&
+            s->bb_wait_pwm_ticks > 0) {
+            s->bb_wait_pwm_ticks--;
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 500000LL;
+            s->bb_start_ns = next_ns;
+            timer_mod_ns(s->bb_timer, next_ns);
+            return;
+        }
 
         /* Apply host-driven pins to s->data_ib */
         uint32_t prev_ib = s->data_ib;
@@ -820,6 +856,49 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
         }
         if (s->data_ib != prev_ib || s->data_bi != prev_bi || s->bb_idx == 0) {
             ot_gpio_eg_update_data_in(s);
+        }
+
+        if (target_i2c) {
+            bool sda_in = true;
+            bool scl_in = true;
+            for (unsigned bit = 0; bit < s->bb_npins; bit++) {
+                unsigned pad = s->bb_pins[bit];
+                bool level = ((wval >> bit) & 1u) != 0;
+                if (pad == 7u) {
+                    sda_in = level;
+                } else if (pad == 8u) {
+                    scl_in = level;
+                }
+            }
+            bool sda_out =
+                ot_i2c_bitbang_target_step(target_i2c, scl_in, sda_in);
+            int64_t sample_ns = s->bb_start_ns +
+                                (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+            uint8_t sample_byte = 0;
+            for (unsigned bit = 0; bit < s->bb_npins; bit++) {
+                unsigned pad = s->bb_pins[bit];
+                bool level;
+                if (pad == 7u) {
+                    level = sda_out;
+                } else if (pad == 8u) {
+                    level = scl_in;
+                } else {
+                    level = ot_gpio_eg_sample_pad(s, pad, sample_ns);
+                }
+                if (level) {
+                    sample_byte |= (uint8_t)(1u << bit);
+                }
+            }
+            s->bb_rbuf[s->bb_idx] = sample_byte;
+            s->bb_idx++;
+            if (s->bb_idx >= s->bb_num_samples) {
+                s->bb_wait_pwm_ticks = 50000u;
+                s->bb_tail_ticks = 20u;
+            }
+            int64_t next_ns = s->bb_start_ns +
+                              (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+            timer_mod_ns(s->bb_timer, next_ns);
+            return;
         }
 
         /*
@@ -1035,6 +1114,11 @@ static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
     }
     g_strfreev(runs);
     g_strfreev(parts);
+
+    OtI2CState *target_i2c = ot_gpio_eg_get_active_target_i2c(s);
+    if (target_i2c) {
+        ot_i2c_reset_bitbang_target(target_i2c);
+    }
 
     s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     timer_mod_ns(s->bb_timer, s->bb_start_ns);
