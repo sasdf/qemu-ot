@@ -37,6 +37,7 @@
 #include "hw/opentitan/ot_pinmux.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_pwm.h"
+#include "hw/opentitan/ot_spi_host.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -142,6 +143,7 @@ struct OtGpioEgState {
 
     OtPinmuxEgState *pinmux;
     OtPwmState *pwm;
+    OtSPIHostState *spi_host1;
     QEMUTimer *bb_timer;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
@@ -584,11 +586,27 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
+{
+    if (!s->pinmux || !s->spi_host1) {
+        return false;
+    }
+    for (unsigned bit = 0; bit < s->bb_npins; bit++) {
+        uint32_t outsel =
+            ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]);
+        if (outsel == 41u || outsel == 42u || outsel == 53u ||
+            outsel == 54u) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
                                   int64_t sample_ns)
 {
     if (s->pinmux) {
-        uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, pad);
+        uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
         if (outsel == 0u) {
             return false;
         }
@@ -597,6 +615,10 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         }
         if (outsel >= 65u && outsel < 71u && s->pwm) {
             return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
+        }
+        if ((outsel == 41u || outsel == 53u || outsel == 54u) &&
+            s->spi_host1) {
+            return ot_spi_host_get_pin_level(s->spi_host1, outsel, sample_ns);
         }
         if (outsel >= 3u && outsel < 35u) {
             unsigned g = outsel - 3u;
@@ -618,6 +640,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     if (!s->bb_wbuf || !s->bb_rbuf) {
         return;
     }
+
+    bool uses_spi_host1 = ot_gpio_eg_bitbang_uses_spi_host1(s);
+    bool uses_pwm = !uses_spi_host1 && (s->pwm != NULL);
 
     if (s->bb_idx < s->bb_num_samples) {
         uint8_t wval = s->bb_wbuf[s->bb_idx];
@@ -646,7 +671,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
          * advancing QEMU virtual time in 100 us steps until firmware finishes
          * its debounce and enables PWM.
          */
-        if (s->bb_idx == 5u && s->pwm && !ot_pwm_is_active(s->pwm) &&
+        if (s->bb_idx == 5u && uses_pwm && !ot_pwm_is_active(s->pwm) &&
             s->bb_wait_pwm_ticks > 0) {
             s->bb_wait_pwm_ticks--;
             int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
@@ -656,9 +681,27 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             return;
         }
 
+        if (s->bb_idx == 5u && uses_spi_host1) {
+            int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            if (!ot_spi_host_is_waveform_ready(s->spi_host1, now_ns) &&
+                s->bb_wait_pwm_ticks > 0) {
+                s->bb_wait_pwm_ticks--;
+                int64_t next_ns = now_ns + 100000LL;
+                s->bb_start_ns =
+                    next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+                timer_mod_ns(s->bb_timer, next_ns);
+                return;
+            }
+        }
+
         if (s->bb_idx == 5u) {
             s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                              (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+            if (uses_spi_host1) {
+                ot_spi_host_set_waveform_start_ns(
+                    s->spi_host1,
+                    s->bb_start_ns + 10LL * (int64_t)s->bb_period_ns);
+            }
         }
 
         uint32_t chunk = 1u;
@@ -690,12 +733,15 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             if (s->pwm) {
                 ot_pwm_shift_start_ns(s->pwm, -skipped_ns);
             }
+            if (s->spi_host1) {
+                ot_spi_host_shift_waveform_start_ns(s->spi_host1, -skipped_ns);
+            }
         }
 
         s->bb_idx += chunk;
         if (s->bb_idx >= s->bb_num_samples) {
             s->bb_wait_pwm_ticks = 50000u;
-            s->bb_tail_ticks = 20u;
+            s->bb_tail_ticks = uses_spi_host1 ? 0u : 20u;
         }
         int64_t next_ns =
             s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -703,7 +749,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
         return;
     }
 
-    if (s->pwm && ot_pwm_is_active(s->pwm) && s->bb_wait_pwm_ticks > 0) {
+    if (uses_pwm && ot_pwm_is_active(s->pwm) && s->bb_wait_pwm_ticks > 0) {
         s->bb_wait_pwm_ticks--;
         int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
         timer_mod_ns(s->bb_timer, next_ns);
@@ -741,6 +787,10 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
                               (int)resp->len);
     }
     g_string_free(resp, TRUE);
+
+    if (uses_spi_host1) {
+        ot_spi_host_clear_waveform(s->spi_host1);
+    }
 
     g_free(s->bb_wbuf);
     g_free(s->bb_rbuf);
@@ -1058,6 +1108,8 @@ static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_LINK("pinmux", OtGpioEgState, pinmux, TYPE_OT_PINMUX_EG,
                      OtPinmuxEgState *),
     DEFINE_PROP_LINK("pwm", OtGpioEgState, pwm, TYPE_OT_PWM, OtPwmState *),
+    DEFINE_PROP_LINK("spi-host1", OtGpioEgState, spi_host1, TYPE_OT_SPI_HOST,
+                     OtSPIHostState *),
 };
 
 static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)

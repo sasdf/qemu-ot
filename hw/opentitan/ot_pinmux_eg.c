@@ -353,6 +353,24 @@ uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad)
     return s->regs->mio_outsel[mio_pad];
 }
 
+uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
+{
+    if (!s || !s->regs) {
+        return 0;
+    }
+    uint32_t outsel = (gpio_pin < PARAM_N_MIO_PADS) ?
+                          s->regs->mio_outsel[gpio_pin] :
+                          0;
+    for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
+        if (ot_pinmux_eg_mio_to_gpio(s, pad) == (int)gpio_pin) {
+            if (ot_pinmux_eg_pad_is_configured(s, pad)) {
+                outsel = s->regs->mio_outsel[pad];
+            }
+        }
+    }
+    return outsel;
+}
+
 uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in)
 {
     if (!s || !s->regs || periph_in >= PARAM_N_MIO_PERIPH_IN) {

@@ -36,6 +36,7 @@ OBJECT_DECLARE_TYPE(OtPinmuxEgState, OtPinmuxEgClass, OT_PINMUX_EG)
 int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad);
 void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level);
 uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad);
+uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin);
 uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in);
 
 #endif /* HW_OPENTITAN_OT_PINMUX_EG_H */

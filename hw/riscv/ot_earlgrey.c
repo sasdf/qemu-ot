@@ -634,7 +634,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .link = IBEXDEVICELINKDEFS(
             OT_EG_SOC_DEVLINK("pinmux", PINMUX),
-            OT_EG_SOC_DEVLINK("pwm", PWM)
+            OT_EG_SOC_DEVLINK("pwm", PWM),
+            OT_EG_SOC_DEVLINK("spi-host1", SPI_HOST1)
         )
     },
     [OT_EG_SOC_DEV_SPI_DEVICE] = {
