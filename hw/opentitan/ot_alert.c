@@ -573,12 +573,19 @@ static void ot_alert_clear_alert(OtAlertState *s, unsigned nclass)
 
     OtAlertScheduler *atimer = &s->schedulers[nclass];
     timer_del(&atimer->timer);
+    if (atimer->esc_tx_release) {
+        ibex_irq_set(atimer->esc_tx_release, 0);
+        atimer->esc_tx_release = NULL;
+    }
     for (unsigned ix = 0; ix < PARAM_N_ESC_SEV; ix++) {
         IbexIRQ *esc_tx = ot_alert_get_escalation_output(s, nclass, ix);
-        if (ibex_irq_get_level(esc_tx)) {
-            trace_ot_alert_escalation(s->ot_id, ACLASS(nclass), ix, "release");
+        if (esc_tx) {
+            if (ibex_irq_get_level(esc_tx)) {
+                trace_ot_alert_escalation(s->ot_id, ACLASS(nclass), ix,
+                                          "release");
+            }
+            ibex_irq_set(esc_tx, 0);
         }
-        ibex_irq_set(esc_tx, 0);
     }
     /*
      * "Software can clear CLASSn_ACCUM_CNT with a write to CLASSA_CLR_SHADOWED"
