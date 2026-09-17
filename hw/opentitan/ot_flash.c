@@ -2874,12 +2874,44 @@ static void ot_flash_csrs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 }
 
+static void ot_flash_rma_wipe(OtFlashState *s)
+{
+    OtFlashStorage *storage = &s->flash;
+    unsigned data_bytes = storage->data_size * storage->bank_count;
+
+    if (storage->data && data_bytes > 0) {
+        memset(storage->data, 0xFF, data_bytes);
+        memory_region_set_dirty(&s->mmio.mem, 0, data_bytes);
+    }
+
+    if (storage->info && storage->info_part_count > 0) {
+        static const unsigned rma_info_pages[] = {
+            FLASH_QUAL_INFO_PAGE_CREATOR,
+            FLASH_QUAL_INFO_PAGE_OWNER,
+            FLASH_QUAL_INFO_PAGE_ISOLATED,
+        };
+        for (unsigned i = 0; i < ARRAY_SIZE(rma_info_pages); i++) {
+            unsigned page = rma_info_pages[i];
+            unsigned byte_offset =
+                storage->info_parts[0].offset + page * BYTES_PER_PAGE;
+            if (byte_offset + BYTES_PER_PAGE <= storage->info_size) {
+                uint8_t *info_ptr = (uint8_t *)storage->info + byte_offset;
+                memset(info_ptr, 0xFF, BYTES_PER_PAGE);
+            }
+        }
+    }
+}
+
 static void ot_flash_lc_broadcast_recv(void *opaque, int n, int level)
 {
     OtFlashState *s = opaque;
     OtFlashLcBroadcast *bcast = &s->lc_broadcast;
 
     g_assert((unsigned)n < OT_FLASH_LC_BROADCAST_COUNT);
+
+    if (n == OT_FLASH_LC_RMA && level) {
+        ot_flash_rma_wipe(s);
+    }
 
     uint16_t bit = 1u << (unsigned)n;
     bcast->incoming_signal_bm |= bit;
@@ -2936,6 +2968,11 @@ static void ot_flash_lc_broadcast(void *opaque)
                 LOG_UNIMP,
                 "%s: %s: lc_nvm_debug_en for JTAG connection is ignored\n",
                 __func__, s->ot_id);
+            break;
+        case OT_FLASH_LC_RMA:
+            if (level) {
+                ot_flash_rma_wipe(s);
+            }
             break;
         default:
             error_setg(&error_fatal, "%s: %s: unexpected LC broadcast %d",

@@ -30,6 +30,7 @@
 #include "trace.h"
 
 #ifndef CONFIG_USER_ONLY
+#include "qemu/main-loop.h"
 static inline MemOp mo_endian_env(CPURISCVState *env)
 {
     /*
@@ -429,7 +430,14 @@ target_ulong helper_mret(CPURISCVState *env)
         env->mcause = env->mstack_cause;
         env->nmi_mode = false;
         if (env->rnmip) {
+            bool release_lock = !bql_locked();
+            if (release_lock) {
+                bql_lock();
+            }
             cpu_interrupt(env_cpu(env), CPU_INTERRUPT_RNMI);
+            if (release_lock) {
+                bql_unlock();
+            }
         }
     } else {
         env->sync_exc_seen = false;
@@ -448,6 +456,17 @@ target_ulong helper_mret(CPURISCVState *env)
         mstatus = set_field(mstatus, MSTATUS_MPRV, 0);
     }
     env->mstatus = mstatus;
+
+    if (riscv_cpu_all_pending(env)) {
+        bool release_lock = !bql_locked();
+        if (release_lock) {
+            bql_lock();
+        }
+        cpu_interrupt(env_cpu(env), CPU_INTERRUPT_HARD);
+        if (release_lock) {
+            bql_unlock();
+        }
+    }
 
     if (riscv_has_ext(env, RVH) && prev_virt) {
         riscv_cpu_swap_hypervisor_regs(env);

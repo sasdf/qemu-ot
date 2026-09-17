@@ -681,6 +681,7 @@ bool riscv_cpu_has_work(CPUState *cs)
     return riscv_cpu_all_pending(env) != 0 ||
         riscv_cpu_sirq_pending(env) != RISCV_EXCP_NONE ||
         riscv_cpu_vsirq_pending(env) != RISCV_EXCP_NONE ||
+        env->rnmip != 0 ||
         env->debug_cs;
 }
 #endif /* !CONFIG_USER_ONLY */

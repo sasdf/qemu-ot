@@ -841,6 +841,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
                              OT_FLASH_LC_ISO_PART_SW_WR_EN),
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_NVM_DEBUG_EN, FLASH_CTRL,
                              OT_LC_BROADCAST, OT_FLASH_LC_NVM_DEBUG_EN),
+            OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_RMA, FLASH_CTRL,
+                             OT_LC_BROADCAST, OT_FLASH_LC_RMA),
             /* Signals to OTP */
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_CHECK_BYP_EN, OTP_CTRL,
                              OT_LC_BROADCAST, OT_OTP_LC_CHECK_BYP_EN)

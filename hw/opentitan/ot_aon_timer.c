@@ -126,6 +126,7 @@ struct OtAonTimerState {
 
     int64_t wkup_origin_ns;
     int64_t wdog_origin_ns;
+    bool wdog_bark_level;
     bool wdog_bite;
     bool lc_escalate_en;
     uint32_t pclks[OT_AON_TIMER_CLOCK_SRC_COUNT];
@@ -291,6 +292,7 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
 
     /* if not enabled, ignore threshold */
     if (!ot_aon_timer_is_wdog_enabled(s)) {
+        s->wdog_bark_level = false;
         timer_del(s->wdog_timer);
         ot_aon_timer_update_irqs(s);
         return;
@@ -302,8 +304,13 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     uint32_t threshold;
     bool pending;
 
-    if (count >= bark_threshold) {
+    bool bark_level = (count >= bark_threshold);
+    if (bark_level && !s->wdog_bark_level) {
         s->regs[R_INTR_STATE] |= INTR_WDOG_TIMER_BARK_MASK;
+    }
+    s->wdog_bark_level = bark_level;
+
+    if (bark_level) {
         threshold = UINT32_MAX;
         pending = false;
     } else {
@@ -561,9 +568,6 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
             if (change & INTR_WKUP_TIMER_EXPIRED_MASK) {
                 timer_mod_anticipate(s->wkup_timer, next);
             }
-            if (change & INTR_WDOG_TIMER_BARK_MASK) {
-                timer_mod_anticipate(s->wdog_timer, next);
-            }
         }
         break;
     }
@@ -622,6 +626,7 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
     } else {
         memset(s->regs, 0, sizeof(s->regs));
         s->regs[R_WDOG_REGWEN] = 1u;
+        s->wdog_bark_level = false;
         s->wdog_bite = false;
         s->lc_escalate_en = false;
     }

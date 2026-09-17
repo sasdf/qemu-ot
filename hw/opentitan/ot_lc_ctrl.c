@@ -834,7 +834,7 @@ static void ot_lc_ctrl_update_broadcast(OtLcCtrlState *s)
                     LC_BCAST_BIT(OWNER_SEED_SW_RW_EN) |
                     LC_BCAST_BIT(ISO_PART_SW_RD_EN) |
                     LC_BCAST_BIT(ISO_PART_SW_WR_EN) |
-                    LC_BCAST_BIT(SEED_HW_RD_EN) | LC_BCAST_BIT(RMA);
+                    LC_BCAST_BIT(SEED_HW_RD_EN);
             div_type = LC_DIV_RMA;
             break;
         case LC_STATE_SCRAP:
@@ -1473,6 +1473,10 @@ static void ot_lc_ctrl_resume_transition(OtLcCtrlState *s)
         s->lc_state = LC_STATE_POST_TRANSITION;
     } else {
         trace_ot_lc_ctrl_info(s->ot_id, "Valid token");
+
+        if (target_state == LC_STATE_RMA) {
+            ibex_irq_set(&s->broadcasts[OT_LC_RMA], 1);
+        }
 
         LC_FSM_CHANGE_STATE(s, ST_TRANS_PROG);
 
