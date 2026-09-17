@@ -773,6 +773,13 @@ static void ot_pwrmgr_fast_fsm_tick(OtPwrMgrState *s)
         /* fallthrough */
     case OT_PWR_FAST_ST_RESET_PREP:
         PWR_CHANGE_FAST_STATE(s, RESET_WAIT);
+        if ((s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK) &&
+            !(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+            ibex_irq_set(&s->reset_req,
+                         OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                 OT_RSTMGR_RESET_LOW_POWER));
+            ibex_irq_set(&s->reset_req, 0);
+        }
         ibex_irq_set(&s->reset_req,
                      OT_RSTMGR_RESET_REQUEST(s->reset_request.domain,
                                              s->reset_request.req));

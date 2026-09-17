@@ -1492,7 +1492,9 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->entropy_requested = false;
     s->esc_rx = false;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
-    ot_ibex_wrapper_update_nmi(s);
+    if (s->cpu) {
+        riscv_cpu_set_rnmi(s->cpu, 31, false);
+    }
 
     memset(s->log_engine, 0, sizeof(*s->log_engine));
 }
@@ -1512,6 +1514,7 @@ static void ot_ibex_wrapper_reset_exit(Object *obj, ResetType type)
 
     /* "Upon reset the data will be invalid with a new EDN request pending." */
     ot_ibex_wrapper_request_entropy(s);
+    ot_ibex_wrapper_update_nmi(s);
 }
 
 static void ot_ibex_wrapper_realize(DeviceState *dev, Error **errp)

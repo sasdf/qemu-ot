@@ -382,7 +382,8 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         return;
     }
 
-    s->regs[R_RESET_INFO] = req;
+    /* Only SW is allowed to clear a reset reason, HW only sets bits (|=) */
+    s->regs[R_RESET_INFO] |= req;
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
 
