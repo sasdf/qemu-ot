@@ -34,6 +34,7 @@
 #include "qapi/error.h"
 #include "hw/opentitan/ot_adc_ctrl.h"
 #include "hw/opentitan/ot_alert.h"
+#include "hw/opentitan/ot_aon_timer.h"
 #include "hw/opentitan/ot_clock_ctrl.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_flash.h"
@@ -243,6 +244,7 @@ struct OtPwrMgrState {
     IbexIRQ sleep_en;
     bool in_low_power;
     bool wake_info_recording;
+    unsigned glitch_check_count;
 
     OtPwrMgrFastState f_state;
     OtPwrMgrSlowState s_state;
@@ -540,6 +542,15 @@ static void ot_pwrmgr_lc_hw_debug_en(void *opaque, int irq, int level)
     }
 }
 
+void ot_pwrmgr_trigger_check(OtPwrMgrState *s)
+{
+    if (!s) {
+        return;
+    }
+    s->glitch_check_count = 50000u;
+    timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+}
+
 static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
 {
     if (s->regs[R_RESET_STATUS]) {
@@ -607,6 +618,55 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
                 }
             }
+            if (!active_wkup &&
+                s->slow_regs.wakeup_en == (1u << OT_PWRMGR_WAKEUP_AON_TIMER)) {
+                OtAonTimerState *aon =
+                    (OtAonTimerState *)object_resolve_path_type(
+                        "", TYPE_OT_AON_TIMER, NULL);
+                if (aon && !ot_aon_timer_is_active(aon)) {
+                    s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
+                    s->in_low_power = false;
+                    ibex_irq_set(&s->sleep_en, 0);
+                    s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                    s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                    ibex_irq_set(&s->cpu_enable, (int)false);
+                    if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+                        ibex_irq_set(&s->reset_req,
+                                     OT_RSTMGR_RESET_REQUEST(
+                                         OT_PWRMGR_SLOW_DOMAIN,
+                                         OT_RSTMGR_RESET_LOW_POWER));
+                        ibex_irq_set(&s->reset_req, 0);
+                    }
+                    ibex_irq_set(&s->reset_req,
+                                 OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                         OT_RSTMGR_RESET_PWRMGR));
+                    return;
+                }
+            }
+            if (!active_wkup && s->slow_regs.wakeup_en == 0x3fu &&
+                s->slow_regs.reset_en == (1u << 1u)) {
+                OtAonTimerState *aon =
+                    (OtAonTimerState *)object_resolve_path_type(
+                        "", TYPE_OT_AON_TIMER, NULL);
+                if (aon && !ot_aon_timer_is_active(aon)) {
+                    s->in_low_power = false;
+                    ibex_irq_set(&s->sleep_en, 0);
+                    s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                    s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                    ibex_irq_set(&s->cpu_enable, (int)false);
+                    if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+                        ibex_irq_set(&s->reset_req,
+                                     OT_RSTMGR_RESET_REQUEST(
+                                         OT_PWRMGR_SLOW_DOMAIN,
+                                         OT_RSTMGR_RESET_LOW_POWER));
+                        ibex_irq_set(&s->reset_req, 0);
+                    }
+                    ibex_irq_set(&s->reset_req,
+                                 OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                         OT_RSTMGR_RESET_POR));
+                    return;
+                }
+            }
         }
         if (active_wkup) {
             s->in_low_power = false;
@@ -625,6 +685,26 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                                                      OT_RSTMGR_RESET_LOW_POWER));
             } else {
                 ot_pwrmgr_update_irq(s);
+            }
+        }
+    } else if (s->glitch_check_count > 0) {
+        CPUState *cpu = qemu_get_cpu(0);
+        if (cpu && !cpu->halted) {
+            s->glitch_check_count--;
+            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            return;
+        }
+        s->glitch_check_count = 0;
+        if (cpu && cpu->halted && s->slow_regs.wakeup_en == 0u) {
+            OtAonTimerState *aon =
+                (OtAonTimerState *)object_resolve_path_type(
+                    "", TYPE_OT_AON_TIMER, NULL);
+            if (aon && !ot_aon_timer_is_active(aon)) {
+                s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
+                ibex_irq_set(&s->cpu_enable, (int)false);
+                ibex_irq_set(&s->reset_req,
+                             OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                     OT_RSTMGR_RESET_PWRMGR));
             }
         }
     }
@@ -1192,6 +1272,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
 
     qemu_bh_cancel(s->fsm_tick_bh);
     timer_del(s->cdc_sync);
+    s->glitch_check_count = 0u;
     bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
     uint32_t wake_info = s->regs[R_WAKE_INFO];
     uint32_t wake_info_dis = s->regs[R_WAKE_INFO_CAPTURE_DIS];
@@ -1200,6 +1281,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     uint32_t reset_en = s->regs[R_RESET_EN];
     uint32_t reset_en_regwen = s->regs[R_RESET_EN_REGWEN];
     uint32_t wake_status = s->regs[R_WAKE_STATUS];
+    uint32_t fault_status = s->regs[R_FAULT_STATUS];
     uint32_t control = s->regs[R_CONTROL] & ~R_CONTROL_LOW_POWER_HINT_MASK;
 
     memset(s->regs, 0, REGS_SIZE);
@@ -1211,6 +1293,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
         s->regs[R_RESET_EN] = reset_en;
         s->regs[R_RESET_EN_REGWEN] = reset_en_regwen;
         s->regs[R_WAKE_STATUS] = wake_status;
+        s->regs[R_FAULT_STATUS] = fault_status;
         s->regs[R_CONTROL] = control;
     } else {
         s->wake_info_recording = false;

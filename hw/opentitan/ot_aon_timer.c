@@ -211,9 +211,16 @@ static inline bool ot_aon_timer_is_wkup_enabled(OtAonTimerState *s)
 
 static inline bool ot_aon_timer_is_wdog_enabled(OtAonTimerState *s)
 {
-    return (bool)FIELD_EX32(s->regs[R_WDOG_REGWEN], WDOG_REGWEN, REGWEN) &&
-           (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE) &&
+    return (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE) &&
            !s->lc_escalate_en;
+}
+
+bool ot_aon_timer_is_active(OtAonTimerState *s)
+{
+    if (!s) {
+        return false;
+    }
+    return ot_aon_timer_is_wkup_enabled(s) || ot_aon_timer_is_wdog_enabled(s);
 }
 
 static inline bool ot_aon_timer_wdog_register_write_enabled(OtAonTimerState *s)

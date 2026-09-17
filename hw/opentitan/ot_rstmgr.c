@@ -40,6 +40,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_i2c.h"
+#include "hw/opentitan/ot_pwrmgr.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_spi_device.h"
 #include "hw/opentitan/ot_spi_host.h"
@@ -226,6 +227,7 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_SYSCTRL] = BIT(3),
             [OT_RSTMGR_RESET_AON_TIMER] = BIT(4),
             [OT_RSTMGR_RESET_SENSOR] = BIT(5),
+            [OT_RSTMGR_RESET_PWRMGR] = BIT(5),
             [OT_RSTMGR_RESET_ALERT_HANDLER] = BIT(6),
             [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
@@ -433,9 +435,18 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         s->por = true;
     }
     s->regs[R_RESET_INFO] |= req;
-    ot_rstmgr_pending_internal_reset = true;
-    ot_rstmgr_last_reset_por = (level == OT_RSTMGR_RESET_POR);
-    ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
+    if (!ot_rstmgr_pending_internal_reset) {
+        ot_rstmgr_pending_internal_reset = true;
+        ot_rstmgr_last_reset_por = (level == OT_RSTMGR_RESET_POR);
+        ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
+    } else {
+        if (level == OT_RSTMGR_RESET_POR) {
+            ot_rstmgr_last_reset_por = true;
+        }
+        if (level == OT_RSTMGR_RESET_LOW_POWER) {
+            ot_rstmgr_last_reset_low_power = true;
+        }
+    }
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
 
@@ -575,6 +586,14 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (s->regs[R_CPU_REGWEN]) {
             val32 &= CPU_INFO_CTRL_MASK;
             s->regs[reg] = val32;
+            if (val32 & R_CPU_INFO_CTRL_EN_MASK) {
+                OtPwrMgrState *pwrmgr =
+                    (OtPwrMgrState *)object_resolve_path_type(
+                        "", TYPE_OT_PWRMGR, NULL);
+                if (pwrmgr) {
+                    ot_pwrmgr_trigger_check(pwrmgr);
+                }
+            }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
                           __func__, s->ot_id, REG_NAME(reg));
@@ -667,7 +686,8 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
     if (s->por || ot_rstmgr_is_por_reset()) {
         memset(s->cpu_info_dump, 0, sizeof(s->cpu_info_dump));
         memset(s->alert_info_dump, 0, sizeof(s->alert_info_dump));
-        s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK;
+        s->regs[R_RESET_INFO] =
+            R_RESET_INFO_POR_MASK | (reset_info & R_RESET_INFO_LOW_POWER_EXIT_MASK);
         s->por = false;
         ot_rstmgr_last_reset_low_power = false;
     } else {
