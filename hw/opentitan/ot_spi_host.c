@@ -384,6 +384,11 @@ struct OtSPIHostState {
     uint8_t bb_last_tx_bit;
     unsigned bb_completed_txns;
 
+    /* 32-bit shift-register loopback when no SSI slave is attached or loopback prop set */
+    uint8_t loopback_fifo[4];
+    unsigned loopback_len;
+    bool loopback;
+
     /* properties */
     char *ot_id;
     char *clock_name; /* clock name */
@@ -569,6 +574,9 @@ static void ot_spi_host_update_muxed_cs0(OtSPIHostState *s)
 static void ot_spi_host_chip_select(OtSPIHostState *s, unsigned csid,
                                     bool activate)
 {
+    if (!activate) {
+        s->loopback_len = 0;
+    }
     if (csid < s->num_cs) {
         trace_ot_spi_host_cs(s->ot_id, csid, activate ? "" : "de");
         if (csid == 0u) {
@@ -1064,8 +1072,17 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
                         "%s: %s: Host transfer while Passthrough is active\n",
                         __func__, s->ot_id);
                 }
-            } else {
+            } else if (!s->loopback && !QTAILQ_EMPTY(&BUS(s->ssi)->children)) {
                 rx = (uint8_t)ssi_transfer(s->ssi, tx);
+            } else {
+                if (s->loopback_len < 4u) {
+                    rx = 0xffu;
+                    s->loopback_fifo[s->loopback_len++] = tx;
+                } else {
+                    rx = s->loopback_fifo[0];
+                    memmove(&s->loopback_fifo[0], &s->loopback_fifo[1], 3u);
+                    s->loopback_fifo[3] = tx;
+                }
             }
         }
 
@@ -1650,6 +1667,7 @@ static const Property ot_spi_host_properties[] = {
                        FSM_START_DELAY_NS),
     DEFINE_PROP_UINT32("completion-delay", OtSPIHostState, completion_delay_ns,
                        0),
+    DEFINE_PROP_BOOL("loopback", OtSPIHostState, loopback, false),
     DEFINE_PROP_UINT8("version", OtSPIHostState, version, 0),
 };
 
