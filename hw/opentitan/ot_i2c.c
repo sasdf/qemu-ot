@@ -50,7 +50,9 @@
 #include "qemu/osdep.h"
 #include "qemu/fifo8.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/timer.h"
+#include "block/aio.h"
 #include "qapi/error.h"
 #include "hw/i2c/i2c.h"
 #include "hw/opentitan/ot_alert.h"
@@ -837,12 +839,31 @@ static void ot_i2c_clock_input(void *opaque, int irq, int level)
     /* TODO: disable I2C transfers when PCLK is 0 */
 }
 
+static void ot_i2c_pump_async_bus(OtI2CState *s)
+{
+    static bool pumping;
+    if (pumping || !s || !s->bus) {
+        return;
+    }
+    pumping = true;
+    int max_iters = 32;
+    while ((s->bus->bh != NULL || !QSIMPLEQ_EMPTY(&s->bus->pending_masters)) &&
+           max_iters-- > 0) {
+        if (!aio_bh_poll(qemu_get_aio_context())) {
+            break;
+        }
+    }
+    pumping = false;
+}
+
 static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtI2CState *s = opaque;
     uint32_t val32 = 0;
     hwaddr reg = R32_OFF(addr);
     (void)size;
+
+    ot_i2c_pump_async_bus(s);
 
     switch (reg) {
     case R_INTR_STATE:
@@ -1119,6 +1140,7 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
 
         /* Allow target mode to process data. */
         i2c_schedule_pending_master(s->bus);
+        ot_i2c_pump_async_bus(s);
     }
 
     uint64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
