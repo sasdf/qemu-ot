@@ -105,7 +105,6 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #undef REG_NAME_ENTRY
 
 #define OT_ROM_CTRL_NUM_ADDR_SUBST_PERM_ROUNDS 2u
-#define OT_ROM_CTRL_NUM_DATA_SUBST_PERM_ROUNDS 2u
 #define OT_ROM_CTRL_NUM_PRINCE_HALF_ROUNDS     3u
 
 #define OT_ROM_CTRL_DATA_BITS  (sizeof(uint32_t) * 8u)
@@ -296,13 +295,6 @@ static unsigned ot_rom_ctrl_addr_sp_enc(const OtRomCtrlState *s, unsigned addr)
                                       OT_ROM_CTRL_NUM_ADDR_SUBST_PERM_ROUNDS);
 }
 
-static uint64_t ot_rom_ctrl_data_sp_enc(const OtRomCtrlState *s, uint64_t in)
-{
-    (void)s;
-    return ot_rom_ctrl_subst_perm_enc(in, 0, OT_ROM_CTRL_WORD_BITS,
-                                      OT_ROM_CTRL_NUM_DATA_SUBST_PERM_ROUNDS);
-}
-
 static uint64_t
 ot_rom_ctrl_get_keystream(const OtRomCtrlState *s, unsigned addr)
 {
@@ -323,7 +315,7 @@ static uint64_t
 ot_rom_ctrl_scramble_word(const OtRomCtrlState *s, unsigned addr, uint64_t in)
 {
     uint64_t keystream = ot_rom_ctrl_get_keystream(s, addr);
-    return ot_rom_ctrl_data_sp_enc(s, keystream ^ in);
+    return keystream ^ in;
 }
 
 static uint32_t ot_rom_ctrl_verify_ecc_39_32_u32(

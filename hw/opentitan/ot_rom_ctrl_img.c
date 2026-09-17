@@ -49,13 +49,14 @@ static OtRomImgFormat ot_rom_img_guess_image_format(const char *filename)
     uint8_t data[128u];
     ssize_t len = read(fd, data, sizeof(data));
     data[sizeof(data) - 1u] = '\0';
-    close(fd);
 
     if (len < sizeof(data)) {
+        close(fd);
         return OT_ROM_IMG_FORMAT_NONE;
     }
 
     if (!memcmp(data, ELF_HEADER, sizeof(ELF_HEADER))) {
+        close(fd);
         return OT_ROM_IMG_FORMAT_ELF;
     }
 
@@ -76,6 +77,8 @@ static OtRomImgFormat ot_rom_img_guess_image_format(const char *filename)
             }
         }
     }
+
+    close(fd);
 
     if (data[0u] == '@') { /* likely a VMEM file */
         bool addr = true;
