@@ -746,10 +746,6 @@ static bool ot_spi_host_update_event(OtSPIHostState *s)
 
 static bool ot_spi_host_update_error(OtSPIHostState *s)
 {
-    if (s->regs[R_ERROR_STATUS] & s->regs[R_ERROR_ENABLE]) {
-        s->regs[R_INTR_STATE] |= INTR_ERROR_MASK;
-    }
-
     if (s->regs[R_INTR_TEST] & INTR_ERROR_MASK) {
         s->regs[R_INTR_TEST] &= ~INTR_ERROR_MASK;
         s->regs[R_INTR_STATE] |= INTR_ERROR_MASK;
@@ -769,6 +765,18 @@ static void ot_spi_host_update_regs(OtSPIHostState *s)
 {
     ot_spi_host_update_error(s);
     ot_spi_host_update_event(s);
+    s->regs[R_STATUS] = ot_spi_host_get_status(s);
+}
+
+static void ot_spi_host_raise_error(OtSPIHostState *s, uint32_t err_mask)
+{
+    s->regs[R_ERROR_STATUS] |= err_mask;
+    uint32_t error_enable =
+        s->regs[R_ERROR_ENABLE] | R_ERROR_STATUS_ACCESSINVAL_MASK;
+    if (err_mask & error_enable) {
+        s->regs[R_INTR_STATE] |= INTR_ERROR_MASK;
+    }
+    ot_spi_host_update_regs(s);
 }
 
 static void ot_spi_host_update_alert(OtSPIHostState *s)
@@ -955,6 +963,10 @@ static void ot_spi_host_internal_reset(OtSPIHostState *s)
 
 static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
 {
+    if (s->regs[R_ERROR_STATUS] || !(REG_GET(s, CONTROL, SPIEN))) {
+        return;
+    }
+
     trace_ot_spi_host_fsm(s->ot_id, s->active.cmd.id, cause);
 
     ot_spi_host_update_event(s);
@@ -1097,7 +1109,7 @@ post:
         if (!s->completion_delay_ns) {
             unsigned spiclock = s->pclk / ((clkdiv + 1u) * 2u);
             delay = NANOSECONDS_PER_SECOND / (int64_t)spiclock;
-            delay *= s->active.size;
+            delay *= s->active.size * 8u;
             delay >>= speed;
         } else {
             delay = (int64_t)s->completion_delay_ns;
@@ -1177,7 +1189,17 @@ static void ot_spi_host_schedule_fsm(void *opaque)
 {
     OtSPIHostState *s = opaque;
 
+    if (s->regs[R_ERROR_STATUS] || !(REG_GET(s, CONTROL, SPIEN))) {
+        return;
+    }
+
     trace_ot_spi_host_fsm(s->ot_id, s->active.cmd.id, "sched");
+
+    if (s->active.state == CMD_NONE && !cmdfifo_is_empty(s->cmd_fifo)) {
+        cmdfifo_pop(s->cmd_fifo, &s->active.cmd);
+        s->active.state = CMD_ONGOING;
+        s->active.size = 0u;
+    }
 
     bool retire = s->active.state == CMD_EXECUTED;
 
@@ -1259,8 +1281,7 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
         if (fifo8_num_used(s->rx_fifo) < sizeof(uint32_t)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Read underflow: %u\n",
                           __func__, s->ot_id, fifo8_num_used(s->rx_fifo));
-            REG_UPDATE(s, ERROR_STATUS, UNDERFLOW, 1);
-            ot_spi_host_update_regs(s);
+            ot_spi_host_raise_error(s, R_ERROR_STATUS_UNDERFLOW_MASK);
             val32 = 0u;
             break;
         }
@@ -1382,8 +1403,9 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             ot_spi_host_internal_reset(s);
         }
         s->fsm.output_en = FIELD_EX32(val32, CONTROL, OUTPUT_EN);
-        if (!cmdfifo_is_empty(s->cmd_fifo)) {
-            ot_spi_host_step_fsm(s, "ctrl");
+        if (REG_GET(s, CONTROL, SPIEN) && !s->regs[R_ERROR_STATUS] &&
+            (s->active.state != CMD_NONE || !cmdfifo_is_empty(s->cmd_fifo))) {
+            ot_spi_host_schedule_fsm(s);
         }
         break;
     case R_CONFIGOPTS:
@@ -1410,8 +1432,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         if (!ot_spi_host_is_ready(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: busy (cmd_fifo full)\n",
                           __func__, s->ot_id);
-            REG_UPDATE(s, ERROR_STATUS, CMDBUSY, 1u);
-            ot_spi_host_update_regs(s);
+            ot_spi_host_raise_error(s, R_ERROR_STATUS_CMDBUSY_MASK);
             break;
         }
 
@@ -1422,7 +1443,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: invalid command parameters\n", __func__,
                           s->ot_id);
-            REG_UPDATE(s, ERROR_STATUS, CMDINVAL, 1u);
+            ot_spi_host_raise_error(s, R_ERROR_STATUS_CMDINVAL_MASK);
         }
 
         unsigned csid = s->regs[R_CSID];
@@ -1431,7 +1452,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             /* CSID exceeds max num_cs */
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: invalid csid: %u\n",
                           __func__, s->ot_id, csid);
-            REG_UPDATE(s, ERROR_STATUS, CSIDINVAL, 1u);
+            ot_spi_host_raise_error(s, R_ERROR_STATUS_CSIDINVAL_MASK);
             csid = 0;
         }
 
@@ -1451,7 +1472,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
 
         cmdfifo_push(s->cmd_fifo, &slot);
 
-        if (s->active.state == CMD_NONE) {
+        if (s->active.state == CMD_NONE && !s->regs[R_ERROR_STATUS]) {
             cmdfifo_pop(s->cmd_fifo, &s->active.cmd);
             s->active.state = CMD_ONGOING;
             s->active.size = 0u;
@@ -1482,8 +1503,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_TXDATA: {
         if (txfifo_is_full(s->tx_fifo)) {
-            REG_UPDATE(s, ERROR_STATUS, OVERFLOW, 1u);
-            ot_spi_host_update_regs(s);
+            ot_spi_host_raise_error(s, R_ERROR_STATUS_OVERFLOW_MASK);
             return;
         }
 
@@ -1510,11 +1530,12 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
          */
         val32 &= R_ERROR_STATUS_MASK;
         s->regs[R_ERROR_STATUS] &= ~val32;
-        if (!cmdfifo_is_empty(s->cmd_fifo) && !s->regs[R_ERROR_STATUS] &&
+        if (!s->regs[R_ERROR_STATUS] &&
+            (s->active.state != CMD_NONE || !cmdfifo_is_empty(s->cmd_fifo)) &&
             !s->fsm.tx_stall && !s->fsm.rx_stall) {
-            ot_spi_host_step_fsm(s, "err");
+            ot_spi_host_schedule_fsm(s);
         } else {
-            ot_spi_host_update_error(s);
+            ot_spi_host_update_regs(s);
         }
         break;
     case R_EVENT_ENABLE:
