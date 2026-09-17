@@ -85,5 +85,7 @@ pub trait Memory: Send {
         true
     }
 
+    fn reset(&mut self) {}
+
     fn update_from_slice(&mut self, src: &[u32]);
 }

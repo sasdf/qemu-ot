@@ -319,14 +319,16 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
         if (s->proxy_defer) {
             /*
              * timer is used to simulate a delayed processing, which maybe
-             * useful to pass some test suites such as OT smoketest wait 100
-             * microsecs so that the virtual hart can be scheduled and may poll
+             * useful to pass some test suites such as OT smoketest wait
+             * so that the virtual hart can be scheduled and may poll
              * the status register before the actual completion is signalled
              * from the OTBN working thread.
              */
+            uint32_t insncount = ot_otbn_proxy_get_instruction_count(s->proxy);
+            uint64_t delay_ns = MAX(500000ULL, (uint64_t)insncount * 64ULL);
             timer_del(s->proxy_defer);
             timer_mod(s->proxy_defer,
-                      qemu_clock_get_us(OT_VIRTUAL_CLOCK) + 100u);
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
         } else {
             ot_otbn_post_execute(s);
         }
@@ -860,7 +862,7 @@ static void ot_otbn_init(Object *obj)
     }
 
     s->proxy_completion_bh = qemu_bh_new(&ot_otbn_proxy_completion_bh, s);
-    s->proxy_defer = timer_new_us(OT_VIRTUAL_CLOCK, &ot_otbn_post_execute, s);
+    s->proxy_defer = timer_new_ns(OT_VIRTUAL_CLOCK, &ot_otbn_post_execute, s);
     s->proxy =
         ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
                           &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],

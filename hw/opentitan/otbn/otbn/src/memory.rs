@@ -90,6 +90,9 @@ impl Memory for VecMemory {
 
         // Calculate vector index data to update is contained in
         let word_addr = (addr >> 2) as usize;
+        if word_addr >= self.mem.len() {
+            return false;
+        }
 
         self.mem[word_addr] = store_data;
         self.valid[word_addr] = true;
@@ -114,6 +117,10 @@ impl Memory for VecMemory {
     fn is_valid(&self, addr: u32) -> bool {
         let word_addr = (addr >> 2) as usize;
         self.valid.get(word_addr).copied().unwrap_or(false)
+    }
+
+    fn reset(&mut self) {
+        self.valid.fill(false);
     }
 }
 
@@ -150,5 +157,9 @@ impl Memory for MemoryRegion {
 
     fn is_valid(&self, addr: u32) -> bool {
         self.memory.is_valid(addr)
+    }
+
+    fn reset(&mut self) {
+        self.memory.reset()
     }
 }

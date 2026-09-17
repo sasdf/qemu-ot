@@ -130,6 +130,8 @@ impl Proxy {
                     regs.fatal_bits.store(0, Ordering::Relaxed);
                     regs.ctrl.store(false, Ordering::Relaxed);
                     regs.insn_count.store(0, Ordering::Relaxed);
+                    self.imem.lock().unwrap().reset();
+                    self.dmem.lock().unwrap().reset();
                 }
                 _ => (),
             }

@@ -925,13 +925,24 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let mut bytes = [0; size_of::<U256>()];
         const RSIZE: usize = size_of::<u32>();
         for (pos, bchunk) in (0..bytes.len()).step_by(RSIZE).zip(bytes.chunks_mut(RSIZE)) {
-            if !self.dmem.is_valid(src + pos as u32) {
-                return Err(InstructionTrap::Exception(
-                    ExceptionCause::EFatal,
-                    Some(super::otbn::ErrBits::DMEM_INTG_VIOLATION.bits()),
-                ));
-            }
-            let word = self.dmem.read_mem(src + pos as u32).unwrap();
+            let word_addr = src.wrapping_add(pos as u32);
+            let word = match self.dmem.read_mem(word_addr) {
+                Some(w) => {
+                    if !self.dmem.is_valid(word_addr) {
+                        return Err(InstructionTrap::Exception(
+                            ExceptionCause::EFatal,
+                            Some(super::otbn::ErrBits::DMEM_INTG_VIOLATION.bits()),
+                        ));
+                    }
+                    w
+                }
+                None => {
+                    return Err(InstructionTrap::Exception(
+                        ExceptionCause::EBadDataAddr,
+                        Some(word_addr),
+                    ));
+                }
+            };
             bchunk.copy_from_slice(&word.to_le_bytes()[..]);
         }
         let wvalue = U256::from_le_bytes(bytes);
@@ -994,6 +1005,20 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
             addr.wrapping_sub(-offset as u32)
         };
 
+        let wvalue = self.hart_state.read_wide_register(wri as usize)?;
+        let bytes = wvalue.to_le_bytes();
+        const RSIZE: usize = size_of::<u32>();
+        for pos in (0..bytes.len()).step_by(RSIZE) {
+            let word_addr = dst.wrapping_add(pos as u32);
+            let word = u32::from_le_bytes(bytes[pos..pos + RSIZE].try_into().unwrap());
+            if !self.dmem.write_mem(word_addr, word) {
+                return Err(InstructionTrap::Exception(
+                    ExceptionCause::EBadDataAddr,
+                    Some(word_addr),
+                ));
+            }
+        }
+
         if grs1_inc {
             let addr = addr.wrapping_add(size_of::<U256>() as u32);
             self.hart_state.write_register(dec_insn.rs1, addr)?;
@@ -1001,14 +1026,6 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
 
         if grs2_inc {
             self.hart_state.write_register(dec_insn.rs2, wri + 1)?;
-        }
-
-        let wvalue = self.hart_state.read_wide_register(wri as usize)?;
-        let bytes = wvalue.to_le_bytes();
-        const RSIZE: usize = size_of::<u32>();
-        for pos in (0..bytes.len()).step_by(RSIZE) {
-            let word = u32::from_le_bytes(bytes[pos..pos + RSIZE].try_into().unwrap());
-            self.dmem.write_mem(dst + pos as u32, word);
         }
 
         Ok(false)
