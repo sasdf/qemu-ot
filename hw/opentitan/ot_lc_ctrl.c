@@ -1722,7 +1722,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         break;
     case R_TRANSITION_CTRL:
         val32 = 0;
-        if (ot_lc_ctrl_is_transition_en(s, ifreq)) {
+        if (ot_lc_ctrl_is_hw_mutex_owner(s, ifreq)) {
             if (s->ext_clock_en) {
                 val32 |= R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK;
             }
