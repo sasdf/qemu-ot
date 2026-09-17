@@ -1968,6 +1968,11 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_INTR_STATE:
+        if (s->csb_poll_enabled) {
+            s->csb_poll_enabled = false;
+            s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         val32 = s->spi_regs[R_INTR_STATE] | s->spi_regs[R_INTR_TEST];
         break;
     case R_INTR_ENABLE:
