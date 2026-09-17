@@ -314,30 +314,33 @@ static void ot_vmapper_show_range_tree(const OtVMapperState *s, bool insn)
 /* class singleton */
 static OtVMapperClass *ot_vmapper_class;
 
+static OtRegionRange *
+ot_vmapper_lookup_range(OtVMapperState *s, bool insn, uint32_t addr)
+{
+    OtRegionRange *range = s->lranges[insn];
+
+    if (!range || (addr < range->start) || (addr > range->end)) {
+        GTree *tree = insn ? s->itree : s->dtree;
+        range = g_tree_lookup(tree, VMAP_RANGE_TO_TREE_KEY(addr, 0));
+        s->lranges[insn] = range;
+    }
+
+    return range;
+}
+
 static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
                                    hwaddr *physical, int *ret_prot, vaddr addr,
                                    int access_type)
 {
     bool insn = access_type == MMU_INST_FETCH;
 
-    OtRegionRange *range = s->lranges[insn];
-
 #ifdef SHOW_ADDRESS_MAPPING
-    bool trace;
+    OtRegionRange *prev_range = s->lranges[insn];
 #endif
-    if (!range || (((uint32_t)addr) < range->start) ||
-        (((uint32_t)addr) > range->end)) {
-        GTree *tree = insn ? s->itree : s->dtree;
-        range = g_tree_lookup(tree, VMAP_RANGE_TO_TREE_KEY(addr, 0));
-        s->lranges[insn] = range;
+    OtRegionRange *range = ot_vmapper_lookup_range(s, insn, (uint32_t)addr);
 #ifdef SHOW_ADDRESS_MAPPING
-        trace = true;
+    bool trace = (range != prev_range);
 #endif
-    } else {
-#ifdef SHOW_ADDRESS_MAPPING
-        trace = false;
-#endif
-    }
 
     if G_UNLIKELY (!range || (addr > range->end)) {
         return TRANSLATE_FAIL;
@@ -348,13 +351,42 @@ static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
     }
 
     vaddr addr_page = addr & TARGET_PAGE_MASK;
-    env->tlb_subpage = (range->start > addr_page) ||
-                       (range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
-                       (((range->start ^ range->dest) & ~TARGET_PAGE_MASK) != 0);
+    bool range_subpage =
+        (range->start > addr_page) ||
+        (range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
+        (((range->start ^ range->dest) & ~TARGET_PAGE_MASK) != 0);
+
+    OtRegionRange *other_range =
+        ot_vmapper_lookup_range(s, !insn, (uint32_t)addr);
+    bool share_page = false;
+    if (!range_subpage && other_range && (addr <= other_range->end)) {
+        bool other_subpage =
+            (other_range->start > addr_page) ||
+            (other_range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
+            (((other_range->start ^ other_range->dest) & ~TARGET_PAGE_MASK) !=
+             0);
+        if (!other_subpage) {
+            uint32_t phys_page =
+                range->dest + ((uint32_t)addr_page - range->start);
+            uint32_t other_phys_page =
+                other_range->dest + ((uint32_t)addr_page - other_range->start);
+            share_page = (phys_page == other_phys_page);
+        }
+    }
+
+    env->tlb_subpage = range_subpage;
 
     hwaddr offset = addr - (hwaddr)range->start;
     *physical = range->dest + offset;
-    *ret_prot = PAGE_READ | PAGE_WRITE | (range->execute ? PAGE_EXEC : 0);
+
+    if (share_page) {
+        const OtRegionRange *irange = insn ? range : other_range;
+        *ret_prot = PAGE_READ | PAGE_WRITE | (irange->execute ? PAGE_EXEC : 0);
+    } else if (insn) {
+        *ret_prot = range->execute ? PAGE_EXEC : 0;
+    } else {
+        *ret_prot = PAGE_READ | PAGE_WRITE;
+    }
 
 #ifdef SHOW_ADDRESS_MAPPING
     if (trace) {
