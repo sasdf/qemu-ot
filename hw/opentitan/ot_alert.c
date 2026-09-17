@@ -252,6 +252,7 @@ struct OtAlertState {
     QEMUTimer reseed_timer;
     bool edn_connected;
     bool entropy_requested;
+    bool *alert_levels;
 };
 
 struct OtAlertClass {
@@ -537,11 +538,29 @@ ot_alert_reg_direct_rw0c_write(OtAlertState *s, unsigned reg, uint32_t value)
     DVAL(s->regs.shadow[reg]) &= value;
 }
 
+static void ot_alert_signal_tx(void *opaque, int n, int level);
+
 static void
 ot_alert_reg_direct_rw1c_write(OtAlertState *s, unsigned reg, uint32_t value)
 {
     value &= s->access_table[reg].mask;
     DVAL(s->regs.shadow[reg]) &= ~value;
+}
+
+static void
+ot_alert_reg_cause_rw1c_write(OtAlertState *s, unsigned reg, uint32_t value)
+{
+    value &= s->access_table[reg].mask;
+    DVAL(s->regs.shadow[reg]) &= ~value;
+
+    unsigned cause_base =
+        (unsigned)(uintptr_t)(s->regs.alerts.cause - s->regs.shadow);
+    if (reg >= cause_base && reg < cause_base + s->n_alerts) {
+        unsigned alert = reg - cause_base;
+        if (s->alert_levels[alert]) {
+            ot_alert_signal_tx(s, (int)alert, 1);
+        }
+    }
 }
 
 static void
@@ -843,6 +862,8 @@ static void ot_alert_signal_tx(void *opaque, int n, int level)
 
     g_assert(alert < s->n_alerts);
 
+    s->alert_levels[alert] = (bool)level;
+
     OtAlertArrays *alerts = &s->regs.alerts;
     bool alert_en = ot_shadow_reg_peek(&alerts->en_shadowed[alert]);
 
@@ -1055,7 +1076,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
     /* ALERT_CAUSE */
     for (unsigned ix = 0; ix < s->n_alerts; ix++) {
         table[offset + ix] =
-            R_ACC_M(cause_read, direct_rw1c_write, ALERT_CAUSE_EN_MASK);
+            R_ACC_M(cause_read, cause_rw1c_write, ALERT_CAUSE_EN_MASK);
     }
     offset += s->n_alerts;
 
@@ -1232,6 +1253,7 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs.shadow, 0, sizeof(OtShadowReg) * s->reg_count);
+    memset(s->alert_levels, 0, sizeof(bool) * s->n_alerts);
     s->crashdump_latched = 0;
     memset(s->latched_dump, 0, sizeof(s->latched_dump));
 
@@ -1309,6 +1331,7 @@ static void ot_alert_realize(DeviceState *dev, Error **errp)
     ibex_qdev_init_irqs(OBJECT(dev), s->esc_txs, OT_ALERT_ESCALATE,
                         PARAM_N_ESC_SEV);
 
+    s->alert_levels = g_new0(bool, s->n_alerts);
     qdev_init_gpio_in_named(dev, &ot_alert_signal_tx, OT_DEVICE_ALERT,
                             s->n_alerts);
 
