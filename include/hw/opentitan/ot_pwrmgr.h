@@ -81,6 +81,7 @@ typedef union {
 #define OT_PWRMGR_STRAP       TYPE_OT_PWRMGR "-strap"
 #define OT_PWRMGR_RST_REQ     TYPE_OT_PWRMGR "-reset-req"
 #define OT_PWRMGR_BOOT_STATUS TYPE_OT_PWRMGR "-boot-status"
+#define OT_PWRMGR_SLEEP_EN    TYPE_OT_PWRMGR "-sleep-en"
 
 /* input lines */
 #define OT_PWRMGR_LC_RSP  TYPE_OT_PWRMGR "-lc-rsp"

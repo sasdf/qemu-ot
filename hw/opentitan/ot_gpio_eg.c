@@ -129,6 +129,9 @@ struct OtGpioEgState {
     uint32_t pull_en; /* pull up/down enable */
     uint32_t pull_sel; /* pull up or pull down */
     uint32_t connected; /* connected to an external device */
+    uint32_t force_en; /* pinmux sleep force enable mask */
+    uint32_t force_oe; /* pinmux sleep force output enable mask */
+    uint32_t force_out; /* pinmux sleep force output value mask */
 
     char ibuf[PARAM_NUM_IO]; /* backed input buffer */
     unsigned ipos;
@@ -329,6 +332,32 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
         confstr[2u] = '.';
     }
     confstr[3u] = '\0';
+
+    uint32_t force_mode =
+        SHARED_FIELD_EX32(cfg, OT_PINMUX_PAD_ATTR_FORCE_MODE);
+    switch (force_mode) {
+    case OT_PINMUX_PAD_FORCE_LOW:
+        s->force_en |= bit;
+        s->force_oe |= bit;
+        s->force_out &= ~bit;
+        break;
+    case OT_PINMUX_PAD_FORCE_HIGH:
+        s->force_en |= bit;
+        s->force_oe |= bit;
+        s->force_out |= bit;
+        break;
+    case OT_PINMUX_PAD_FORCE_HIZ:
+        s->force_en |= bit;
+        s->force_oe &= ~bit;
+        s->force_out &= ~bit;
+        break;
+    case OT_PINMUX_PAD_FORCE_IGNORE:
+    default:
+        s->force_en &= ~bit;
+        s->force_oe &= ~bit;
+        s->force_out &= ~bit;
+        break;
+    }
 
     trace_ot_gpio_pad_attr_change(s->ot_id, no, cfg, confstr);
 
@@ -605,7 +634,11 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     /* if open drain is active and output is high, disable output enable */
     out_en &= ~(s->opendrain & outv);
 
-    uint32_t active = s->pull_en | out_en;
+    /* Apply PINMUX sleep retention force overrides */
+    out_en = (out_en & ~s->force_en) | (s->force_oe & s->force_en);
+    outv = (outv & ~s->force_en) | (s->force_out & s->force_en);
+
+    uint32_t active = (s->pull_en & ~s->force_en) | out_en;
     outv &= out_en;
 
     OtGpioEgBackendState bstate = { .hi_z = ~active,

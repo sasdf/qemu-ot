@@ -237,6 +237,8 @@ struct OtPwrMgrState {
     IbexIRQ pwr_otp_req;
     IbexIRQ reset_req;
     IbexIRQ boot_st;
+    IbexIRQ sleep_en;
+    bool in_low_power;
 
     OtPwrMgrFastState f_state;
     OtPwrMgrSlowState s_state;
@@ -514,24 +516,33 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
 
     uint32_t active_wkup = s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
 
-    if (active_wkup && (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) {
+    if (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK) {
         CPUState *cpu = qemu_get_cpu(0);
         if (cpu && !cpu->halted) {
             /* Wait until CPU executes WFI (core_sleeping_i == 1) */
-            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 5000);
+            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
             return;
         }
-        if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] & R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
-            s->regs[R_WAKE_INFO] |= active_wkup;
+        if (!s->in_low_power) {
+            s->in_low_power = true;
+            ibex_irq_set(&s->sleep_en, 1);
         }
-        s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-        s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-        s->regs[R_INTR_STATE] |= WAKEUP_MASK;
-        ot_pwrmgr_update_irq(s);
-        if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
-            ibex_irq_set(&s->reset_req,
-                         OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
-                                                 OT_RSTMGR_RESET_LOW_POWER));
+        if (active_wkup) {
+            s->in_low_power = false;
+            ibex_irq_set(&s->sleep_en, 0);
+            if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                  R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+                s->regs[R_WAKE_INFO] |= active_wkup;
+            }
+            s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+            s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+            s->regs[R_INTR_STATE] |= WAKEUP_MASK;
+            ot_pwrmgr_update_irq(s);
+            if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+                ibex_irq_set(&s->reset_req,
+                             OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
+                                                     OT_RSTMGR_RESET_LOW_POWER));
+            }
         }
     }
 }
@@ -1086,6 +1097,8 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     PWR_CHANGE_FAST_STATE(s, LOW_POWER);
     PWR_CHANGE_SLOW_STATE(s, RESET);
 
+    s->in_low_power = false;
+    ibex_irq_set(&s->sleep_en, 0);
     ot_pwrmgr_update_irq(s);
     ibex_irq_set(&s->strap, 0);
     ibex_irq_set(&s->cpu_enable, 0);
@@ -1162,6 +1175,7 @@ static void ot_pwrmgr_init(Object *obj)
     ibex_qdev_init_irq(obj, &s->strap, OT_PWRMGR_STRAP);
     ibex_qdev_init_irq(obj, &s->reset_req, OT_PWRMGR_RST_REQ);
     ibex_qdev_init_irq(obj, &s->boot_st, OT_PWRMGR_BOOT_STATUS);
+    ibex_qdev_init_irq(obj, &s->sleep_en, OT_PWRMGR_SLEEP_EN);
 
     s->cdc_sync = timer_new_ns(OT_VIRTUAL_CLOCK, &ot_pwrmgr_cdc_sync, s);
 
