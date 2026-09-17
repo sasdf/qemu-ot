@@ -468,6 +468,14 @@ typedef struct {
     bool rev_tx; /* Reverse TX bits */
 } SpiDeviceBus;
 
+typedef enum {
+    CSB_IDLE_HIGH_SEEN = 0,
+    CSB_ACTIVE_LOW_UNSEEN,
+    CSB_ACTIVE_LOW_SEEN,
+    CSB_RELEASED_LOW_UNSEEN,
+    CSB_IDLE_HIGH_UNSEEN,
+} OtSpiCsbSyncState;
+
 struct OtSPIDeviceState {
     SysBusDevice parent_obj;
 
@@ -491,6 +499,9 @@ struct OtSPIDeviceState {
     uint32_t *spi_regs; /* Registers */
     uint32_t *tpm_regs; /* Registers */
     uint32_t *sram;
+
+    OtSpiCsbSyncState csb_sync;
+    bool csb_poll_enabled;
 
     /* Properties */
     char *ot_id;
@@ -786,6 +797,9 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
     fifo8_reset(&tpm->rdfifo);
 
     memset(s->sram, 0u, SRAM_SIZE);
+
+    s->csb_poll_enabled = false;
+    s->csb_sync = CSB_IDLE_HIGH_SEEN;
 }
 
 static void ot_spi_device_update_irqs(OtSPIDeviceState *s)
@@ -893,6 +907,13 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     bus->failed_transaction = false;
 
     s->spi_regs[R_STATUS] = R_STATUS_CSB_MASK | R_STATUS_TPM_CSB_MASK;
+    if (s->csb_poll_enabled) {
+        if (s->csb_sync == CSB_ACTIVE_LOW_UNSEEN) {
+            s->csb_sync = CSB_RELEASED_LOW_UNSEEN;
+        } else if (s->csb_sync == CSB_ACTIVE_LOW_SEEN) {
+            s->csb_sync = CSB_IDLE_HIGH_UNSEEN;
+        }
+    }
 
     bool update_irq = false;
 
@@ -1977,10 +1998,41 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_CMD_INFO_EX4B:
     case R_CMD_INFO_WREN:
     case R_CMD_INFO_WRDI:
-    case R_STATUS:
         val32 = s->spi_regs[reg];
         break;
+    case R_STATUS:
+        if (!s->csb_poll_enabled) {
+            s->csb_poll_enabled = true;
+        }
+        val32 = s->spi_regs[reg];
+        switch (s->csb_sync) {
+        case CSB_IDLE_HIGH_SEEN:
+            val32 |= R_STATUS_CSB_MASK;
+            break;
+        case CSB_ACTIVE_LOW_UNSEEN:
+            val32 &= ~R_STATUS_CSB_MASK;
+            s->csb_sync = CSB_ACTIVE_LOW_SEEN;
+            break;
+        case CSB_ACTIVE_LOW_SEEN:
+            val32 &= ~R_STATUS_CSB_MASK;
+            break;
+        case CSB_RELEASED_LOW_UNSEEN:
+            val32 &= ~R_STATUS_CSB_MASK;
+            s->csb_sync = CSB_IDLE_HIGH_UNSEEN;
+            break;
+        case CSB_IDLE_HIGH_UNSEEN:
+            val32 |= R_STATUS_CSB_MASK;
+            s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            qemu_chr_fe_accept_input(&s->chr);
+            break;
+        }
+        break;
     case R_UPLOAD_STATUS:
+        if (s->csb_poll_enabled) {
+            s->csb_poll_enabled = false;
+            s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         val32 = 0;
         val32 = FIELD_DP32(val32, UPLOAD_STATUS, CMDFIFO_DEPTH,
                            ot_fifo32_num_used(&f->cmd_fifo));
@@ -2458,6 +2510,11 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
     /* @todo: also update the TPM CSB value when used in the protocol */
     s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
+    if (s->csb_poll_enabled) {
+        if (s->csb_sync == CSB_IDLE_HIGH_SEEN) {
+            s->csb_sync = CSB_ACTIVE_LOW_UNSEEN;
+        }
+    }
 
     /* discard the packet if we're within a failed transaction */
     if (bus->failed_transaction) {
@@ -2728,7 +2785,13 @@ static int ot_spi_device_chr_can_receive(void *opaque)
 
     switch (bus->state) {
     case SPI_BUS_IDLE:
-        length = fifo8_num_free(&bus->chr_fifo);
+        if (s->csb_poll_enabled &&
+            (s->csb_sync == CSB_RELEASED_LOW_UNSEEN ||
+             s->csb_sync == CSB_IDLE_HIGH_UNSEEN)) {
+            length = 0u;
+        } else {
+            length = fifo8_num_free(&bus->chr_fifo);
+        }
         break;
     case SPI_BUS_FLASH:
         length = timer_pending(s->flash.irq_timer) ? 0 : 1u;

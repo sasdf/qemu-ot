@@ -628,20 +628,39 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     char buf[64u];
     size_t len = 0;
 
-    len += snprintf(&buf[len], sizeof(buf) - len, "Z:%08x\r\n", bstate.hi_z);
-    len += snprintf(&buf[len], sizeof(buf) - len, "P:%08x\r\n", bstate.pull_v);
-    len += snprintf(&buf[len], sizeof(buf) - len, "D:%08x\r\n", bstate.out_en);
-    len += snprintf(&buf[len], sizeof(buf) - len, "O:%08x\r\n", bstate.out_v);
-    len += snprintf(&buf[len], sizeof(buf) - len, "Y:%08x\r\n", bstate.in_m);
+    if (force || bstate.hi_z != s->backend_state.hi_z) {
+        len += snprintf(&buf[len], sizeof(buf) - len, "Z:%08x\r\n", bstate.hi_z);
+    }
+    if (force || bstate.pull_v != s->backend_state.pull_v) {
+        len += snprintf(&buf[len], sizeof(buf) - len, "P:%08x\r\n", bstate.pull_v);
+    }
+    if (force || bstate.out_en != s->backend_state.out_en) {
+        len += snprintf(&buf[len], sizeof(buf) - len, "D:%08x\r\n", bstate.out_en);
+    }
+    if (force || bstate.out_v != s->backend_state.out_v) {
+        len += snprintf(&buf[len], sizeof(buf) - len, "O:%08x\r\n", bstate.out_v);
+    }
+    if (force || bstate.in_m != s->backend_state.in_m) {
+        len += snprintf(&buf[len], sizeof(buf) - len, "Y:%08x\r\n", bstate.in_m);
+    }
 
     s->backend_state = bstate;
 
-    qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
-    /* replace CRLF so that trace is kept on a single line */
-    buf[10] = buf[22] = buf[34] = buf[46] = ',';
-    buf[11] = buf[23] = buf[35] = buf[47] = ' ';
-    buf[58] = '\0';
-    trace_ot_gpio_backend_send(s->ot_id, buf);
+    if (len > 0) {
+        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
+        /* replace CRLF so that trace is kept on a single line */
+        for (size_t i = 0; i + 1 < len; i++) {
+            if (buf[i] == '\r' && buf[i + 1] == '\n') {
+                if (i + 2 < len) {
+                    buf[i] = ',';
+                    buf[i + 1] = ' ';
+                } else {
+                    buf[i] = '\0';
+                }
+            }
+        }
+        trace_ot_gpio_backend_send(s->ot_id, buf);
+    }
 }
 
 static void ot_gpio_eg_chr_event_hander(void *opaque, QEMUChrEvent event)
