@@ -135,6 +135,7 @@ typedef struct {
     GList *outputs; /* wekrefs to OtClkMgrClockOutput */
     unsigned divider; /* divider applied on parent clock if any (0 if top) */
     unsigned ratio; /* ratio w/ reference clock (may be 0) */
+    unsigned frequency; /* actual clock frequency in Hz */
     bool ref; /* reference clock */
     bool loose; /* clock which is declared but not connected */
 } OtClkMgrClock;
@@ -293,9 +294,44 @@ static const char *CFGSEP = ",";
 
 static void ot_clkmgr_update_alerts(OtClkMgrState *s)
 {
-    bool recov = (bool)(s->regs[R_RECOV_ERR_CODE] &
-                        R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_MASK);
+    bool recov = s->regs[R_RECOV_ERR_CODE] != 0;
     ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], recov);
+}
+
+static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
+                                          const OtClkMgrClock *clk)
+{
+    const OtClkMgrClock *ref_clk = NULL;
+    for (GList *node = s->clocks; node; node = node->next) {
+        const OtClkMgrClock *c = (const OtClkMgrClock *)node->data;
+        if (c->ref) {
+            ref_clk = c;
+            break;
+        }
+    }
+    uint32_t ratio = clk->ratio;
+    if (ref_clk && ref_clk->frequency > 0 && clk->frequency > 0) {
+        ratio = clk->frequency / ref_clk->frequency;
+    }
+    return ratio > 0 ? (ratio - 1u) : 0u;
+}
+
+static void ot_clkmgr_check_measurement(OtClkMgrState *s, unsigned measure)
+{
+    g_assert(measure < s->measure_count);
+    OtClkMgrMeasureRegs *mreg = &s->measure_regs[measure];
+    if (mreg->ctrl_en != OT_MULTIBITBOOL4_TRUE) {
+        return;
+    }
+    uint32_t ctrl = ot_shadow_reg_peek(&mreg->ctrl);
+    uint32_t hi = SHARED_FIELD_EX32(ctrl, MEAS_CTRL_SHADOWED_HI);
+    uint32_t lo = SHARED_FIELD_EX32(ctrl, MEAS_CTRL_SHADOWED_LO);
+    uint32_t count = ot_clkmgr_get_clock_count(s, mreg->clock);
+    if (count > hi || count < lo) {
+        s->regs[R_RECOV_ERR_CODE] |=
+            1u << (R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_SHIFT + 1u + measure);
+        ot_clkmgr_update_alerts(s);
+    }
 }
 
 /* NOLINTNEXTLINE(misc-no-recursion) */
@@ -304,6 +340,8 @@ static void ot_clkmgr_update_clock_frequency(
 {
     unsigned frequency =
         clk->divider > 1 ? (input_freq / clk->divider) : input_freq;
+
+    clk->frequency = frequency;
 
     trace_ot_clkmgr_update_clock(s->ot_id, clk->name, frequency);
 
@@ -993,7 +1031,7 @@ static void ot_clkmgr_reset_measure_regs(OtClkMgrState *s)
     for (unsigned ix = 0; ix < s->measure_count; ix++) {
         OtClkMgrMeasureRegs *mreg = &s->measure_regs[ix];
 
-        mreg->ctrl_en = OT_MULTIBITBOOL4_TRUE;
+        mreg->ctrl_en = OT_MULTIBITBOOL4_FALSE;
 
         uint32_t hi = mreg->clock->ratio + 10u;
         uint32_t lo = (uint32_t)MAX(0, ((int)mreg->clock->ratio) - 10);
@@ -1220,31 +1258,23 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
 
         switch (offset) {
         case 0u:
-            if (mreg->ctrl_en == OT_MULTIBITBOOL4_TRUE) {
-                val32 &= MEAS_CTRL_EN_MASK;
-                mreg->ctrl_en = val32;
-            } else {
-                qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ EN\n",
-                              __func__, s->ot_id, reg_name);
-            }
+            val32 &= MEAS_CTRL_EN_MASK;
+            mreg->ctrl_en = val32;
+            ot_clkmgr_check_measurement(s, measure);
             break;
         case 1u:
-            if (mreg->ctrl_en) {
-                val32 &=
-                    MEAS_CTRL_SHADOWED_HI_MASK | MEAS_CTRL_SHADOWED_LO_MASK;
-                switch (ot_shadow_reg_write(&mreg->ctrl, val32)) {
-                case OT_SHADOW_REG_STAGED:
-                case OT_SHADOW_REG_COMMITTED:
-                    break;
-                case OT_SHADOW_REG_ERROR:
-                default:
-                    s->regs[R_RECOV_ERR_CODE] |=
-                        R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_MASK;
-                    ot_clkmgr_update_alerts(s);
-                }
-            } else {
-                qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ EN\n",
-                              __func__, s->ot_id, reg_name);
+            val32 &= MEAS_CTRL_SHADOWED_HI_MASK | MEAS_CTRL_SHADOWED_LO_MASK;
+            switch (ot_shadow_reg_write(&mreg->ctrl, val32)) {
+            case OT_SHADOW_REG_STAGED:
+                break;
+            case OT_SHADOW_REG_COMMITTED:
+                ot_clkmgr_check_measurement(s, measure);
+                break;
+            case OT_SHADOW_REG_ERROR:
+            default:
+                s->regs[R_RECOV_ERR_CODE] |=
+                    R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_MASK;
+                ot_clkmgr_update_alerts(s);
             }
             break;
         default:
@@ -1267,6 +1297,7 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
                           (s->measure_count * 2u)))) -
                  1u;
         s->regs[reg_err] &= ~val32; /* RW1C */
+        ot_clkmgr_update_alerts(s);
         break;
     case R_FATAL_ERR_CODE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
@@ -1310,7 +1341,10 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    uint32_t recov_err_code =
+        s->input_clock_connected ? s->regs[R_RECOV_ERR_CODE] : 0u;
     memset(s->regs, 0, sizeof(s->regs));
+    s->regs[R_RECOV_ERR_CODE] = recov_err_code;
 
     s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
     s->regs[R_EXTCLK_CTRL] = 0x99u;
@@ -1329,9 +1363,8 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
 
     ot_clkmgr_reset_measure_regs(s);
 
-    for (unsigned ix = 0; ix < ALERT_COUNT; ix++) {
-        ibex_irq_set(&s->alerts[ix], 0);
-    }
+    ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
+    ot_clkmgr_update_alerts(s);
 
     if (!s->input_clock_connected) {
         ot_clkmgr_connect_input_clocks(s);
