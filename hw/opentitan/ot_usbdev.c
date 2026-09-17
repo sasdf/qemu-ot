@@ -613,6 +613,9 @@ struct OtUsbdevState {
     bool vbus_override;
     /* VBUS gate: meaning depends on the vbus_override mode */
     bool vbus_gate;
+    /* AON wake latched pullup states */
+    bool aon_dppullup_en;
+    bool aon_dnpullup_en;
 };
 
 #define REG_NAME(_reg_) \
@@ -779,6 +782,87 @@ static bool ot_usbdev_has_vbus(const OtUsbdevState *s)
      * Note: always returns 0 when device is in reset.
      */
     return FIELD_EX32(s->regs[R_USBSTAT], USBSTAT, SENSE);
+}
+
+static void ot_usbdev_get_pullups(const OtUsbdevState *s, bool *dp_pullup,
+                                  bool *dn_pullup)
+{
+    bool usbdev_dp_pullup;
+    bool usbdev_dn_pullup;
+
+    if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
+        usbdev_dp_pullup = (bool)FIELD_EX32(s->regs[R_PHY_PINS_DRIVE],
+                                            PHY_PINS_DRIVE, DP_PULLUP_EN_O);
+        usbdev_dn_pullup = (bool)FIELD_EX32(s->regs[R_PHY_PINS_DRIVE],
+                                            PHY_PINS_DRIVE, DN_PULLUP_EN_O);
+    } else {
+        bool pullup_en = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
+        bool pinflip =
+            (bool)FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, PINFLIP);
+        usbdev_dp_pullup = !pinflip && pullup_en;
+        usbdev_dn_pullup = pinflip && pullup_en;
+    }
+
+    if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+        *dp_pullup = s->aon_dppullup_en;
+        *dn_pullup = s->aon_dnpullup_en;
+    } else {
+        *dp_pullup = usbdev_dp_pullup;
+        *dn_pullup = usbdev_dn_pullup;
+    }
+}
+
+static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
+{
+    bool pinflip = (bool)FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, PINFLIP);
+    uint32_t tx_dp_i = pinflip ? 0u : 1u;
+    uint32_t tx_dn_i = pinflip ? 1u : 0u;
+    uint32_t tx_d_i = pinflip ? 0u : 1u;
+    uint32_t tx_se0_i = 0u;
+    uint32_t tx_oe_i = 0u;
+
+    uint32_t usb_tx_oe_o = tx_oe_i;
+    if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
+        usb_tx_oe_o =
+            FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, OE_O);
+    }
+
+    uint32_t rx_dp;
+    uint32_t rx_dn;
+    if (usb_tx_oe_o) {
+        if (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, TX_USE_D_SE0)) {
+            uint32_t se0 =
+                FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, SE0_O);
+            uint32_t d =
+                FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, D_O);
+            rx_dp = se0 ? 0u : d;
+            rx_dn = se0 ? 0u : (d ? 0u : 1u);
+        } else {
+            rx_dp = FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DP_O);
+            rx_dn = FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O);
+        }
+    } else {
+        bool dp_pullup;
+        bool dn_pullup;
+        ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
+        rx_dp = dp_pullup ? 1u : 0u;
+        rx_dn = dn_pullup ? 1u : 0u;
+    }
+
+    uint32_t rx_d = (rx_dp && !rx_dn) ? 1u : 0u;
+    uint32_t pwr_sense = ot_usbdev_has_vbus(s) ? 1u : 0u;
+
+    uint32_t val32 = 0u;
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, RX_DP_I, rx_dp);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, RX_DN_I, rx_dn);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, RX_D_I, rx_d);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_DP_O, tx_dp_i);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_DN_O, tx_dn_i);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_D_O, tx_d_i);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_SE0_O, tx_se0_i);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_OE_O, tx_oe_i);
+    val32 = FIELD_DP32(val32, PHY_PINS_SENSE, PWR_SENSE, pwr_sense);
+    return val32;
 }
 
 /*
@@ -1230,6 +1314,8 @@ static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
     /* See BFM (bus_reset) */
     s->regs[R_USBCTRL] =
         FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
+    s->regs[R_OUT_DATA_TOGGLE] = 0u;
+    s->regs[R_IN_DATA_TOGGLE] = 0u;
     s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESET_MASK;
     ot_usbdev_update_irqs(s);
 
@@ -1565,7 +1651,6 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
     g_assert(epnum < USBDEV_PARAM_N_ENDPOINTS);
     /* See BFM (out_packet) */
 
-    /* Nothing to do if there is no pending transfer */
     OtUsbdevServer *server = &s->usb_server;
     OtUsbdevServerEpOutXfer *xfer = &server->ep[epnum].out;
     if (!xfer->pending) {
@@ -1579,6 +1664,8 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
     if (!ot_usbdev_is_ep_out_enabled(s, epnum)) {
         ot_usbdev_complete_transfer_out(s, epnum, OT_USBDEV_SERVER_STATUS_ERROR,
                                         "endpoint OUT not enabled");
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
+        ot_usbdev_update_irqs(s);
         return false;
     }
 
@@ -1594,8 +1681,8 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
 
     /*
      * Only accept the DATA packet if the endpoint is enabled, and there is
-     * buffer available and there is space in the RX FIFO. The last entry of the
-     * FIFO is reserved for SETUP packets.
+     * buffer available and there is space in the RX FIFO. The last entry of
+     * the FIFO is reserved for SETUP packets.
      */
     if (!ot_usbdev_is_ep_out_rxenabled(s, epnum) ||
         fifo8_is_empty(&s->av_out_fifo) ||
@@ -1623,7 +1710,7 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
     ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
 
     s->regs[R_OUT_DATA_TOGGLE] ^=
-        FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
+        FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
 
     trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
 
@@ -1682,6 +1769,12 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     }
 
     trace_ot_usbdev_enable_changed(s->ot_id, enable);
+
+    if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+        ot_usbdev_update_status_irqs(s);
+        ot_usbdev_update_irqs(s);
+        return;
+    }
 
     /* Device has been enabled */
     if (enable) {
@@ -1900,7 +1993,6 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_IN_ISO:
     case R_OUT_DATA_TOGGLE:
     case R_IN_DATA_TOGGLE:
-    case R_PHY_PINS_SENSE:
     case R_PHY_PINS_DRIVE:
     case R_WAKE_CONTROL:
     case R_WAKE_EVENTS:
@@ -1910,6 +2002,9 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_COUNT_NODATA_IN:
     case R_COUNT_ERRORS:
         val32 = s->regs[reg];
+        break;
+    case R_PHY_PINS_SENSE:
+        val32 = ot_usbdev_read_phy_pins_sense(s);
         break;
     case R_USBSTAT:
         /*
@@ -2017,6 +2112,7 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_RXFIFO:
     case R_USBSTAT:
+    case R_PHY_PINS_SENSE:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: write to R/O register 0x%02x"
                       " (%s)\n",
@@ -2092,17 +2188,53 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_WAKE_CONTROL:
         s->regs[reg] = val32;
         if (val32 & R_WAKE_CONTROL_SUSPEND_REQ_MASK) {
+            if (!(s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
+                bool dp_pullup, dn_pullup;
+                ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
+                s->aon_dppullup_en = dp_pullup;
+                s->aon_dnpullup_en = dn_pullup;
+                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_MODULE_ACTIVE_MASK;
+            }
             ibex_irq_set(&s->wkup, 1);
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
+            bool was_connected =
+                ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
+            s->regs[R_WAKE_EVENTS] = 0u;
+            bool now_enabled = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
+            if (now_enabled && !was_connected) {
+                ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
+                ot_usbdev_server_report_connected(s, true);
+            } else if (!now_enabled && was_connected) {
+                ot_usbdev_set_raw_link_state(s,
+                                             OT_USBDEV_LINK_STATE_DISCONNECTED);
+                s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_DISCONNECTED_MASK;
+                s->regs[R_USBCTRL] =
+                    FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
+                timer_del(&s->frame_timer);
+                timer_del(&s->bus_reset_timer);
+                if (ot_usbdev_has_vbus(s)) {
+                    ot_usbdev_server_report_connected(s, false);
+                }
+            }
+            ot_usbdev_update_status_irqs(s);
+            ot_usbdev_update_irqs(s);
             ibex_irq_set(&s->wkup, 0);
         }
         break;
+    case R_OUT_DATA_TOGGLE:
+    case R_IN_DATA_TOGGLE: {
+        uint32_t mask = FIELD_EX32(val32, OUT_DATA_TOGGLE, MASK);
+        uint32_t status = FIELD_EX32(val32, OUT_DATA_TOGGLE, STATUS);
+        uint32_t cur = FIELD_EX32(s->regs[reg], OUT_DATA_TOGGLE, STATUS);
+        uint32_t next = (cur & ~mask) | (status & mask);
+        s->regs[reg] = FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, next);
+        break;
+    }
+    case R_PHY_PINS_DRIVE:
+        s->regs[reg] = val32;
+        break;
     case R_OUT_ISO:
     case R_IN_ISO:
-    case R_OUT_DATA_TOGGLE:
-    case R_IN_DATA_TOGGLE:
-    case R_PHY_PINS_SENSE:
-    case R_PHY_PINS_DRIVE:
     case R_WAKE_EVENTS:
     case R_FIFO_CTRL:
     case R_COUNT_OUT:
@@ -2852,6 +2984,8 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
         ot_usbdev_has_vbus(s)) {
         ot_usbdev_server_report_connected(s, false);
     }
+    s->aon_dppullup_en = false;
+    s->aon_dnpullup_en = false;
 
     /*
      * If there is a bus reset in progress, we cancel it.
