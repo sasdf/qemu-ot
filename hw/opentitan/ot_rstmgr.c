@@ -586,7 +586,8 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (s->regs[R_CPU_REGWEN]) {
             val32 &= CPU_INFO_CTRL_MASK;
             s->regs[reg] = val32;
-            if (val32 & R_CPU_INFO_CTRL_EN_MASK) {
+            if ((val32 & R_CPU_INFO_CTRL_EN_MASK) && s->cpu &&
+                !s->cpu->halted) {
                 OtPwrMgrState *pwrmgr =
                     (OtPwrMgrState *)object_resolve_path_type(
                         "", TYPE_OT_PWRMGR, NULL);

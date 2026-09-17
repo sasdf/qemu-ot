@@ -227,12 +227,10 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
  */
 
 /* clang-format off */
-#define SBCS_WRITE_MASK (R_SBCS_SBERROR_MASK         | \
-                         R_SBCS_SBREADONDATA_MASK    | \
+#define SBCS_RW_MASK    (R_SBCS_SBREADONDATA_MASK    | \
                          R_SBCS_SBAUTOINCREMENT_MASK | \
                          R_SBCS_SBACCESS_MASK        | \
-                         R_SBCS_SBREADONADDR_MASK    | \
-                         R_SBCS_SBBUSYERROR_MASK)
+                         R_SBCS_SBREADONADDR_MASK)
 /* clang-format on */
 
 #define GPR_ZERO 0u /* zero = x0 */
@@ -1690,14 +1688,16 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
 
 static CmdErr riscv_dm_sbcs_write(RISCVDMState *dm, uint32_t value)
 {
-    /* mask out the preset, R/O bits */
-    value &= SBCS_WRITE_MASK;
+    /* clear error bits if written with 1 (W1C) */
+    if (value & R_SBCS_SBBUSYERROR_MASK) {
+        dm->regs[A_SBCS] &= ~R_SBCS_SBBUSYERROR_MASK;
+    }
+    if (value & R_SBCS_SBERROR_MASK) {
+        dm->regs[A_SBCS] &= ~R_SBCS_SBERROR_MASK;
+    }
 
-    /* clear error bits (if flagged as W1C) */
-    value &= ~(value & (R_SBCS_SBERROR_MASK | R_SBCS_SBBUSYERROR_MASK));
-
-    dm->regs[A_SBCS] &= ~SBCS_WRITE_MASK;
-    dm->regs[A_SBCS] |= value;
+    dm->regs[A_SBCS] =
+        (dm->regs[A_SBCS] & ~SBCS_RW_MASK) | (value & SBCS_RW_MASK);
 
     if (trace_event_get_state(TRACE_RISCV_DM_SBCS_WRITE)) {
         bool err = (bool)(value & R_SBCS_SBERROR_MASK);
@@ -1876,6 +1876,7 @@ static CmdErr riscv_dm_sbdata0_read(RISCVDMState *dm, uint32_t *value)
     if (FIELD_EX32(dm->regs[A_SBCS], SBCS, SBERROR) ||
         FIELD_EX32(dm->regs[A_SBCS], SBCS, SBBUSYERROR)) {
         xtrace_riscv_dm_error(dm->soc, "sberror");
+        *value = dm->regs[A_SBDATA0] = (uint32_t)dm->sbdata;
         return CMD_ERR_NONE;
     }
 
