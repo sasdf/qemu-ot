@@ -396,7 +396,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .cfg = &ot_eg_soc_tap_ctrl_configure,
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
-            IBEX_DEV_UINT_PROP("idcode", EG_RV_DM_TAP_IDCODE)
+            IBEX_DEV_UINT_PROP("idcode", EG_RV_DM_TAP_IDCODE),
+            IBEX_DEV_BOOL_PROP("enabled", false)
         ),
     },
     [OT_EG_SOC_DEV_LC_CTRL_TAP_CTRL] = {
@@ -1614,10 +1615,11 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_S2D(0, SRAM_MAIN_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
             OT_EG_SOC_S2D(1, SRAM_RET_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(2, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0)
+            OT_EG_SOC_S2D(2, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(3, TAP_CTRL, TAP_CTRL_RBB_ENABLE, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 3u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 4u) /* @todo to be changed */
         )
     },
     [OT_EG_SOC_SPLITTER_LC_ESCALATE] = {

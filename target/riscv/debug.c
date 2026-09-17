@@ -949,6 +949,9 @@ void tdata_csr_write(CPURISCVState *env, int tdata_index, target_ulong val)
 
     if (tdata_index == TDATA1) {
         trigger_type = extract_trigger_type(env, val);
+        if (val != 0 && !(tinfo_csr_read(env) & BIT(trigger_type))) {
+            trigger_type = get_trigger_type(env, env->trigger_cur);
+        }
     } else {
         trigger_type = get_trigger_type(env, env->trigger_cur);
     }
