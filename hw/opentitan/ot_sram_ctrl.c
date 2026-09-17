@@ -407,6 +407,8 @@ static void ot_sram_ctrl_start_initialization(OtSramCtrlState *s)
     ot_sram_ctrl_initialize(s, count, false);
 }
 
+static void ot_sram_ctrl_update_exec(OtSramCtrlState *s);
+
 static void ot_sram_ctrl_lc_signal(void *opaque, int irq, int level)
 {
     OtSramCtrlState *s = opaque;
@@ -416,6 +418,7 @@ static void ot_sram_ctrl_lc_signal(void *opaque, int irq, int level)
     trace_ot_sram_ctrl_lc_signal(s->ot_id, level);
 
     s->lc_hw_debug_ifetch = (bool)level;
+    ot_sram_ctrl_update_exec(s);
 }
 
 static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
