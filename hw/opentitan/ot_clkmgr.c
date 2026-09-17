@@ -35,6 +35,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_clkmgr.h"
 #include "hw/opentitan/ot_common.h"
+#include "hw/opentitan/ot_rstmgr.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_clock_src.h"
@@ -1382,7 +1383,10 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    uint32_t recov_err_code =
+        ot_rstmgr_is_low_power_exit() ? s->regs[R_RECOV_ERR_CODE] : 0u;
     memset(s->regs, 0, sizeof(s->regs));
+    s->regs[R_RECOV_ERR_CODE] = recov_err_code;
 
     s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
     s->regs[R_EXTCLK_CTRL] = 0x99u;
