@@ -439,8 +439,6 @@ static void ot_uart_check_baudrate(const OtUARTState *s)
 static void ot_uart_reset_rx_fifo(OtUARTState *s)
 {
     fifo8_reset(&s->rx_fifo);
-    s->regs[R_INTR_STATE] &= ~INTR_RX_WATERMARK_MASK;
-    s->regs[R_INTR_STATE] &= ~INTR_RX_OVERFLOW_MASK;
     if ((ot_uart_is_rx_enabled(s) ||
          (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
         !ot_uart_is_sys_loopack_enabled(s)) {
@@ -587,16 +585,7 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
 
 static void ot_uart_reset_tx_fifo(OtUARTState *s)
 {
-    if (s->tx_timer) {
-        timer_del(s->tx_timer);
-    }
-    s->tx_busy = false;
     fifo8_reset(&s->tx_fifo);
-    /*
-     * tx_done is event-type and latched here; tx_empty and tx_watermark are
-     * status-type and follow the (now empty) FIFO live via ot_uart_update_irqs.
-     */
-    s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
 }
 
 static void ot_uart_send_byte(OtUARTState *s, uint8_t ch)
@@ -676,19 +665,17 @@ static void ot_uart_xmit(OtUARTState *s)
         CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
         /* instant drain the fifo when there's no back-end */
         if (!qemu_chr_fe_backend_connected(tx_chr)) {
-            ot_uart_reset_tx_fifo(s);
-            ot_uart_update_irqs(s);
-            return;
-        }
-
-        /* get a continuous buffer from the FIFO */
-        buf =
-            fifo8_peek_bufptr(&s->tx_fifo, fifo8_num_used(&s->tx_fifo), &size);
-        /* send as much as possible */
-        ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
-        /* if some characters where sent, remove them from the FIFO */
-        if (ret >= 0) {
-            fifo8_drop(&s->tx_fifo, ret);
+            fifo8_reset(&s->tx_fifo);
+        } else {
+            /* get a continuous buffer from the FIFO */
+            buf = fifo8_peek_bufptr(&s->tx_fifo,
+                                    fifo8_num_used(&s->tx_fifo), &size);
+            /* send as much as possible */
+            ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
+            /* if some characters where sent, remove them from the FIFO */
+            if (ret >= 0) {
+                fifo8_drop(&s->tx_fifo, ret);
+            }
         }
     }
 
@@ -947,9 +934,20 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
             !ot_uart_is_sys_loopack_enabled(s)) {
             qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         }
-        if ((change & R_CTRL_TX_MASK) && ot_uart_is_tx_enabled(s)) {
-            /* try sending pending data from TX FIFO if any */
-            ot_uart_tx_schedule(s);
+        if (change & R_CTRL_TX_MASK) {
+            if (ot_uart_is_tx_enabled(s)) {
+                /* try sending pending data from TX FIFO if any */
+                ot_uart_tx_schedule(s);
+            } else if (s->tx_busy) {
+                if (s->tx_timer) {
+                    timer_del(s->tx_timer);
+                }
+                s->tx_busy = false;
+                if (fifo8_is_empty(&s->tx_fifo)) {
+                    s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
+                }
+                ot_uart_update_irqs(s);
+            }
         }
         break;
     case R_WDATA:
@@ -1045,6 +1043,10 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     for (unsigned index = 0; index < ARRAY_SIZE(s->irqs); index++) {
         ibex_irq_set(&s->irqs[index], 0);
     }
+    if (s->tx_timer) {
+        timer_del(s->tx_timer);
+    }
+    s->tx_busy = false;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 
