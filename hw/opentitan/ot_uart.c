@@ -130,10 +130,11 @@ REG32(TIMEOUT_CTRL, 0x30u)
      R_CTRL_NCO_MASK)
 
 /* FIFO depths match uart_reg_pkg.sv (TxFifoDepth=32, RxFifoDepth=64). */
-#define OT_UART_NCO_BITS     16u
-#define OT_UART_TX_FIFO_SIZE 32u
-#define OT_UART_RX_FIFO_SIZE 64u
-#define OT_UART_IRQ_NUM      9u
+#define OT_UART_NCO_BITS             16u
+#define OT_UART_TX_FIFO_SIZE         32u
+#define OT_UART_RX_FIFO_SIZE         64u
+#define OT_UART_RX_STAGING_FIFO_SIZE 512u
+#define OT_UART_IRQ_NUM              9u
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
@@ -190,7 +191,8 @@ struct OtUARTState {
     QEMUTimer *tx_timer;
     bool tx_busy;
     QEMUTimer *rx_timer;
-    bool rx_busy;
+    Fifo8 rx_staging_fifo;
+    int64_t rx_next_ns;
 };
 
 typedef struct {
@@ -440,67 +442,15 @@ static void ot_uart_check_baudrate(const OtUARTState *s)
 
 static uint64_t ot_uart_char_ns(const OtUARTState *s);
 
-static void ot_uart_rx_timer_cb(void *opaque)
+static OtUARTState *ot_uart_get_rx_owner(OtUARTState *s)
 {
-    OtUARTState *s = opaque;
-    s->rx_busy = false;
-    if ((ot_uart_is_rx_enabled(s) ||
-         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
-        !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-    }
-}
-
-static void ot_uart_reset_rx_fifo(OtUARTState *s)
-{
-    if (s->rx_timer) {
-        timer_del(s->rx_timer);
-    }
-    s->rx_busy = false;
-    fifo8_reset(&s->rx_fifo);
-    if ((ot_uart_is_rx_enabled(s) ||
-         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
-        !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-    }
-}
-
-static int ot_uart_can_receive(void *opaque)
-{
-    OtUARTState *rx_owner = opaque;
-    OtUARTState *s = rx_owner->rx_target_uart;
-    if (!s) {
-        return 0;
-    }
-
-    if (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) {
-        return (int)OT_UART_RX_FIFO_SIZE;
-    }
-
-    if (s->rx_busy) {
-        return 0;
-    }
-
-    if (s->regs[R_CTRL] & R_CTRL_RX_MASK) {
-        int free_space = (int)fifo8_num_free(&s->rx_fifo);
-        if (free_space == 0 &&
-            (s->regs[R_INTR_ENABLE] & INTR_RX_OVERFLOW_MASK) &&
-            !(s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
-            !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK)) {
-            /*
-             * When the RX FIFO is full, RX watermark interrupt is disabled,
-             * and RX overflow interrupt is enabled (and not yet pending),
-             * accept 1 byte so incoming serial data triggers INTR_RX_OVERFLOW_MASK
-             * in ot_uart_receive_bytes without dropping normal burst bytes.
-             */
-            return 1;
-        }
-        if (free_space > 0) {
-            return 1;
+    for (int i = 0; i < 4; i++) {
+        if (ot_uart_instances[i] &&
+            ot_uart_instances[i]->rx_target_uart == s) {
+            return ot_uart_instances[i];
         }
     }
-
-    return 0;
+    return s;
 }
 
 static void ot_uart_receive_bytes(OtUARTState *s, OtUARTState *rx_owner,
@@ -546,19 +496,130 @@ static void ot_uart_receive_bytes(OtUARTState *s, OtUARTState *rx_owner,
     ot_uart_update_irqs(s);
 }
 
-static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
+static void ot_uart_step_rx(OtUARTState *s)
+{
+    if (!(s->regs[R_CTRL] & R_CTRL_RX_MASK) ||
+        fifo8_is_empty(&s->rx_staging_fifo)) {
+        return;
+    }
+
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    if (now < s->rx_next_ns) {
+        if (!timer_pending(s->rx_timer)) {
+            timer_mod(s->rx_timer, s->rx_next_ns);
+        }
+        return;
+    }
+
+    bool can_push = !fifo8_is_full(&s->rx_fifo);
+    if (!can_push) {
+        if ((s->regs[R_INTR_ENABLE] & INTR_RX_OVERFLOW_MASK) &&
+            !(s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
+            !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK)) {
+            can_push = true;
+        }
+    }
+    if (!can_push) {
+        timer_del(s->rx_timer);
+        return;
+    }
+
+    bool was_full = fifo8_is_full(&s->rx_staging_fifo);
+    uint8_t ch = fifo8_pop(&s->rx_staging_fifo);
+    OtUARTState *rx_owner = ot_uart_get_rx_owner(s);
+    ot_uart_receive_bytes(s, rx_owner, &ch, 1);
+
+    uint64_t char_ns = ot_uart_char_ns(s);
+    s->rx_next_ns = now + (int64_t)char_ns;
+
+    if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+        timer_mod(s->rx_timer, s->rx_next_ns);
+    } else {
+        timer_del(s->rx_timer);
+    }
+
+    if (was_full && !fifo8_is_full(&s->rx_staging_fifo)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+    }
+}
+
+static void ot_uart_rx_timer_cb(void *opaque)
+{
+    OtUARTState *s = opaque;
+    ot_uart_step_rx(s);
+    if (fifo8_is_empty(&s->rx_staging_fifo) &&
+        (ot_uart_is_rx_enabled(s) ||
+         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+        !ot_uart_is_sys_loopack_enabled(s)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+    }
+}
+
+static void ot_uart_reset_rx_fifo(OtUARTState *s)
+{
+    if (s->rx_timer) {
+        timer_del(s->rx_timer);
+    }
+    s->rx_next_ns = 0;
+    fifo8_reset(&s->rx_staging_fifo);
+    fifo8_reset(&s->rx_fifo);
+    if ((ot_uart_is_rx_enabled(s) ||
+         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+        !ot_uart_is_sys_loopack_enabled(s)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+    }
+}
+
+static int ot_uart_can_receive(void *opaque)
 {
     OtUARTState *rx_owner = opaque;
     OtUARTState *s = rx_owner->rx_target_uart;
     if (!s) {
+        return 0;
+    }
+
+    if (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) {
+        return (int)OT_UART_RX_FIFO_SIZE;
+    }
+
+    if (s->regs[R_CTRL] & R_CTRL_RX_MASK) {
+        return (int)fifo8_num_free(&s->rx_staging_fifo);
+    }
+
+    return 0;
+}
+
+static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
+{
+    OtUARTState *rx_owner = opaque;
+    OtUARTState *s = rx_owner->rx_target_uart;
+    if (!s || size <= 0) {
         return;
     }
-    ot_uart_receive_bytes(s, rx_owner, buf, size);
-    if (!(s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) && size > 0) {
-        s->rx_busy = true;
-        timer_mod(s->rx_timer,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                      ot_uart_char_ns(s) * (uint64_t)size);
+
+    if (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) {
+        ot_uart_receive_bytes(s, rx_owner, buf, size);
+        return;
+    }
+
+    if (!(s->regs[R_CTRL] & R_CTRL_RX_MASK)) {
+        return;
+    }
+
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    bool was_empty = fifo8_is_empty(&s->rx_staging_fifo);
+
+    for (int i = 0; i < size; i++) {
+        if (!fifo8_is_full(&s->rx_staging_fifo)) {
+            fifo8_push(&s->rx_staging_fifo, buf[i]);
+        }
+    }
+
+    if (was_empty && !fifo8_is_empty(&s->rx_staging_fifo)) {
+        if (s->rx_next_ns <= now) {
+            s->rx_next_ns = now;
+        }
+        ot_uart_step_rx(s);
     }
 }
 
@@ -608,7 +669,15 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
     ot_uart_update_irqs(s);
 
     if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+            if (!timer_pending(s->rx_timer)) {
+                s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                (int64_t)ot_uart_char_ns(s);
+                timer_mod(s->rx_timer, s->rx_next_ns);
+            }
+        } else {
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        }
     }
 
     return val;
@@ -798,6 +867,13 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
         return 0;
+    }
+
+    if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+        if (fifo8_is_empty(&s->rx_fifo)) {
+            s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        }
+        ot_uart_step_rx(s);
     }
 
     hwaddr reg = R32_OFF(addr);
@@ -1128,6 +1204,7 @@ static void ot_uart_realize(DeviceState *dev, Error **errp)
 
     fifo8_create(&s->tx_fifo, OT_UART_TX_FIFO_SIZE);
     fifo8_create(&s->rx_fifo, OT_UART_RX_FIFO_SIZE);
+    fifo8_create(&s->rx_staging_fifo, OT_UART_RX_STAGING_FIFO_SIZE);
 
     s->tx_chr_owner = s;
     s->rx_target_uart = s;
