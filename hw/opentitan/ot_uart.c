@@ -688,6 +688,10 @@ static void ot_uart_reset_tx_fifo(OtUARTState *s)
     if (s->tx_timer) {
         timer_del(s->tx_timer);
     }
+    if (s->watch_tag > 0) {
+        g_source_remove(s->watch_tag);
+        s->watch_tag = 0;
+    }
     s->tx_busy = false;
     fifo8_reset(&s->tx_fifo);
 }
@@ -741,6 +745,9 @@ static void ot_uart_tx_timer_cb(void *opaque)
     }
 }
 
+static gboolean ot_uart_watch_cb(void *do_not_use, GIOCondition cond,
+                                 void *opaque);
+
 static void ot_uart_xmit(OtUARTState *s)
 {
     const uint8_t *buf;
@@ -771,14 +778,23 @@ static void ot_uart_xmit(OtUARTState *s)
         if (!qemu_chr_fe_backend_connected(tx_chr)) {
             fifo8_reset(&s->tx_fifo);
         } else {
-            /* get a continuous buffer from the FIFO */
-            buf = fifo8_peek_bufptr(&s->tx_fifo,
-                                    fifo8_num_used(&s->tx_fifo), &size);
-            /* send as much as possible */
-            ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
-            /* if some characters where sent, remove them from the FIFO */
-            if (ret >= 0) {
-                fifo8_drop(&s->tx_fifo, ret);
+            while (!fifo8_is_empty(&s->tx_fifo)) {
+                /* get a continuous buffer from the FIFO */
+                buf = fifo8_peek_bufptr(&s->tx_fifo,
+                                        fifo8_num_used(&s->tx_fifo), &size);
+                /* send all buffered characters */
+                ret = qemu_chr_fe_write_all(tx_chr, buf, (int)size);
+                /* if some characters were sent, remove them from the FIFO */
+                if (ret > 0) {
+                    fifo8_drop(&s->tx_fifo, ret);
+                } else {
+                    if (!s->watch_tag) {
+                        /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+                        s->watch_tag = qemu_chr_fe_add_watch(
+                            tx_chr, G_IO_OUT | G_IO_HUP, ot_uart_watch_cb, s);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -902,6 +918,9 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
             break;
         }
         /* report TXEMPTY+TXIDLE or TXFULL */
+        if (!fifo8_is_empty(&s->tx_fifo) && ot_uart_is_tx_enabled(s)) {
+            ot_uart_tx_schedule(s);
+        }
         switch (fifo8_num_used(&s->tx_fifo)) {
         case 0:
             val32 |= R_STATUS_TXEMPTY_MASK;
