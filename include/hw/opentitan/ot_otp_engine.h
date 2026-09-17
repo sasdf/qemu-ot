@@ -265,6 +265,7 @@ struct OtOTPEngineState {
     char **inv_default_part_xstrs; /* some entries may be NULL */
     uint8_t edn_ep;
     bool fatal_escalate;
+    bool inject_vendor_test_ecc_error;
 };
 
 struct OtOTPEngineClass {

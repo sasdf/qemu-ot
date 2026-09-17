@@ -2246,6 +2246,10 @@ static void ot_otp_engine_pwr_load(OtOTPEngineState *s)
     otp->data_size = data_size;
     otp->ecc_size = ecc_size;
     otp->size = otp_size;
+
+    if (s->inject_vendor_test_ecc_error && otp->ecc && ecc_size > 0u) {
+        otp->ecc[0] ^= 0x00030001u;
+    }
 }
 static void ot_otp_engine_pwr_initialize_partitions(OtOTPEngineState *s)
 {
@@ -2729,6 +2733,8 @@ static const Property ot_otp_engine_properties[] = {
                        flash_addr_const_xstr),
     DEFINE_PROP_STRING("flash_addr_iv", OtOTPEngineState, flash_addr_iv_xstr),
     DEFINE_PROP_BOOL("fatal_escalate", OtOTPEngineState, fatal_escalate, false),
+    DEFINE_PROP_BOOL("inject-vendor-test-ecc-error", OtOTPEngineState,
+                     inject_vendor_test_ecc_error, false),
 };
 
 static void ot_otp_engine_reset_enter(Object *obj, ResetType type)
