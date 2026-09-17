@@ -818,6 +818,46 @@ vaddr pmp_get_page_exec_end(CPURISCVState *env, vaddr addr)
 }
 
 /*
+ * Return the intersection (minimum common set) of effective PMP permissions
+ * across all bytes in the TARGET_PAGE_SIZE page containing @addr.
+ */
+int pmp_get_page_min_prot(CPURISCVState *env, hwaddr addr, target_ulong mode)
+{
+    hwaddr tlb_sa = addr & ~(TARGET_PAGE_SIZE - 1);
+    hwaddr tlb_ea = tlb_sa + TARGET_PAGE_SIZE - 1;
+    uint8_t pmp_regions = riscv_cpu_cfg(env)->pmp_regions;
+    pmp_priv_t pmp_priv;
+    int min_prot;
+    int i;
+
+    if (!riscv_cpu_cfg(env)->pmp || !pmp_get_num_rules(env)) {
+        return PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+    }
+
+    pmp_hart_has_privs(env, tlb_sa, 1, 0, &pmp_priv, mode);
+    min_prot = pmp_priv_to_page_prot(pmp_priv);
+
+    for (i = 0; i < pmp_regions && min_prot != 0; i++) {
+        if (pmp_get_a_field(env->pmp_state.pmp[i].cfg_reg) == PMP_AMATCH_OFF) {
+            continue;
+        }
+        hwaddr sa = env->pmp_state.addr[i].sa;
+        hwaddr ea = env->pmp_state.addr[i].ea;
+
+        if (sa > tlb_sa && sa <= tlb_ea) {
+            pmp_hart_has_privs(env, sa, 1, 0, &pmp_priv, mode);
+            min_prot &= pmp_priv_to_page_prot(pmp_priv);
+        }
+        if (ea >= tlb_sa && ea < tlb_ea) {
+            pmp_hart_has_privs(env, ea + 1, 1, 0, &pmp_priv, mode);
+            min_prot &= pmp_priv_to_page_prot(pmp_priv);
+        }
+    }
+
+    return min_prot;
+}
+
+/*
  * Convert PMP privilege to TLB page privilege.
  */
 int pmp_priv_to_page_prot(pmp_priv_t pmp_priv)

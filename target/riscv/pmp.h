@@ -81,6 +81,7 @@ bool pmp_hart_has_privs(CPURISCVState *env, hwaddr addr,
                         target_ulong mode);
 target_ulong pmp_get_tlb_size(CPURISCVState *env, hwaddr addr);
 vaddr pmp_get_page_exec_end(CPURISCVState *env, vaddr addr);
+int pmp_get_page_min_prot(CPURISCVState *env, hwaddr addr, target_ulong mode);
 void pmp_update_rule_addr(CPURISCVState *env, uint32_t pmp_index);
 void pmp_update_rule_nums(CPURISCVState *env);
 uint32_t pmp_get_num_rules(CPURISCVState *env);

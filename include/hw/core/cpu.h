@@ -238,6 +238,9 @@ struct CPUTLBEntryFull {
     /* @prot contains the complete protections for the page. */
     uint8_t prot;
 
+    /* @page_prot contains protections valid across the entire TARGET_PAGE_SIZE page. */
+    uint8_t page_prot;
+
     /* @lg_page_size contains the log2 of the page size. */
     uint8_t lg_page_size;
 
