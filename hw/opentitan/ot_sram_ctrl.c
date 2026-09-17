@@ -37,6 +37,7 @@
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_otp_if.h"
 #include "hw/opentitan/ot_prng.h"
+#include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sram_ctrl.h"
 #include "hw/opentitan/ot_vmapper.h"
 #include "hw/qdev-properties.h"
@@ -126,6 +127,7 @@ struct OtSramCtrlState {
     OtPrngState *prng; /* simplified PRNG, does not match OT's */
     OtOTPKey *otp_key;
     uint32_t regs[REGS_COUNT];
+    uint32_t scr_key; /* current active scrambling key seed (0 = default) */
     unsigned init_slot_count; /* count of init_slot_bm */
     unsigned init_slot_pos; /* current SRAM cell (word-sized) for init. */
     unsigned wsize; /* size of RAM in words */
@@ -261,6 +263,35 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
     return false;
 }
 
+static inline uint32_t ot_sram_ctrl_scr_mask(uint32_t key, unsigned word_idx)
+{
+    if (!key) {
+        return 0u;
+    }
+    uint32_t h = key ^ (word_idx * 0x9e3779b9u);
+    h ^= h >> 16;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35u;
+    h ^= h >> 16;
+    return h;
+}
+
+static void ot_sram_ctrl_apply_scr_key(OtSramCtrlState *s, uint32_t new_key)
+{
+    if (s->scr_key == new_key || s->noinit) {
+        return;
+    }
+    uint32_t *mem = memory_region_get_ram_ptr(&s->mem->sram);
+    for (unsigned ix = 0; ix < s->wsize; ix++) {
+        uint32_t old_mask = ot_sram_ctrl_scr_mask(s->scr_key, ix);
+        uint32_t new_mask = ot_sram_ctrl_scr_mask(new_key, ix);
+        mem[ix] ^= old_mask ^ new_mask;
+    }
+    memory_region_set_dirty(&s->mem->sram, 0, s->size);
+    s->scr_key = new_key;
+}
+
 static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
 {
     s->regs[R_STATUS] &=
@@ -323,8 +354,18 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
                                  sizeof(uint32_t));
     }
 
+    uint32_t new_key = ot_prng_random_u32(s->prng);
+    if (!new_key || new_key == s->scr_key) {
+        new_key ^= 0xa5a5a5a5u;
+        if (!new_key) {
+            new_key = 1u;
+        }
+    }
+    ot_sram_ctrl_apply_scr_key(s, new_key);
+
     s->regs[R_CTRL] &= ~R_CTRL_RENEW_SCR_KEY_MASK;
     s->regs[R_STATUS] |= R_STATUS_SCR_KEY_VALID_MASK;
+    s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_TRUE;
 }
 
 static void ot_sram_ctrl_start_initialization(OtSramCtrlState *s)
@@ -499,9 +540,9 @@ static void ot_sram_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_SCR_KEY_ROTATED:
-        /* this register has been deprecated on Darjeeling */
-        qemu_log_mask(LOG_UNIMP, "%s: %s R_SCR_KEY_ROTATED\n", __func__,
-                      s->ot_id);
+        if ((val32 & 0xfu) == OT_MULTIBITBOOL4_TRUE) {
+            s->regs[reg] = OT_MULTIBITBOOL4_FALSE;
+        }
         break;
     case R_READBACK_REGWEN:
         val32 &= R_READBACK_REGWEN_EN_MASK;
@@ -722,7 +763,14 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    if (s->ot_id && !strcmp(s->ot_id, "ret") &&
+        ot_rstmgr_is_low_power_exit()) {
+        return;
+    }
+
     timer_del(s->init_timer);
+
+    ot_sram_ctrl_apply_scr_key(s, 0u);
 
     memset(s->regs, 0, REGS_SIZE);
 

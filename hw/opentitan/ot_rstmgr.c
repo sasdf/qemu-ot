@@ -183,6 +183,13 @@ struct OtRstMgrClass {
     ResettablePhases parent_phases;
 };
 
+static bool ot_rstmgr_last_reset_low_power;
+
+bool ot_rstmgr_is_low_power_exit(void)
+{
+    return ot_rstmgr_last_reset_low_power;
+}
+
 typedef struct {
     const char *typename;
     unsigned idx;
@@ -381,6 +388,7 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
 
     /* Only SW is allowed to clear a reset reason, HW only sets bits (|=) */
     s->regs[R_RESET_INFO] |= req;
+    ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
 
@@ -593,6 +601,7 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
     if (s->por) {
         s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK;
         s->por = false;
+        ot_rstmgr_last_reset_low_power = false;
     } else {
         s->regs[R_RESET_INFO] = reset_info;
     }
