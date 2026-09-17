@@ -152,7 +152,7 @@ static void ot_adc_ctrl_update_irqs(OtAdcCtrlState *s)
      * In RTL (adc_ctrl_intr.sv), intr_state is a Status-type interrupt driven
      * by status_irq_value = |adc_intr_status.
      */
-    if (s->regs[R_ADC_INTR_STATUS] != 0u) {
+    if (s->regs[R_ADC_INTR_STATUS] != 0u || s->regs[R_INTR_TEST] != 0u) {
         s->regs[R_INTR_STATE] |= R_INTR_STATE_MATCH_PENDING_MASK;
     } else {
         s->regs[R_INTR_STATE] &= ~R_INTR_STATE_MATCH_PENDING_MASK;
@@ -308,12 +308,8 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_adc_ctrl_update_irqs(s);
         break;
     case R_INTR_TEST:
-        val32 &= R_INTR_TEST_MATCH_PENDING_MASK;
-        if (val32) {
-            s->regs[R_INTR_STATE] |= R_INTR_STATE_MATCH_PENDING_MASK;
-            ibex_irq_set(&s->irq,
-                         (s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE]) != 0u);
-        }
+        s->regs[R_INTR_TEST] = val32 & R_INTR_TEST_MATCH_PENDING_MASK;
+        ot_adc_ctrl_update_irqs(s);
         break;
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
