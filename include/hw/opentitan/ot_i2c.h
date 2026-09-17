@@ -46,4 +46,12 @@ bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus);
 void ot_i2c_bus_target_set_matched_address(I2CBus *bus, uint8_t address);
 void ot_i2c_bus_target_repeated_start(I2CBus *bus);
 
+bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns);
+bool ot_i2c_is_override_enabled(OtI2CState *s);
+void ot_i2c_set_waveform_start_ns(OtI2CState *s, int64_t start_ns);
+void ot_i2c_shift_waveform_start_ns(OtI2CState *s, int64_t delta_ns);
+bool ot_i2c_get_override_pin_level(OtI2CState *s, bool is_sda,
+                                   int64_t sample_ns);
+void ot_i2c_consume_override_waveform(OtI2CState *s);
+
 #endif /* HW_OPENTITAN_OT_I2C_H */

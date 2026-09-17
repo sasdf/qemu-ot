@@ -318,6 +318,12 @@ typedef enum {
     SIGNAL_NACK_STOP
 } OtI2CSignal;
 
+typedef struct {
+    int64_t offset_ns;
+    bool scl;
+    bool sda;
+} OtI2cOvrdStep;
+
 struct OtI2CState {
     SysBusDevice parent_obj;
 
@@ -376,6 +382,14 @@ struct OtI2CState {
     /* Virtual clock timestamp when FMT FIFO finishes draining */
     uint64_t fmt_finish_ns;
     QEMUTimer *fmt_timer;
+
+    /* Override bitbang waveform recording state */
+    OtI2cOvrdStep ovrd_steps[64];
+    unsigned ovrd_len;
+    int64_t ovrd_first_ns;
+    int64_t ovrd_last_ns;
+    int64_t ovrd_start_ns;
+    bool ovrd_consumed;
 
     uint32_t pclk; /* Current input clock */
     const char *clock_src_name; /* IRQ name once connected */
@@ -1276,12 +1290,53 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_i2c_irq_set_state(s, TX_THRESHOLD, ot_i2c_tx_threshold_intr(s));
         ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
         break;
-    case R_OVRD:
-        qemu_log_mask(LOG_UNIMP, "%s: %s: register %s is not implemented\n",
-                      __func__, s->ot_id, REG_NAME(reg));
+    case R_OVRD: {
         val32 &= R_OVRD_TXOVRDEN_MASK | R_OVRD_SCLVAL_MASK | R_OVRD_SDAVAL_MASK;
         s->regs[reg] = val32;
+        if (val32 & R_OVRD_TXOVRDEN_MASK) {
+            bool scl = (bool)(val32 & R_OVRD_SCLVAL_MASK);
+            bool sda = (bool)(val32 & R_OVRD_SDAVAL_MASK);
+            if (s->ovrd_consumed && val32 == R_OVRD_TXOVRDEN_MASK) {
+                s->ovrd_len = 0;
+                s->ovrd_consumed = false;
+                s->ovrd_start_ns = INT64_MAX;
+            }
+            if (!s->ovrd_consumed) {
+                int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+                if (s->ovrd_len == 0) {
+                    if (scl && sda) {
+                        s->ovrd_first_ns = now_ns;
+                        s->ovrd_last_ns = now_ns;
+                        s->ovrd_steps[0].offset_ns = 0;
+                        s->ovrd_steps[0].scl = scl;
+                        s->ovrd_steps[0].sda = sda;
+                        s->ovrd_len = 1u;
+                        s->ovrd_start_ns = INT64_MAX;
+                    }
+                } else if (s->ovrd_len < ARRAY_SIZE(s->ovrd_steps)) {
+                    int64_t offset_ns = now_ns - s->ovrd_first_ns;
+                    int64_t prev_ns = s->ovrd_steps[s->ovrd_len - 1u].offset_ns;
+                    bool prev_scl = s->ovrd_steps[s->ovrd_len - 1u].scl;
+                    int64_t min_delta =
+                        (prev_scl && !scl && s->ovrd_len > 3u) ? 40000LL :
+                                                                 20000LL;
+                    if (offset_ns < prev_ns + min_delta) {
+                        offset_ns = prev_ns + min_delta;
+                    }
+                    s->ovrd_steps[s->ovrd_len].offset_ns = offset_ns;
+                    s->ovrd_steps[s->ovrd_len].scl = scl;
+                    s->ovrd_steps[s->ovrd_len].sda = sda;
+                    s->ovrd_len++;
+                    s->ovrd_last_ns = now_ns;
+                }
+            }
+        } else {
+            s->ovrd_len = 0;
+            s->ovrd_consumed = false;
+            s->ovrd_start_ns = INT64_MAX;
+        }
         break;
+    }
     case R_TIMING0:
         val32 &= R_TIMING0_THIGH_MASK | R_TIMING0_TLOW_MASK;
         s->regs[reg] = val32;
@@ -1703,6 +1758,70 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->acq_fifo_next_data = 0;
     s->last_ack_result = 0;
     s->active_target_addr = 0x0u;
+    s->ovrd_len = 0;
+    s->ovrd_first_ns = 0;
+    s->ovrd_last_ns = 0;
+    s->ovrd_start_ns = INT64_MAX;
+    s->ovrd_consumed = false;
+}
+
+bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns)
+{
+    if (!s || s->ovrd_consumed) {
+        return false;
+    }
+    if (s->ovrd_len >= 31u) {
+        return true;
+    }
+    if (s->ovrd_len > 0u && (now_ns - s->ovrd_last_ns) > 200000LL) {
+        return true;
+    }
+    return false;
+}
+
+bool ot_i2c_is_override_enabled(OtI2CState *s)
+{
+    return s && ((s->regs[R_OVRD] & R_OVRD_TXOVRDEN_MASK) != 0) &&
+           !s->ovrd_consumed;
+}
+
+void ot_i2c_set_waveform_start_ns(OtI2CState *s, int64_t start_ns)
+{
+    if (s) {
+        s->ovrd_start_ns = start_ns;
+    }
+}
+
+void ot_i2c_shift_waveform_start_ns(OtI2CState *s, int64_t delta_ns)
+{
+    if (s && s->ovrd_start_ns != INT64_MAX) {
+        s->ovrd_start_ns += delta_ns;
+    }
+}
+
+bool ot_i2c_get_override_pin_level(OtI2CState *s, bool is_sda,
+                                   int64_t sample_ns)
+{
+    if (!s || s->ovrd_len == 0 || sample_ns < s->ovrd_start_ns) {
+        return true;
+    }
+    int64_t rel_ns = sample_ns - s->ovrd_start_ns;
+    unsigned idx = 0;
+    for (unsigned i = 0; i < s->ovrd_len; i++) {
+        if (s->ovrd_steps[i].offset_ns <= rel_ns) {
+            idx = i;
+        } else {
+            break;
+        }
+    }
+    return is_sda ? s->ovrd_steps[idx].sda : s->ovrd_steps[idx].scl;
+}
+
+void ot_i2c_consume_override_waveform(OtI2CState *s)
+{
+    if (s) {
+        s->ovrd_consumed = true;
+    }
 }
 
 static void ot_i2c_realize(DeviceState *dev, Error **errp)

@@ -35,6 +35,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
+#include "hw/opentitan/ot_i2c.h"
 #include "hw/opentitan/ot_pinmux.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_pwm.h"
@@ -148,6 +149,7 @@ struct OtGpioEgState {
     OtPwmState *pwm;
     OtSPIHostState *spi_host1;
     OtSysrstCtrlState *sysrst_ctrl;
+    OtI2CState *i2c[3];
     QEMUTimer *bb_timer;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
@@ -714,9 +716,50 @@ static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
     return false;
 }
 
+static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
+{
+    bool has_i2c_pad = false;
+    for (unsigned i = 0; i < s->bb_npins; i++) {
+        unsigned pad = s->bb_pins[i];
+        if (pad == 7u || pad == 8u) {
+            has_i2c_pad = true;
+            break;
+        }
+        if (s->pinmux) {
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+            if (outsel >= 35u && outsel <= 40u) {
+                has_i2c_pad = true;
+                break;
+            }
+        }
+    }
+    if (!has_i2c_pad) {
+        return NULL;
+    }
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    for (unsigned i = 0; i < 3u; i++) {
+        if (s->i2c[i] && ot_i2c_is_override_waveform_ready(s->i2c[i], now_ns)) {
+            return s->i2c[i];
+        }
+    }
+    for (unsigned i = 0; i < 3u; i++) {
+        if (s->i2c[i] && ot_i2c_is_override_enabled(s->i2c[i])) {
+            return s->i2c[i];
+        }
+    }
+    return NULL;
+}
+
 static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
                                   int64_t sample_ns)
 {
+    if (pad == 7u || pad == 8u) {
+        OtI2CState *active_i2c = ot_gpio_eg_get_active_override_i2c(s);
+        if (active_i2c) {
+            return ot_i2c_get_override_pin_level(active_i2c, pad == 7u,
+                                                 sample_ns);
+        }
+    }
     if (s->pinmux) {
         uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
         if (outsel == 0u) {
@@ -754,7 +797,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     }
 
     bool uses_spi_host1 = ot_gpio_eg_bitbang_uses_spi_host1(s);
-    bool uses_pwm = !uses_spi_host1 && (s->pwm != NULL);
+    OtI2CState *active_i2c =
+        uses_spi_host1 ? NULL : ot_gpio_eg_get_active_override_i2c(s);
+    bool uses_pwm = !uses_spi_host1 && !active_i2c && (s->pwm != NULL);
 
     if (s->bb_idx < s->bb_num_samples) {
         uint8_t wval = s->bb_wbuf[s->bb_idx];
@@ -806,6 +851,19 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             }
         }
 
+        if (s->bb_idx == 5u && active_i2c) {
+            int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            if (!ot_i2c_is_override_waveform_ready(active_i2c, now_ns) &&
+                s->bb_wait_pwm_ticks > 0) {
+                s->bb_wait_pwm_ticks--;
+                int64_t next_ns = now_ns + 1000000LL;
+                s->bb_start_ns =
+                    next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+                timer_mod_ns(s->bb_timer, next_ns);
+                return;
+            }
+        }
+
         if (s->bb_idx == 5u) {
             s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                              (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -813,6 +871,11 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
                 ot_spi_host_set_waveform_start_ns(
                     s->spi_host1,
                     s->bb_start_ns + 10LL * (int64_t)s->bb_period_ns);
+            }
+            if (active_i2c) {
+                ot_i2c_set_waveform_start_ns(
+                    active_i2c,
+                    s->bb_start_ns + 100LL * (int64_t)s->bb_period_ns);
             }
         }
 
@@ -848,12 +911,15 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             if (s->spi_host1) {
                 ot_spi_host_shift_waveform_start_ns(s->spi_host1, -skipped_ns);
             }
+            if (active_i2c) {
+                ot_i2c_shift_waveform_start_ns(active_i2c, -skipped_ns);
+            }
         }
 
         s->bb_idx += chunk;
         if (s->bb_idx >= s->bb_num_samples) {
             s->bb_wait_pwm_ticks = 50000u;
-            s->bb_tail_ticks = uses_spi_host1 ? 0u : 20u;
+            s->bb_tail_ticks = (uses_spi_host1 || active_i2c) ? 0u : 20u;
         }
         int64_t next_ns =
             s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -902,6 +968,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
 
     if (uses_spi_host1) {
         ot_spi_host_clear_waveform(s->spi_host1);
+    }
+    if (active_i2c) {
+        ot_i2c_consume_override_waveform(active_i2c);
     }
 
     g_free(s->bb_wbuf);
@@ -1333,6 +1402,9 @@ static const Property ot_gpio_eg_properties[] = {
                      OtSPIHostState *),
     DEFINE_PROP_LINK("sysrst-ctrl", OtGpioEgState, sysrst_ctrl,
                      TYPE_OT_SYSRST_CTRL, OtSysrstCtrlState *),
+    DEFINE_PROP_LINK("i2c0", OtGpioEgState, i2c[0], TYPE_OT_I2C, OtI2CState *),
+    DEFINE_PROP_LINK("i2c1", OtGpioEgState, i2c[1], TYPE_OT_I2C, OtI2CState *),
+    DEFINE_PROP_LINK("i2c2", OtGpioEgState, i2c[2], TYPE_OT_I2C, OtI2CState *),
 };
 
 static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)

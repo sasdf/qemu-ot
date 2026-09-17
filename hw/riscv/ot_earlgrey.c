@@ -637,7 +637,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_DEVLINK("pinmux", PINMUX),
             OT_EG_SOC_DEVLINK("pwm", PWM),
             OT_EG_SOC_DEVLINK("spi-host1", SPI_HOST1),
-            OT_EG_SOC_DEVLINK("sysrst-ctrl", SYSRST_CTRL)
+            OT_EG_SOC_DEVLINK("sysrst-ctrl", SYSRST_CTRL),
+            OT_EG_SOC_DEVLINK("i2c0", I2C0),
+            OT_EG_SOC_DEVLINK("i2c1", I2C1),
+            OT_EG_SOC_DEVLINK("i2c2", I2C2)
         )
     },
     [OT_EG_SOC_DEV_SPI_DEVICE] = {
