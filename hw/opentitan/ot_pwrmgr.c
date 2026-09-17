@@ -554,6 +554,9 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         if (!s->in_low_power) {
             s->in_low_power = true;
             ibex_irq_set(&s->sleep_en, 1);
+            if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+                ibex_irq_set(&s->cpu_enable, (int)false);
+            }
         }
         if (active_wkup) {
             s->in_low_power = false;
@@ -565,11 +568,13 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
             s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
             s->regs[R_INTR_STATE] |= WAKEUP_MASK;
-            ot_pwrmgr_update_irq(s);
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
+                ibex_irq_set(&s->cpu_enable, (int)false);
                 ibex_irq_set(&s->reset_req,
                              OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
                                                      OT_RSTMGR_RESET_LOW_POWER));
+            } else {
+                ot_pwrmgr_update_irq(s);
             }
         }
     }
@@ -659,6 +664,12 @@ static void ot_pwrmgr_rst_req(void *opaque, int irq, int level)
 
         trace_ot_pwrmgr_reset_req(s->ot_id, "scheduling reset", src);
 
+        if (s->f_state == OT_PWR_FAST_ST_ACTIVE) {
+            ibex_irq_set(&s->cpu_enable, (int)false);
+            s->boot_status.cpu_fetch_en = false;
+            ibex_irq_set(&s->boot_st, s->boot_status.i32);
+        }
+
         s->fsm_events.hw_reset = true;
         ot_pwrmgr_schedule_fsm(s);
     }
@@ -690,6 +701,12 @@ static void ot_pwrmgr_sw_rst_req(void *opaque, int irq, int level)
         s->reset_request.domain = OT_PWRMGR_FAST_DOMAIN;
 
         trace_ot_pwrmgr_reset_req(s->ot_id, "scheduling SW reset", 0);
+
+        if (s->f_state == OT_PWR_FAST_ST_ACTIVE) {
+            ibex_irq_set(&s->cpu_enable, (int)false);
+            s->boot_status.cpu_fetch_en = false;
+            ibex_irq_set(&s->boot_st, s->boot_status.i32);
+        }
 
         s->fsm_events.sw_reset = true;
         ot_pwrmgr_schedule_fsm(s);

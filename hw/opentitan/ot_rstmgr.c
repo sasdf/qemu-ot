@@ -430,6 +430,10 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
 
+    if (s->cpu) {
+        cpu_pause(s->cpu);
+    }
+
     qemu_bh_schedule(s->bus_reset_bh);
 }
 
