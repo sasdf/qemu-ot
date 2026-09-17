@@ -32,6 +32,7 @@
 #include "hw/block/flash.h"
 #include "hw/boards.h"
 #include "hw/core/split-irq.h"
+#include "hw/i2c/i2c.h"
 #include "hw/intc/sifive_plic.h"
 #include "hw/jtag/tap_ctrl.h"
 #include "hw/jtag/tap_ctrl_rbb.h"
@@ -2082,6 +2083,36 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
         qdev_connect_gpio_out_named(spihost, SSI_GPIO_CS, 0, cs);
 
         g_free(flashname);
+        g_free(busname);
+    }
+
+    for (unsigned i2c_idx = 0; i2c_idx < 3; i2c_idx++) {
+        DeviceState *i2cdev =
+            RISCV_OT_EG_SOC(soc)->devices[OT_EG_SOC_DEV_I2C0 + i2c_idx];
+        char *busname = g_strdup_printf("ot-i2c%u", i2c_idx);
+        BusState *i2cbus = qdev_get_child_bus(i2cdev, busname);
+        g_assert(i2cbus);
+
+        /* PMOD FRAM MB85RC256V (32KB at 0x51, Device ID 0x00A510 at 0x7C) */
+        DeviceState *fram = qdev_new("at24c-eeprom");
+        qdev_prop_set_uint8(fram, "address", 0x51);
+        qdev_prop_set_uint32(fram, "rom-size", 32768);
+        qdev_prop_set_uint32(fram, "device-id", 0x00A510);
+        char *fram_name = g_strdup_printf("pmod-fram%u", i2c_idx);
+        object_property_add_child(OBJECT(board), fram_name, OBJECT(fram));
+        qdev_realize_and_unref(fram, i2cbus, &error_fatal);
+        g_free(fram_name);
+
+        /* PMOD EEPROM AT24C256/512 (64KB at 0x52, 2 write-cycle busy NACKs) */
+        DeviceState *eeprom = qdev_new("at24c-eeprom");
+        qdev_prop_set_uint8(eeprom, "address", 0x52);
+        qdev_prop_set_uint32(eeprom, "rom-size", 65536);
+        qdev_prop_set_uint8(eeprom, "write-naks", 2);
+        char *eeprom_name = g_strdup_printf("pmod-eeprom%u", i2c_idx);
+        object_property_add_child(OBJECT(board), eeprom_name, OBJECT(eeprom));
+        qdev_realize_and_unref(eeprom, i2cbus, &error_fatal);
+        g_free(eeprom_name);
+
         g_free(busname);
     }
 }
