@@ -895,7 +895,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             IBEX_DEV_UINT_PROP("silicon_creator_id", 0x4001u),
             IBEX_DEV_UINT_PROP("product_id", 0x0002u),
             IBEX_DEV_UINT_PROP("revision_id", 0x1u),
-            IBEX_DEV_BOOL_PROP("volatile_raw_unlock", true),
+            IBEX_DEV_BOOL_PROP("volatile_raw_unlock", false),
             IBEX_DEV_UINT_PROP("kmac-app", 1u)
         )
     },
