@@ -420,6 +420,7 @@ struct OtLcCtrlState {
     uint8_t kmac_app;
     bool volatile_raw_unlock;
     bool decode_soc_dbg; /* whether to handle SoCDbg state */
+    bool inject_otp_prog_error;
 };
 
 /* try to cope with the many ways to encode a transition matrix */
@@ -734,6 +735,17 @@ ot_lc_ctrl_change_state_line(OtLcCtrlState *s, OtLcCtrlFsmState state, int line)
 static void ot_lc_ctrl_update_alerts(OtLcCtrlState *s)
 {
     uint32_t level = s->regs[R_ALERT_TEST];
+
+    if (s->regs[R_STATUS] & R_STATUS_OTP_ERROR_MASK) {
+        level |= ALERT_FATAL_PROG_ERROR_MASK;
+    }
+    if (s->regs[R_STATUS] &
+        (R_STATUS_STATE_ERROR_MASK | R_STATUS_OTP_PARTITION_ERROR_MASK)) {
+        level |= ALERT_FATAL_STATE_ERROR_MASK;
+    }
+    if (s->regs[R_STATUS] & R_STATUS_BUS_INTEG_ERROR_MASK) {
+        level |= ALERT_FATAL_BUS_INTEG_ERROR_MASK;
+    }
 
     for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
@@ -1258,6 +1270,15 @@ static void ot_lc_ctrl_handle_otp_ack(void *opaque, bool ack)
         trace_ot_lc_ctrl_info(s->ot_id, "Ignore OTP completion in IDLE");
         break;
     case ST_CNT_PROG:
+        if (!ack) {
+            trace_ot_lc_ctrl_info(s->ot_id,
+                                  "Failed to program transition count");
+            s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
+            ot_lc_ctrl_update_alerts(s);
+            LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
+            s->lc_state = LC_STATE_POST_TRANSITION;
+            break;
+        }
         LC_FSM_CHANGE_STATE(s, ST_TRANS_CHECK);
         /*
          * Notes:
@@ -1277,6 +1298,7 @@ static void ot_lc_ctrl_handle_otp_ack(void *opaque, bool ack)
         } else {
             trace_ot_lc_ctrl_info(s->ot_id, "Failed to program transition");
             s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
+            ot_lc_ctrl_update_alerts(s);
         }
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
@@ -1298,6 +1320,7 @@ static void ot_lc_ctrl_program_otp(OtLcCtrlState *s, unsigned lc_tcount,
                       "%s: %s: OTP implementation does not support programming",
                       __func__, s->ot_id);
         s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
+        ot_lc_ctrl_update_alerts(s);
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
         return;
@@ -1305,13 +1328,17 @@ static void ot_lc_ctrl_program_otp(OtLcCtrlState *s, unsigned lc_tcount,
 
     unsigned stix = MIN((unsigned)lc_state, NUM_LC_STATE);
     unsigned tcix = MIN(lc_tcount, NUM_LC_TRANSITION_COUNT);
-    const uint16_t *transition_val = s->lc_transitions[tcix];
-    const uint16_t *state_val = s->lc_states[stix];
+    const uint16_t *transition_val = s->inject_otp_prog_error ?
+                                         s->lc_transitions[0] :
+                                         s->lc_transitions[tcix];
+    const uint16_t *state_val =
+        s->inject_otp_prog_error ? s->lc_states[0] : s->lc_states[stix];
 
     if (!oc->program_req(oi, transition_val, state_val,
                          &ot_lc_ctrl_handle_otp_ack, s)) {
         trace_ot_lc_ctrl_error(s->ot_id, "OTP program request rejected");
         s->regs[R_STATUS] |= R_STATUS_STATE_ERROR_MASK;
+        ot_lc_ctrl_update_alerts(s);
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
         return;
@@ -1609,6 +1636,8 @@ static void ot_lc_ctrl_initialize(OtLcCtrlState *s)
             LC_FSM_CHANGE_STATE(s, ST_SCRAP);
         }
     } else {
+        s->regs[R_STATUS] |= R_STATUS_STATE_ERROR_MASK;
+        ot_lc_ctrl_update_alerts(s);
         LC_FSM_CHANGE_STATE(s, ST_INVALID);
     }
 
@@ -1746,7 +1775,8 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
                     0u;
         break;
     case R_STATUS:
-        if (s->state != ST_IDLE && s->state != ST_POST_TRANS) {
+        if (ifreq == LC_IF_DMI && s->state != ST_IDLE &&
+            s->state != ST_POST_TRANS) {
             qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
         }
         val32 = s->regs[reg];
@@ -2232,6 +2262,8 @@ static const Property ot_lc_ctrl_properties[] = {
     DEFINE_PROP_BOOL("volatile_raw_unlock", OtLcCtrlState, volatile_raw_unlock,
                      true),
     DEFINE_PROP_BOOL("decode_soc_dbg", OtLcCtrlState, decode_soc_dbg, false),
+    DEFINE_PROP_BOOL("inject-otp-prog-error", OtLcCtrlState,
+                     inject_otp_prog_error, false),
     DEFINE_PROP_UINT8("kmac-app", OtLcCtrlState, kmac_app, UINT8_MAX),
 };
 
