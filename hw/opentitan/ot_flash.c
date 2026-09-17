@@ -3435,13 +3435,15 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
      * erased or programmed:
      *   Bank 0 Info 0 Pages 1..4 (CreatorSecret, OwnerSecret, WaferAuthSecret,
      *                             AttestationKeySeeds) -> indices 1..4
+     *   Bank 0 Info 0 Pages 5..8 (OwnerReserved0..3) -> indices 5..8
      *   Bank 0 Info 0 Page 9 (FactoryCerts) -> index 9
      *   Bank 1 Info 0 Pages 2..3 (OwnerSlot0, OwnerSlot1) -> indices 15..16
      *   Bank 1 Info 0 Page 9 (DiceCerts) -> index 22
      */
     const uint32_t unprovisioned_default_mask =
-        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 9) |
-        (1u << 15) | (1u << 16) | (1u << 22);
+        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
+        (1u << 6) | (1u << 7) | (1u << 8) | (1u << 9) | (1u << 15) |
+        (1u << 16) | (1u << 22);
     unsigned total_info_pages =
         (flash->bank_count * flash->info_size) / BYTES_PER_PAGE;
     flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
