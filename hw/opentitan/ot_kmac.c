@@ -467,10 +467,12 @@ static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) + BH_TRIGGER_DELAY_NS);
 }
 
+static void ot_kmac_process(void *opaque);
+
 static void ot_kmac_bh_timer_handler(void *opaque)
 {
     OtKMACState *s = opaque;
-    qemu_bh_schedule(s->bh);
+    ot_kmac_process(s);
 }
 
 static void ot_kmac_cancel_bh(OtKMACState *s)
@@ -528,8 +530,6 @@ static void ot_kmac_report_error(OtKMACState *s, int code, uint32_t info)
     s->regs[R_INTR_STATE] |= INTR_KMAC_ERR_MASK;
     ot_kmac_update_irq(s);
 }
-
-static void ot_kmac_process(void *opaque);
 
 static void ot_kmac_edn_wait_timer_handler(void *opaque)
 {

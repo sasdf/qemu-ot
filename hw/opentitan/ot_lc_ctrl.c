@@ -1403,7 +1403,7 @@ static void ot_lc_ctrl_start_transition(OtLcCtrlState *s)
     }
 
     LC_FSM_CHANGE_STATE(s, ST_CNT_INCR);
-    if (s->lc_tcount >= LC_TRANSITION_COUNT_MAX) {
+    if (s->lc_tcount >= LC_TRANSITION_COUNT_MAX && target != LC_STATE_SCRAP) {
         trace_ot_lc_ctrl_error(s->ot_id, "Max transition count reached");
         s->regs[R_STATUS] |= R_STATUS_TRANSITION_COUNT_ERROR_MASK;
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
@@ -1419,7 +1419,9 @@ static void ot_lc_ctrl_start_transition(OtLcCtrlState *s)
 
     LC_FSM_CHANGE_STATE(s, ST_CNT_PROG);
 
-    ot_lc_ctrl_program_otp(s, s->lc_tcount, s->lc_state);
+    ot_lc_ctrl_program_otp(s, s->lc_tcount,
+                           target == LC_STATE_SCRAP ? LC_STATE_SCRAP :
+                                                      s->lc_state);
 }
 
 static void ot_lc_ctrl_resume_transition(OtLcCtrlState *s)
@@ -1486,39 +1488,43 @@ static inline size_t ot_lc_ctrl_get_keccak_rate_bytes(size_t kstrength)
 
 static void ot_lc_ctrl_compute_predefined_tokens(OtLcCtrlState *s)
 {
-    if (!s->raw_unlock_token_xstr) {
-        trace_ot_lc_ctrl_token_missing(s->ot_id, "raw_unlock_token");
-        return;
-    }
-
     uint8_t all_zero_token[sizeof(OtOTPTokenValue)];
     uint8_t raw_unlock_token[sizeof(OtOTPTokenValue)];
-
-    size_t len = strlen(s->raw_unlock_token_xstr);
-    if (len != sizeof(OtOTPTokenValue) * 2u) {
-        error_setg(&error_fatal, "%s: %s invalid raw_unlock_token length\n",
-                   __func__, s->ot_id);
-        return;
-    }
-
-    if (ot_common_parse_hexa_str(raw_unlock_token, s->raw_unlock_token_xstr,
-                                 sizeof(OtOTPTokenValue), true, false)) {
-        error_setg(&error_fatal, "%s: %s unable to parse raw_unlock_token\n",
-                   __func__, s->ot_id);
-        return;
-    }
 
     memset(all_zero_token, 0, sizeof(all_zero_token));
 
     const uint8_t *srcs[] = {
         [LC_TK_INVALID] = NULL,
         [LC_TK_ZERO] = all_zero_token,
-        [LC_TK_RAW_UNLOCK] = raw_unlock_token,
+        [LC_TK_RAW_UNLOCK] = NULL,
     };
+
+    if (s->raw_unlock_token_xstr) {
+        size_t len = strlen(s->raw_unlock_token_xstr);
+        if (len != sizeof(OtOTPTokenValue) * 2u) {
+            error_setg(&error_fatal, "%s: %s invalid raw_unlock_token length\n",
+                       __func__, s->ot_id);
+            return;
+        }
+
+        if (ot_common_parse_hexa_str(raw_unlock_token, s->raw_unlock_token_xstr,
+                                     sizeof(OtOTPTokenValue), true, false)) {
+            error_setg(&error_fatal, "%s: %s unable to parse raw_unlock_token\n",
+                       __func__, s->ot_id);
+            return;
+        }
+        srcs[LC_TK_RAW_UNLOCK] = raw_unlock_token;
+    } else {
+        trace_ot_lc_ctrl_token_missing(s->ot_id, "raw_unlock_token");
+    }
+
     hash_state ltc_state;
     uint8_t keccak_state[KECCAK_STATE_BYTES];
 
     for (OtLcCtrlToken tk = LC_TK_RAW_UNLOCK; tk > LC_TK_INVALID; tk--) {
+        if (!srcs[tk]) {
+            continue;
+        }
         sha3_cshake_init(&ltc_state, (int)OT_LC_CTRL_KMAC_CONFIG.strength,
                          OT_LC_CTRL_KMAC_CONFIG.prefix.funcname,
                          OT_LC_CTRL_KMAC_CONFIG.prefix.funcname_len,
@@ -1740,6 +1746,11 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
                     0u;
         break;
     case R_STATUS:
+        if (s->state != ST_IDLE && s->state != ST_POST_TRANS) {
+            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
+        }
+        val32 = s->regs[reg];
+        break;
     case R_TRANSITION_CMD:
     case R_CLAIM_TRANSITION_IF_REGWEN:
     case R_LC_ID_STATE:
