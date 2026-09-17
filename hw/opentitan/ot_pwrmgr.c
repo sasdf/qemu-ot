@@ -242,6 +242,7 @@ struct OtPwrMgrState {
     IbexIRQ boot_st;
     IbexIRQ sleep_en;
     bool in_low_power;
+    bool wake_info_recording;
 
     OtPwrMgrFastState f_state;
     OtPwrMgrSlowState s_state;
@@ -570,11 +571,16 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 return;
             }
             s->in_low_power = true;
+            if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                  R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+                s->wake_info_recording = true;
+            }
             ibex_irq_set(&s->sleep_en, 1);
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
                 ibex_irq_set(&s->cpu_enable, (int)false);
             }
-            if (!active_wkup && (s->slow_regs.wakeup_en & (1u << 5u))) {
+            if (!active_wkup &&
+                s->slow_regs.wakeup_en == (1u << OT_PWRMGR_WAKEUP_SENSOR)) {
                 OtSensorEgState *sensor =
                     (OtSensorEgState *)object_resolve_path_type(
                         "", TYPE_OT_SENSOR_EG, NULL);
@@ -636,6 +642,9 @@ static void ot_pwrmgr_wkup(void *opaque, int irq, int level)
     uint32_t wkbit = 1u << src;
     if (level) {
         s->regs[R_WAKE_STATUS] |= wkbit;
+        if (s->wake_info_recording && (s->slow_regs.wakeup_en & wkbit)) {
+            s->regs[R_WAKE_INFO] |= wkbit;
+        }
     } else {
         s->regs[R_WAKE_STATUS] &= ~wkbit;
         return;
@@ -1122,6 +1131,9 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_WAKE_INFO_CAPTURE_DIS:
         val32 &= R_WAKE_INFO_CAPTURE_DIS_VAL_MASK;
         s->regs[reg] = val32;
+        if (val32) {
+            s->wake_info_recording = false;
+        }
         break;
     case R_WAKE_INFO:
         val32 &= WAKE_INFO_MASK(s);
@@ -1181,16 +1193,32 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     qemu_bh_cancel(s->fsm_tick_bh);
     timer_del(s->cdc_sync);
     uint32_t wake_info = s->regs[R_WAKE_INFO];
-    uint32_t wake_status =
-        (type != RESET_TYPE_COLD) ? s->regs[R_WAKE_STATUS] : 0u;
+    uint32_t wake_info_dis = s->regs[R_WAKE_INFO_CAPTURE_DIS];
+    uint32_t wakeup_en = s->regs[R_WAKEUP_EN];
+    uint32_t wakeup_en_regwen = s->regs[R_WAKEUP_EN_REGWEN];
+    uint32_t reset_en = s->regs[R_RESET_EN];
+    uint32_t reset_en_regwen = s->regs[R_RESET_EN_REGWEN];
+    uint32_t wake_status = s->regs[R_WAKE_STATUS];
+    uint32_t control = s->regs[R_CONTROL] & ~R_CONTROL_LOW_POWER_HINT_MASK;
+
     memset(s->regs, 0, REGS_SIZE);
-    s->regs[R_WAKE_INFO] = wake_info;
-    s->regs[R_WAKE_STATUS] = wake_status;
+    if (type != RESET_TYPE_COLD) {
+        s->regs[R_WAKE_INFO] = wake_info;
+        s->regs[R_WAKE_INFO_CAPTURE_DIS] = wake_info_dis;
+        s->regs[R_WAKEUP_EN] = wakeup_en;
+        s->regs[R_WAKEUP_EN_REGWEN] = wakeup_en_regwen;
+        s->regs[R_RESET_EN] = reset_en;
+        s->regs[R_RESET_EN_REGWEN] = reset_en_regwen;
+        s->regs[R_WAKE_STATUS] = wake_status;
+        s->regs[R_CONTROL] = control;
+    } else {
+        s->wake_info_recording = false;
+        s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;
+        s->regs[R_WAKEUP_EN_REGWEN] = 0x1u;
+        s->regs[R_RESET_EN_REGWEN] = 0x1u;
+    }
 
     s->regs[R_CTRL_CFG_REGWEN] = 0x1u;
-    s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;
-    s->regs[R_WAKEUP_EN_REGWEN] = 0x1u;
-    s->regs[R_RESET_EN_REGWEN] = 0x1u;
     s->fsm_events.bitmap = 0;
     s->fsm_events.holdon_fetch = s->fetch_ctrl;
     s->boot_status.i32 = 0;

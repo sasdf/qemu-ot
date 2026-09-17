@@ -27,6 +27,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/typedefs.h"
 #include "qom/object.h"
 #include "hw/opentitan/ot_alert.h"
@@ -210,6 +211,7 @@ struct OtPinmuxEgState {
     uint8_t mio_latched_sleep_mode[PARAM_N_MIO_PADS];
     uint8_t dio_latched_sleep_mode[PARAM_N_DIO_PADS];
     bool low_power_exit;
+    bool host_synced;
 
     OtPinmuxEgStateRegs *regs;
 };
@@ -765,6 +767,31 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
             ot_pinmux_eg_update_sysrst_inputs(s);
             ot_pinmux_eg_update_gpio_inputs(s);
+            unsigned periph_idx = (unsigned)(reg - R_MIO_PERIPH_INSEL);
+            if (periph_idx >= 50u && periph_idx < 56u && val32 >= 2u) {
+                unsigned pad = val32 - 2u;
+                bool saw_high = ((s->pad_in_level >> pad) & 1u) != 0;
+                unsigned max_wait = (!s->host_synced &&
+                                     (periph_idx == 51u || periph_idx == 54u) &&
+                                     val32 == 48u) ?
+                                        3000u :
+                                        10u;
+                for (unsigned i = 0; i < max_wait; i++) {
+                    bql_unlock();
+                    g_usleep(1000);
+                    bql_lock();
+                    bool is_high = ((s->pad_in_level >> pad) & 1u) != 0;
+                    if (is_high) {
+                        saw_high = true;
+                    } else if (saw_high && !is_high) {
+                        s->host_synced = true;
+                        break;
+                    }
+                }
+                if (max_wait == 3000u) {
+                    s->host_synced = true;
+                }
+            }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -934,6 +961,10 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
 
     if (c->parent_phases.enter) {
         c->parent_phases.enter(obj, type);
+    }
+
+    if (type == RESET_TYPE_COLD) {
+        s->host_synced = false;
     }
 
     OtPinmuxEgStateRegs *regs = s->regs;
