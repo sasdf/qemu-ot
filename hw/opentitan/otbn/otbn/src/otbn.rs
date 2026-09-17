@@ -188,6 +188,19 @@ impl Executer {
             .unwrap();
         loop {
             let cmd = self.channel.0.recv().unwrap();
+            if let comm::Command::Reset = cmd {
+                self.imem.lock().unwrap().reset();
+                self.dmem.lock().unwrap().reset();
+                self.registers
+                    .status
+                    .store(Status::Idle as u32, Ordering::Relaxed);
+                self.registers.err_bits.store(0, Ordering::Relaxed);
+                self.registers.fatal_bits.store(0, Ordering::Relaxed);
+                self.registers.ctrl.store(false, Ordering::Relaxed);
+                self.registers.insn_count.store(0, Ordering::Relaxed);
+                self.channel.1.send(comm::Response::Ack).unwrap();
+                continue;
+            }
             let state = self.get_status();
             match state {
                 Status::Idle => self.handle_comm(cmd),
@@ -255,6 +268,7 @@ impl Executer {
                 self.wipe_memory(true);
                 self.signal_completion();
             }
+            comm::Command::Reset => (),
             comm::Command::Terminate => {
                 self.set_status(Status::Locked);
                 self.channel.1.send(comm::Response::Ack).unwrap();

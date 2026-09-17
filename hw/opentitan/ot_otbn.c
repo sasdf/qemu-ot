@@ -744,6 +744,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    qemu_bh_cancel(s->proxy_completion_bh);
     timer_del(s->proxy_defer);
 
     s->intr_state = 0;
@@ -761,6 +762,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
 
     for (unsigned rix = 0; rix < (unsigned)OT_OTBN_RND_COUNT; rix++) {
         OtOTBNRandom *rnd = &s->rnds[rix];
+        qemu_bh_cancel(rnd->proxy_entropy_req_bh);
         rnd->otbn = s;
         rnd->no_fips = false;
         rnd->entropy_requested = false;
@@ -804,6 +806,12 @@ static void ot_otbn_reset_exit(Object *obj, ResetType type)
     }
 
     ot_otbn_proxy_start(s->proxy, false, s->log_file, s->log_asm);
+    qemu_bh_cancel(s->proxy_completion_bh);
+    for (unsigned rix = 0; rix < (unsigned)OT_OTBN_RND_COUNT; rix++) {
+        qemu_bh_cancel(s->rnds[rix].proxy_entropy_req_bh);
+    }
+    timer_del(s->proxy_defer);
+    s->last_cmd = OT_OTBN_CMD_NONE;
 }
 
 static void ot_otbn_realize(DeviceState *dev, Error **errp)

@@ -2,6 +2,7 @@
 // Licensed under the Apache License Version 2.0, with LLVM Exceptions, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ pub struct RndCache {
 pub struct Rnd {
     cache: Mutex<RndCache>,
     wait: Condvar,
+    aborted: AtomicBool,
     entropy_req: Mutex<Option<Box<dyn comm::Callback>>>,
 }
 
@@ -31,6 +33,7 @@ impl Default for Rnd {
         Self {
             cache: Mutex::new(cache),
             wait: Condvar::new(),
+            aborted: AtomicBool::new(false),
             entropy_req: Mutex::new(None),
         }
     }
@@ -46,8 +49,14 @@ impl Rnd {
         *func = Some(entropy_req);
     }
 
-    pub fn clear(&mut self) {
+    pub fn abort_wait(&self) {
+        self.aborted.store(true, Ordering::Relaxed);
+        self.wait.notify_all();
+    }
+
+    pub fn clear(&self) {
         /* called from OTBN proxy */
+        self.aborted.store(false, Ordering::Relaxed);
         let mut cache = self.cache.lock().unwrap();
         cache.value = U256::from(0u32);
         cache.available = false;
@@ -77,6 +86,9 @@ impl Rnd {
     }
 
     fn fetch(&self) {
+        if self.aborted.load(Ordering::Relaxed) {
+            return;
+        }
         let mut func = self.entropy_req.lock().unwrap();
         if let Some(req) = &mut *func {
             req.signal();
@@ -93,15 +105,16 @@ impl CSRNG for Rnd {
 
     fn get_csrng_u256(&self) -> (u256, bool, bool) {
         let mut cache = self.cache.lock().unwrap();
-        if !cache.available {
+        if !cache.available && !self.aborted.load(Ordering::Relaxed) {
             self.fetch();
-            while !cache.available {
+            while !cache.available && !self.aborted.load(Ordering::Relaxed) {
                 let result = self
                     .wait
                     .wait_timeout(cache, Duration::from_millis(50))
                     .unwrap();
                 cache = result.0;
-                if result.1.timed_out() && !cache.available {
+                if result.1.timed_out() && !cache.available && !self.aborted.load(Ordering::Relaxed)
+                {
                     self.fetch();
                 }
             }
@@ -148,6 +161,7 @@ pub struct SyncUrnd {
     urnd: Arc<Mutex<Urnd>>,
     sync: Mutex<bool>,
     wait: Condvar,
+    aborted: AtomicBool,
     entropy_req: Mutex<Option<Box<dyn comm::Callback>>>,
 }
 
@@ -156,6 +170,7 @@ impl Default for SyncUrnd {
         Self {
             sync: Mutex::new(false),
             wait: Condvar::new(),
+            aborted: AtomicBool::new(false),
             urnd: Arc::new(Mutex::new(Urnd::default())),
             entropy_req: Mutex::new(None),
         }
@@ -176,7 +191,20 @@ impl SyncUrnd {
         self.urnd.clone()
     }
 
+    pub fn abort_wait(&self) {
+        self.aborted.store(true, Ordering::Relaxed);
+        self.wait.notify_all();
+    }
+
+    pub fn clear(&self) {
+        self.aborted.store(false, Ordering::Relaxed);
+        *self.sync.lock().unwrap() = false;
+    }
+
     pub fn request_reseed(&self) {
+        if self.aborted.load(Ordering::Relaxed) {
+            return;
+        }
         let mut func = self.entropy_req.lock().unwrap();
         if let Some(req) = &mut *func {
             req.signal();
@@ -185,13 +213,13 @@ impl SyncUrnd {
 
     pub fn wait_reseed(&self) {
         let mut sync = self.sync.lock().unwrap();
-        while !*sync {
+        while !*sync && !self.aborted.load(Ordering::Relaxed) {
             let result = self
                 .wait
                 .wait_timeout(sync, Duration::from_millis(5))
                 .unwrap();
             sync = result.0;
-            if result.1.timed_out() && !*sync {
+            if result.1.timed_out() && !*sync && !self.aborted.load(Ordering::Relaxed) {
                 self.request_reseed();
             }
         }

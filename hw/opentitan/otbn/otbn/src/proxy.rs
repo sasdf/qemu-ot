@@ -120,21 +120,17 @@ impl Proxy {
     pub fn start(&mut self, test_mode: bool, log_name: Option<&str>, log_asm: bool) {
         if self.core_id.is_some() {
             // already started, only reset
-            // hartstate is not reset, as it is done after each execution
-            match self.get_status() {
-                otbn::Status::Idle | otbn::Status::Locked => {
-                    let regs = &self.registers;
-                    regs.status
-                        .store(otbn::Status::Idle as u32, Ordering::Relaxed);
-                    regs.err_bits.store(0, Ordering::Relaxed);
-                    regs.fatal_bits.store(0, Ordering::Relaxed);
-                    regs.ctrl.store(false, Ordering::Relaxed);
-                    regs.insn_count.store(0, Ordering::Relaxed);
-                    self.imem.lock().unwrap().reset();
-                    self.dmem.lock().unwrap().reset();
-                }
-                _ => (),
+            self.syncurnd.abort_wait();
+            self.rnd.abort_wait();
+            let channel = self.get_channel();
+            channel.0.send(comm::Command::Reset).unwrap();
+            match channel.1.recv().unwrap() {
+                comm::Response::Ack => (),
+                comm::Response::Error(e) => panic!("Error: {}", e),
+                _ => panic!("Unexpected response"),
             }
+            self.syncurnd.clear();
+            self.rnd.clear();
             return;
         }
 

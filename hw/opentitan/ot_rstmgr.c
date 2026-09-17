@@ -422,6 +422,9 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
     }
 
     /* Only SW is allowed to clear a reset reason, HW only sets bits (|=) */
+    if (level == OT_RSTMGR_RESET_POR) {
+        s->por = true;
+    }
     s->regs[R_RESET_INFO] |= req;
     ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
 
