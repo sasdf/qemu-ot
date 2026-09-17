@@ -32,6 +32,7 @@
 #include "chardev/char-fe.h"
 #include "hw/i2c/i2c.h"
 #include "hw/opentitan/ot_common.h"
+#include "hw/opentitan/ot_i2c.h"
 #include "hw/opentitan/ot_i2c_host_proxy.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
@@ -57,6 +58,12 @@ typedef enum {
     CMD_I2C_ERR,
 } CmdParserState;
 
+typedef enum {
+    PROXY_PENDING_NONE = 0,
+    PROXY_PENDING_WRITE_ACK,
+    PROXY_PENDING_READ_BYTE,
+} ProxyPendingOp;
+
 #define I2C_PROXY_PROTO_VERSION 0x01u
 
 #define I2C_PROXY_STALL_NS 100000u /* 100us */
@@ -67,6 +74,7 @@ struct OtI2CHostProxyState {
 
     /* chardev i2c command parser state */
     CmdParserState parser_state;
+    ProxyPendingOp pending_op;
 
     /* Saved target address of transaction for repeated start conditions */
     uint8_t address;
@@ -115,26 +123,45 @@ static void ot_i2c_host_proxy_stall(OtI2CHostProxyState *s)
 static void
 ot_i2c_host_proxy_start_transfer(OtI2CHostProxyState *s, bool read_transfer)
 {
+    ot_i2c_bus_target_set_matched_address(s->bus, s->address);
     if (i2c_start_transfer(s->bus, s->address, read_transfer) != 0) {
+        i2c_end_transfer(s->bus);
         ot_i2c_host_proxy_put_nack(s);
+        s->parser_state = CMD_I2C_INIT;
     } else {
         ot_i2c_host_proxy_put_ack(s);
+        s->parser_state = read_transfer ? CMD_I2C_READ : CMD_I2C_WRITE;
     }
     ot_i2c_host_proxy_stall(s);
 }
 
 static void ot_i2c_host_proxy_do_read(OtI2CHostProxyState *s)
 {
+    if (ot_i2c_bus_target_check_tx_stretch(s->bus)) {
+        s->pending_op = PROXY_PENDING_READ_BYTE;
+        ot_i2c_host_proxy_stall(s);
+        return;
+    }
     ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
     ot_i2c_host_proxy_stall(s);
 }
 
 static void ot_i2c_host_proxy_do_write(OtI2CHostProxyState *s, uint8_t data)
 {
-    if (i2c_send(s->bus, data) != 0) {
+    int ret = i2c_send(s->bus, data);
+    if (ot_i2c_bus_target_is_stretching(s->bus)) {
+        s->pending_op = PROXY_PENDING_WRITE_ACK;
+        s->parser_state = CMD_I2C_WRITE;
+        ot_i2c_host_proxy_stall(s);
+        return;
+    }
+    if (ret != 0) {
+        i2c_end_transfer(s->bus);
         ot_i2c_host_proxy_put_nack(s);
+        s->parser_state = CMD_I2C_INIT;
     } else {
         ot_i2c_host_proxy_put_ack(s);
+        s->parser_state = CMD_I2C_WRITE;
     }
     ot_i2c_host_proxy_stall(s);
 }
@@ -173,18 +200,9 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         break;
     case CMD_I2C_START:
     case CMD_I2C_REPEATED_START:
-        /*
-         * If a transaction is already in progress (repeated start), QEMU does
-         * not re-scan the bus to find devices even if the provided address
-         * is different, so we do not bother storing it here as the address
-         * that the transaction was started with will be used anyway.
-         */
-        if (s->parser_state == CMD_I2C_START) {
-            s->address = (byte >> 1u);
-        }
+        s->address = (byte >> 1u);
         bool read_transfer = (byte & 1u) == 1u;
         ot_i2c_host_proxy_start_transfer(s, read_transfer);
-        s->parser_state = read_transfer ? CMD_I2C_READ : CMD_I2C_WRITE;
         break;
     case CMD_I2C_READ:
         if (byte == 'R') {
@@ -194,10 +212,13 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         if (byte == 'P') {
             s->parser_state = CMD_I2C_INIT;
             i2c_end_transfer(s->bus);
+            ot_i2c_host_proxy_stall(s);
             break;
         }
         if (byte == 'S') {
             s->parser_state = CMD_I2C_REPEATED_START;
+            ot_i2c_bus_target_repeated_start(s->bus);
+            ot_i2c_host_proxy_stall(s);
             break;
         }
         s->parser_state = CMD_I2C_ERR;
@@ -212,10 +233,13 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         if (byte == 'P') {
             s->parser_state = CMD_I2C_INIT;
             i2c_end_transfer(s->bus);
+            ot_i2c_host_proxy_stall(s);
             break;
         }
         if (byte == 'S') {
             s->parser_state = CMD_I2C_REPEATED_START;
+            ot_i2c_bus_target_repeated_start(s->bus);
+            ot_i2c_host_proxy_stall(s);
             break;
         }
         s->parser_state = CMD_I2C_ERR;
@@ -224,7 +248,6 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         break;
     case CMD_I2C_WRITE_PAYLOAD:
         ot_i2c_host_proxy_do_write(s, byte);
-        s->parser_state = CMD_I2C_WRITE;
         break;
     case CMD_I2C_ERR:
         break;
@@ -235,13 +258,40 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
 
 static void ot_i2c_host_proxy_timer(void *opaque)
 {
-    (void)opaque;
+    OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
+    if (s->pending_op != PROXY_PENDING_NONE) {
+        if (ot_i2c_bus_target_is_stretching(s->bus)) {
+            ot_i2c_host_proxy_stall(s);
+            return;
+        }
+        if (s->pending_op == PROXY_PENDING_WRITE_ACK) {
+            s->pending_op = PROXY_PENDING_NONE;
+            if (ot_i2c_bus_target_get_last_ack(s->bus) != 0) {
+                i2c_end_transfer(s->bus);
+                ot_i2c_host_proxy_put_nack(s);
+                s->parser_state = CMD_I2C_INIT;
+            } else {
+                ot_i2c_host_proxy_put_ack(s);
+            }
+            ot_i2c_host_proxy_stall(s);
+        } else if (s->pending_op == PROXY_PENDING_READ_BYTE) {
+            if (ot_i2c_bus_target_check_tx_stretch(s->bus)) {
+                ot_i2c_host_proxy_stall(s);
+                return;
+            }
+            s->pending_op = PROXY_PENDING_NONE;
+            ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
+            ot_i2c_host_proxy_stall(s);
+        }
+    }
+    qemu_chr_fe_accept_input(&s->chr);
 }
 
 static int ot_i2c_host_proxy_can_receive(void *opaque)
 {
     OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
-    if (s->parser_state == CMD_I2C_ERR) {
+    if (s->parser_state == CMD_I2C_ERR ||
+        s->pending_op != PROXY_PENDING_NONE) {
         return 0;
     }
     return timer_pending(s->stall_timer) ? 0 : 1;
@@ -270,6 +320,7 @@ static void ot_i2c_host_proxy_event_handler(void *opaque, QEMUChrEvent event)
             break;
         }
         s->parser_state = CMD_I2C_INIT;
+        s->pending_op = PROXY_PENDING_NONE;
         timer_del(s->stall_timer);
     }
 }

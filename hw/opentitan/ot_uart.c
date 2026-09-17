@@ -189,6 +189,8 @@ struct OtUARTState {
     OtUARTState *rx_target_uart;
     QEMUTimer *tx_timer;
     bool tx_busy;
+    QEMUTimer *rx_timer;
+    bool rx_busy;
 };
 
 typedef struct {
@@ -436,8 +438,25 @@ static void ot_uart_check_baudrate(const OtUARTState *s)
     }
 }
 
+static uint64_t ot_uart_char_ns(const OtUARTState *s);
+
+static void ot_uart_rx_timer_cb(void *opaque)
+{
+    OtUARTState *s = opaque;
+    s->rx_busy = false;
+    if ((ot_uart_is_rx_enabled(s) ||
+         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+        !ot_uart_is_sys_loopack_enabled(s)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+    }
+}
+
 static void ot_uart_reset_rx_fifo(OtUARTState *s)
 {
+    if (s->rx_timer) {
+        timer_del(s->rx_timer);
+    }
+    s->rx_busy = false;
     fifo8_reset(&s->rx_fifo);
     if ((ot_uart_is_rx_enabled(s) ||
          (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
@@ -458,6 +477,10 @@ static int ot_uart_can_receive(void *opaque)
         return (int)OT_UART_RX_FIFO_SIZE;
     }
 
+    if (s->rx_busy) {
+        return 0;
+    }
+
     if (s->regs[R_CTRL] & R_CTRL_RX_MASK) {
         int free_space = (int)fifo8_num_free(&s->rx_fifo);
         if (free_space == 0 &&
@@ -472,7 +495,9 @@ static int ot_uart_can_receive(void *opaque)
              */
             return 1;
         }
-        return free_space;
+        if (free_space > 0) {
+            return 1;
+        }
     }
 
     return 0;
@@ -529,6 +554,12 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
         return;
     }
     ot_uart_receive_bytes(s, rx_owner, buf, size);
+    if (!(s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) && size > 0) {
+        s->rx_busy = true;
+        timer_mod(s->rx_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                      ot_uart_char_ns(s) * (uint64_t)size);
+    }
 }
 
 static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
@@ -1101,6 +1132,7 @@ static void ot_uart_realize(DeviceState *dev, Error **errp)
     s->tx_chr_owner = s;
     s->rx_target_uart = s;
     s->tx_timer = timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_tx_timer_cb, s);
+    s->rx_timer = timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_rx_timer_cb, s);
     if (s->ot_id[0] == 'u' && s->ot_id[1] >= '0' && s->ot_id[1] <= '3' &&
         s->ot_id[2] == '\0') {
         ot_uart_instances[s->ot_id[1] - '0'] = s;

@@ -358,6 +358,16 @@ struct OtI2CState {
     /* Address that was matched to us */
     uint8_t matched_address;
 
+    /* Target mode transaction and stretching state */
+    bool in_target_transfer;
+    bool restart_pending;
+    bool target_read_mode;
+    bool nack_transaction;
+    bool ack_ctrl_stretching;
+    bool tx_stretching;
+    uint8_t acq_fifo_next_data;
+    int last_ack_result;
+
     /* Last target address used in host START/RESTART */
     uint8_t active_target_addr;
 
@@ -536,6 +546,27 @@ static bool ot_i2c_tx_threshold_intr(OtI2CState *s)
 }
 
 
+static void ot_i2c_target_set_acqdata(OtI2CState *s, uint32_t data,
+                                      OtI2CSignal signal);
+
+static bool ot_i2c_should_tx_stretch(OtI2CState *s)
+{
+    if (!s->target_read_mode) {
+        return false;
+    }
+    return fifo8_is_empty(&s->target_tx_fifo) ||
+           (s->regs[R_TARGET_EVENTS] != 0) ||
+           (ot_fifo32_num_used(&s->target_rx_fifo) > 1);
+}
+
+static void ot_i2c_check_clear_tx_stretch(OtI2CState *s)
+{
+    if (s->tx_stretching && !ot_i2c_should_tx_stretch(s)) {
+        s->tx_stretching = false;
+        ot_i2c_irq_set_state(s, TX_STRETCH, false);
+    }
+}
+
 static void ot_i2c_host_reset_tx_fifo(OtI2CState *s)
 {
     ot_fifo32_reset(&s->host_tx_fifo);
@@ -552,14 +583,15 @@ static void ot_i2c_host_reset_rx_fifo(OtI2CState *s)
 
 static void ot_i2c_target_reset_tx_fifo(OtI2CState *s)
 {
-    SHARED_ARRAY_FIELD_DP32(s->regs, R_INTR_STATE, INTR_TX_THRESHOLD, 0);
     fifo8_reset(&s->target_tx_fifo);
+    ot_i2c_irq_set_state(s, TX_THRESHOLD, ot_i2c_tx_threshold_intr(s));
 }
 
 static void ot_i2c_target_reset_rx_fifo(OtI2CState *s)
 {
-    SHARED_ARRAY_FIELD_DP32(s->regs, R_INTR_STATE, INTR_ACQ_THRESHOLD, 0);
     ot_fifo32_reset(&s->target_rx_fifo);
+    ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
+    ot_i2c_check_clear_tx_stretch(s);
 }
 
 static uint8_t ot_i2c_host_read_rx_fifo(OtI2CState *s)
@@ -607,7 +639,10 @@ static uint32_t ot_i2c_target_read_rx_fifo(OtI2CState *s)
         return 0;
     }
 
-    return ot_fifo32_pop(&s->target_rx_fifo);
+    uint32_t val = ot_fifo32_pop(&s->target_rx_fifo);
+    ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
+    ot_i2c_check_clear_tx_stretch(s);
+    return val;
 }
 
 static void ot_i2c_target_write_tx_fifo(OtI2CState *s, uint8_t val)
@@ -626,6 +661,7 @@ static void ot_i2c_target_write_tx_fifo(OtI2CState *s, uint8_t val)
     }
 
     ot_i2c_irq_set_state(s, TX_THRESHOLD, ot_i2c_tx_threshold_intr(s));
+    ot_i2c_check_clear_tx_stretch(s);
 }
 
 static bool ot_i2c_check_timings(OtI2CState *s)
@@ -801,7 +837,8 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         uint32_t fmt_depth = ot_i2c_get_fmt_depth(s);
         val32 = FIELD_DP32(val32, STATUS, HOSTIDLE,
                            !i2c_bus_busy(s->bus) && fmt_depth == 0);
-        val32 = FIELD_DP32(val32, STATUS, TARGETIDLE, !i2c_bus_busy(s->bus));
+        val32 = FIELD_DP32(val32, STATUS, TARGETIDLE,
+                           !s->in_target_transfer && !i2c_bus_busy(s->bus));
 
         /* Report host TX FIFO status. */
         if (fmt_depth == 0) {
@@ -827,12 +864,15 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
             val32 = FIELD_DP32(val32, STATUS, TXFULL, 1u);
         }
 
-        /* Report target TX FIFO status. */
+        /* Report target RX (ACQ) FIFO status. */
         if (ot_fifo32_is_empty(&s->target_rx_fifo)) {
             val32 = FIELD_DP32(val32, STATUS, ACQEMPTY, 1u);
         }
         if (ot_fifo32_is_full(&s->target_rx_fifo)) {
             val32 = FIELD_DP32(val32, STATUS, ACQFULL, 1u);
+        }
+        if (s->ack_ctrl_stretching) {
+            val32 = FIELD_DP32(val32, STATUS, ACK_CTRL_STRETCH, 1u);
         }
         break;
     }
@@ -842,9 +882,6 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_ACQDATA:
         val32 = (uint32_t)ot_i2c_target_read_rx_fifo(s);
-        /* Deassert level interrupt state if FIFO is no longer above the
-         * threshold. */
-        ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
         break;
     case R_HOST_FIFO_STATUS:
         val32 = FIELD_DP32(val32, HOST_FIFO_STATUS, FMTLVL,
@@ -865,15 +902,14 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
     case R_TIMING2:
     case R_TIMING3:
     case R_TIMING4:
-        val32 = s->regs[reg];
-        break;
     case R_TARGET_TIMEOUT_CTRL:
     case R_TARGET_NACK_COUNT:
     case R_TARGET_ACK_CTRL:
-    case R_ACQ_FIFO_NEXT_DATA:
     case R_HOST_NACK_HANDLER_TIMEOUT:
-        qemu_log_mask(LOG_UNIMP, "%s: %s: register %s is not implemented\n",
-                      __func__, s->ot_id, REG_NAME(reg));
+        val32 = s->regs[reg];
+        break;
+    case R_ACQ_FIFO_NEXT_DATA:
+        val32 = s->acq_fifo_next_data & 0xffu;
         break;
     case R_FIFO_CTRL:
         val32 = 0;
@@ -1065,20 +1101,18 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_TIMEOUT_CTRL:
     case R_HOST_TIMEOUT_CTRL:
+    case R_TARGET_TIMEOUT_CTRL:
+    case R_TARGET_NACK_COUNT:
+    case R_HOST_NACK_HANDLER_TIMEOUT:
         s->regs[reg] = val32;
         break;
     case R_TARGET_ID:
-        if (FIELD_EX32(val32, TARGET_ID, ADDRESS1)) {
-            qemu_log_mask(
-                LOG_UNIMP,
-                "%s: %s: Target mode second address is not supported.\n",
-                __func__, s->ot_id);
-        }
+        s->regs[R_TARGET_ID] = val32 & (R_TARGET_ID_ADDRESS0_MASK |
+                                        R_TARGET_ID_MASK0_MASK |
+                                        R_TARGET_ID_ADDRESS1_MASK |
+                                        R_TARGET_ID_MASK1_MASK);
         address = FIELD_EX32(val32, TARGET_ID, ADDRESS0);
         mask = FIELD_EX32(val32, TARGET_ID, MASK0);
-
-        ARRAY_FIELD_DP32(s->regs, TARGET_ID, ADDRESS0, address);
-        ARRAY_FIELD_DP32(s->regs, TARGET_ID, MASK0, mask);
         /* Update the address mask of this target on the bus. */
         s->address_mask_0 = (uint8_t)mask;
         if (address != 0u) {
@@ -1095,8 +1129,11 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
          * Allow both ENABLEHOST and ENABLETARGET to be set so the
          * host can decide how to configure and use the controller.
          */
-        val32 &= R_CTRL_LLPBK_MASK | R_CTRL_ENABLEHOST_MASK |
-                 R_CTRL_ENABLETARGET_MASK;
+        val32 &= R_CTRL_ENABLEHOST_MASK | R_CTRL_ENABLETARGET_MASK |
+                 R_CTRL_LLPBK_MASK | R_CTRL_NACK_ADDR_AFTER_TIMEOUT_MASK |
+                 R_CTRL_ACK_CTRL_EN_MASK |
+                 R_CTRL_MULTI_CONTROLLER_MONITOR_EN_MASK |
+                 R_CTRL_TX_STRETCH_CTRL_EN_MASK;
         s->regs[reg] = val32;
         if (!ot_i2c_host_enabled(s)) {
             s->fmt_finish_ns = 0;
@@ -1190,21 +1227,41 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_TARGET_EVENTS:
         val32 &= TARGET_EVENTS_RW1C_MASK;
         s->regs[reg] &= ~val32; /* RW1C */
-        ot_i2c_irq_set_state(s, TX_STRETCH, s->regs[reg] != 0);
+        ot_i2c_check_clear_tx_stretch(s);
         break;
-    case R_TARGET_NACK_COUNT:
-    case R_TARGET_ACK_CTRL:
-    case R_ACQ_FIFO_NEXT_DATA:
-    case R_HOST_NACK_HANDLER_TIMEOUT:
-        qemu_log_mask(LOG_UNIMP, "%s: %s: register %s is not implemented\n",
-                      __func__, s->ot_id, REG_NAME(reg));
+    case R_TARGET_ACK_CTRL: {
+        bool nack = FIELD_EX32(val32, TARGET_ACK_CTRL, NACK) != 0;
+        uint16_t nbytes = FIELD_EX32(val32, TARGET_ACK_CTRL, NBYTES);
+        if (nack) {
+            s->nack_transaction = true;
+            ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, 0);
+            if (s->ack_ctrl_stretching) {
+                ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
+                                          SIGNAL_NACK);
+                s->ack_ctrl_stretching = false;
+                s->last_ack_result = -1;
+                ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+            }
+        } else {
+            if (s->ack_ctrl_stretching && nbytes > 0) {
+                ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
+                                          SIGNAL_NONE);
+                nbytes--;
+                s->ack_ctrl_stretching = false;
+                s->last_ack_result = 0;
+                ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+            }
+            ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, nbytes);
+        }
         break;
+    }
     case R_STATUS:
     case R_RDATA:
     case R_HOST_FIFO_STATUS:
     case R_TARGET_FIFO_STATUS:
     case R_VAL:
     case R_ACQDATA:
+    case R_ACQ_FIFO_NEXT_DATA:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
@@ -1240,6 +1297,18 @@ static void ot_i2c_target_set_acqdata(OtI2CState *s, uint32_t data,
                                     data, signal);
 }
 
+static bool ot_i2c_check_address_match(const OtI2CState *s, uint8_t address)
+{
+    uint8_t addr0 = ARRAY_FIELD_EX32(s->regs, TARGET_ID, ADDRESS0);
+    uint8_t mask0 = ARRAY_FIELD_EX32(s->regs, TARGET_ID, MASK0);
+    uint8_t addr1 = ARRAY_FIELD_EX32(s->regs, TARGET_ID, ADDRESS1);
+    uint8_t mask1 = ARRAY_FIELD_EX32(s->regs, TARGET_ID, MASK1);
+
+    bool match0 = mask0 && ((address & mask0) == (addr0 & mask0));
+    bool match1 = mask1 && ((address & mask1) == (addr1 & mask1));
+    return match0 || match1;
+}
+
 static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
 {
     BusState *abus = qdev_get_parent_bus(DEVICE(target));
@@ -1256,36 +1325,68 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
     switch (event) {
     case I2C_START_SEND:
     case I2C_START_SEND_ASYNC:
-        /* Set the first byte to the matched target address + RW bit as 0. */
+    case I2C_START_RECV: {
+        if (!ot_i2c_check_address_match(s, s->matched_address)) {
+            if (s->in_target_transfer && !s->restart_pending) {
+                ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+            }
+            s->in_target_transfer = false;
+            s->restart_pending = false;
+            return -1;
+        }
+        bool is_recv = (event == I2C_START_RECV);
+        OtI2CSignal sig = (s->in_target_transfer || s->restart_pending)
+                              ? SIGNAL_RESTART
+                              : SIGNAL_START;
+        if (s->in_target_transfer && !s->restart_pending) {
+            ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+        }
+        s->restart_pending = false;
+        s->in_target_transfer = true;
+        s->nack_transaction = false;
+        s->ack_ctrl_stretching = false;
+        ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+        ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, 0);
+
         ot_i2c_target_set_acqdata(s,
                                   ot_i2c_address_abyte(s->matched_address,
-                                                       false),
-                                  SIGNAL_START);
-        if (event == I2C_START_SEND_ASYNC) {
+                                                       is_recv),
+                                  sig);
+        if (is_recv) {
+            s->target_read_mode = true;
+            if (ARRAY_FIELD_EX32(s->regs, CTRL, TX_STRETCH_CTRL_EN)) {
+                ARRAY_FIELD_DP32(s->regs, TARGET_EVENTS, TX_PENDING, 1);
+            }
+            if (ot_i2c_should_tx_stretch(s)) {
+                s->tx_stretching = true;
+                ot_i2c_irq_set_state(s, TX_STRETCH, true);
+            }
             i2c_ack(s->bus);
+        } else {
+            s->target_read_mode = false;
+            s->tx_stretching = false;
+            ot_i2c_irq_set_state(s, TX_STRETCH, false);
+            if (event == I2C_START_SEND_ASYNC) {
+                i2c_ack(s->bus);
+            }
         }
         break;
-    case I2C_START_RECV:
-        ot_i2c_target_set_acqdata(s,
-                                  ot_i2c_address_abyte(s->matched_address,
-                                                       true),
-                                  SIGNAL_START);
-        if (ot_fifo32_num_used(&s->target_rx_fifo) > 1) {
-            /*
-             * Potentially an unhandled condition in the ACQ fifo. Datasheet
-             * says to stretch the clock in this situation so assert that
-             * interrupt and let the driver decide what to do.
-             */
-            ot_i2c_irq_set_state(s, TX_STRETCH, true);
-        }
-        i2c_ack(s->bus);
-        break;
+    }
     case I2C_NACK:
         g_assert_not_reached();
         break;
     case I2C_FINISH:
-        /* Signal STOP as the last entry in the fifo. */
-        ot_i2c_target_set_acqdata(s, 0, SIGNAL_STOP);
+        /* Signal STOP or NACK_STOP as the last entry in the fifo. */
+        ot_i2c_target_set_acqdata(s, 0,
+                                  s->nack_transaction ? SIGNAL_NACK_STOP
+                                                      : SIGNAL_STOP);
+        s->in_target_transfer = false;
+        s->restart_pending = false;
+        s->target_read_mode = false;
+        s->ack_ctrl_stretching = false;
+        s->tx_stretching = false;
+        ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+        ot_i2c_irq_set_state(s, TX_STRETCH, false);
 
         /* Assert command complete interrupt. */
         ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
@@ -1333,8 +1434,27 @@ static int ot_i2c_target_send(I2CSlave *target, uint8_t data)
     if (!ot_i2c_target_enabled(s)) {
         return -1;
     }
+    if (s->nack_transaction) {
+        ot_i2c_target_set_acqdata(s, data, SIGNAL_NACK);
+        s->last_ack_result = -1;
+        return -1;
+    }
+    if (ARRAY_FIELD_EX32(s->regs, CTRL, ACK_CTRL_EN)) {
+        uint16_t nbytes = ARRAY_FIELD_EX32(s->regs, TARGET_ACK_CTRL, NBYTES);
+        if (nbytes > 0) {
+            ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, nbytes - 1);
+            ot_i2c_target_set_acqdata(s, data, SIGNAL_NONE);
+            s->last_ack_result = 0;
+            return 0;
+        }
+        s->acq_fifo_next_data = data;
+        s->ack_ctrl_stretching = true;
+        ot_i2c_irq_set_state(s, ACQ_STRETCH, true);
+        return 0;
+    }
 
     ot_i2c_target_set_acqdata(s, data, SIGNAL_NONE);
+    s->last_ack_result = 0;
     return 0;
 }
 
@@ -1350,6 +1470,44 @@ static void ot_i2c_target_send_async(I2CSlave *target, uint8_t data)
     }
 }
 
+bool ot_i2c_bus_target_is_stretching(I2CBus *bus)
+{
+    OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    return s->ack_ctrl_stretching || s->tx_stretching;
+}
+
+int ot_i2c_bus_target_get_last_ack(I2CBus *bus)
+{
+    OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    return s->last_ack_result;
+}
+
+bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus)
+{
+    OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    if (ot_i2c_should_tx_stretch(s)) {
+        s->tx_stretching = true;
+        ot_i2c_irq_set_state(s, TX_STRETCH, true);
+        return true;
+    }
+    return false;
+}
+
+void ot_i2c_bus_target_set_matched_address(I2CBus *bus, uint8_t address)
+{
+    OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    s->matched_address = address;
+}
+
+void ot_i2c_bus_target_repeated_start(I2CBus *bus)
+{
+    OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    if (s->in_target_transfer && !s->restart_pending) {
+        ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+        s->restart_pending = true;
+    }
+}
+
 static bool ot_i2c_target_match_and_add(I2CSlave *candidate, uint8_t address,
                                         bool broadcast,
                                         I2CNodeList *current_devs)
@@ -1358,8 +1516,7 @@ static bool ot_i2c_target_match_and_add(I2CSlave *candidate, uint8_t address,
     OtI2CState *s = OT_I2C(abus->parent);
 
     /* Check address, subject to address masking. */
-    if (broadcast || (s->address_mask_0 &&
-                      (address & s->address_mask_0) == candidate->address)) {
+    if (broadcast || ot_i2c_check_address_match(s, address)) {
         /*
          * Store the address that successfully matched to
          * use the correct address for start condition
@@ -1449,6 +1606,14 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->check_timings = true;
     s->address_mask_0 = 0x0u;
     s->matched_address = 0x0u;
+    s->in_target_transfer = false;
+    s->restart_pending = false;
+    s->target_read_mode = false;
+    s->nack_transaction = false;
+    s->ack_ctrl_stretching = false;
+    s->tx_stretching = false;
+    s->acq_fifo_next_data = 0;
+    s->last_ack_result = 0;
     s->active_target_addr = 0x0u;
 }
 

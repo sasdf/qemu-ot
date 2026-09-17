@@ -31,6 +31,7 @@
 #define HW_OPENTITAN_OT_I2C_H
 
 #include "qom/object.h"
+#include "hw/i2c/i2c.h"
 #include "hw/sysbus.h"
 
 #define TYPE_OT_I2C "ot-i2c"
@@ -38,5 +39,11 @@ OBJECT_DECLARE_TYPE(OtI2CState, OtI2CClass, OT_I2C)
 
 #define TYPE_OT_I2C_TARGET TYPE_OT_I2C "-target"
 OBJECT_DECLARE_SIMPLE_TYPE(OtI2CTarget, OT_I2C_TARGET)
+
+bool ot_i2c_bus_target_is_stretching(I2CBus *bus);
+int ot_i2c_bus_target_get_last_ack(I2CBus *bus);
+bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus);
+void ot_i2c_bus_target_set_matched_address(I2CBus *bus, uint8_t address);
+void ot_i2c_bus_target_repeated_start(I2CBus *bus);
 
 #endif /* HW_OPENTITAN_OT_I2C_H */
