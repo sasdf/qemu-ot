@@ -127,6 +127,7 @@ struct OtGpioEgState {
     uint32_t data_ii; /* input data from IRQ lines */
     uint32_t data_ib; /* input data from backend */
     uint32_t data_bi; /* ignore backend input */
+    uint32_t host_pull; /* host pull up/down from backend */
     uint32_t data_gi; /* ignore GPIO input */
     uint32_t invert; /* invert signal */
     uint32_t opendrain; /* open drain (1 -> hi-z) */
@@ -212,6 +213,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     uint32_t prev = s->regs[R_DATA_IN];
 
     uint32_t routed_ib = 0;
+    uint32_t routed_hp = 0;
     uint32_t routed_bi = UINT32_MAX;
     uint32_t eff_oe = 0;
     if (s->pinmux) {
@@ -238,6 +240,9 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                     if ((s->data_ib >> host_pin) & 1u) {
                         routed_ib |= (1u << g);
                     }
+                    if ((s->host_pull >> host_pin) & 1u) {
+                        routed_hp |= (1u << g);
+                    }
                     if (!((s->data_bi >> host_pin) & 1u)) {
                         routed_bi &= ~(1u << g);
                     }
@@ -251,6 +256,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
         }
     } else {
         routed_ib = s->data_ib;
+        routed_hp = s->host_pull;
         routed_bi = s->data_bi;
         eff_oe = s->data_oe;
     }
@@ -261,7 +267,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 
     uint32_t data_ii = s->data_ii & ii_mask;
     uint32_t data_ib = routed_ib & bi_mask;
-    uint32_t pull_in = s->pull_en & s->pull_sel & pi_mask;
+    uint32_t pull_in =
+        ((s->pull_en & s->pull_sel) | (~s->pull_en & routed_hp)) & pi_mask;
     uint32_t data_in = data_ii | data_ib | pull_in;
 
     trace_ot_gpio_in_ignore(s->ot_id, s->connected, s->data_gi, s->data_bi,
@@ -880,6 +887,18 @@ static int ot_gpio_eg_chr_can_receive(void *opaque)
     return (int)sizeof(s->ibuf) - (int)s->ipos;
 }
 
+static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
+{
+    if (!qemu_chr_fe_backend_connected(&s->chr)) {
+        return;
+    }
+
+    char buf[16u];
+    int len = snprintf(buf, sizeof(buf), "Y:%08x\r\n", s->regs[R_DATA_IN]);
+    s->backend_state.in_m = s->regs[R_DATA_IN];
+    qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+}
+
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
 {
     OtGpioEgState *s = opaque;
@@ -937,9 +956,15 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
             if (cmd == 'M') {
                 s->data_bi = data_in;
                 ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
             } else if (cmd == 'I') {
                 s->data_ib = data_in;
                 ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
+            } else if (cmd == 'P') {
+                s->host_pull = data_in;
+                ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
             } else if (cmd == 'R') {
                 ot_gpio_eg_update_backend(s, true);
             } else {
@@ -1287,6 +1312,7 @@ static void ot_gpio_eg_init(Object *obj)
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
     s->data_bi = UINT32_MAX;
+    s->host_pull = 0u;
 }
 
 static void ot_gpio_eg_class_init(ObjectClass *klass, const void *data)
