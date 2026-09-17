@@ -850,6 +850,7 @@ static void ot_edn_handle_disable(OtEDNState *s)
     g_assert(ot_edn_get_last_csrng_command(s) != OT_CSRNG_CMD_UNINSTANTIATE);
 
     c->no_fips = false;
+    c->prev_bits_valid = false;
     c->rem_packet_count = 0;
     xtrace_ot_edn_dinfo(c->appid, "discard all entropy packets",
                         ot_fifo32_num_used(&c->bits_fifo));
@@ -887,6 +888,7 @@ static void ot_edn_clean_up(OtEDNState *s, bool discard_requests)
     trace_ot_edn_clean_up(c->appid, discard_requests);
 
     c->instantiated = false;
+    c->prev_bits_valid = false;
     s->sw_cmd_ready = false;
     c->hw_cmd_status = CSRNG_STATUS_SUCCESS;
     c->sw_cmd_status = CSRNG_STATUS_SUCCESS;
@@ -1135,13 +1137,6 @@ static void ot_edn_fill_bits(void *opaque, const uint32_t *bits, bool fips)
         }
         ot_fifo32_push(&c->bits_fifo, bits[ix]);
     }
-    if (c->prev_bits_valid &&
-        memcmp(c->prev_bits, bits, sizeof(c->prev_bits)) == 0) {
-        s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_EDN_BUS_CMP_ALERT_MASK;
-        ot_edn_update_alerts(s);
-    }
-    memcpy(c->prev_bits, bits, sizeof(c->prev_bits));
-    c->prev_bits_valid = true;
 
     c->rem_packet_count -= 1u;
     c->no_fips |= !fips;
@@ -1200,10 +1195,24 @@ static void ot_edn_handle_ep_request(void *opaque)
                  * at a time, first 32-bit packet is pushed to the EP client,
                  * remaining 96-bits are stored in the unpacker FIFO
                  */
-                bits = ot_fifo32_pop(&c->bits_fifo);
+                uint32_t pkt[OT_CSRNG_PACKET_WORD_COUNT];
+                for (unsigned int ix = 0; ix < OT_CSRNG_PACKET_WORD_COUNT;
+                     ix++) {
+                    pkt[ix] = ot_fifo32_pop(&c->bits_fifo);
+                }
+                if (c->prev_bits_valid &&
+                    memcmp(c->prev_bits, pkt, sizeof(c->prev_bits)) == 0) {
+                    s->regs[R_RECOV_ALERT_STS] |=
+                        R_RECOV_ALERT_STS_EDN_BUS_CMP_ALERT_MASK;
+                    ot_edn_update_alerts(s);
+                }
+                memcpy(c->prev_bits, pkt, sizeof(c->prev_bits));
+                c->prev_bits_valid = true;
+
+                bits = pkt[0];
                 for (unsigned int ix = 1; ix < OT_CSRNG_PACKET_WORD_COUNT;
                      ix++) {
-                    ot_fifo32_push(&ep->fifo, ot_fifo32_pop(&c->bits_fifo));
+                    ot_fifo32_push(&ep->fifo, pkt[ix]);
                 }
                 ep->fips = !c->no_fips;
                 available = true;

@@ -288,9 +288,16 @@ impl Executer {
                     }
                 };
 
+                const SW_ERR_MASK: u32 = ErrBits::BAD_DATA_ADDR.bits()
+                    | ErrBits::BAD_INSN_ADDR.bits()
+                    | ErrBits::CALL_STACK.bits()
+                    | ErrBits::ILLEGAL_INSN.bits()
+                    | ErrBits::LOOP.bits()
+                    | ErrBits::KEY_INVALID.bits();
+
                 // ctrl: "Controls the reaction to software errors.
                 // When set software errors produce fatal errors, rather than recoverable errors."
-                if error != 0 && self.registers.ctrl.load(Ordering::Relaxed) {
+                if (error & SW_ERR_MASK) != 0 && self.registers.ctrl.load(Ordering::Relaxed) {
                     fatal = true;
                     error |= ErrBits::FATAL_SOFTWARE.bits();
                 }

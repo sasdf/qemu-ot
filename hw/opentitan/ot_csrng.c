@@ -1338,12 +1338,17 @@ static void ot_csrng_hwapp_filler_bh(void *opaque)
         bool fips;
         ot_csrng_drng_generate(inst, bits, &fips);
 
+        uint32_t swapped[OT_CSRNG_PACKET_WORD_COUNT];
+        for (unsigned ix = 0; ix < OT_CSRNG_PACKET_WORD_COUNT; ix++) {
+            swapped[ix] = bswap32(bits[OT_CSRNG_PACKET_WORD_COUNT - ix - 1u]);
+        }
+
         /*
          * client callback may trigger ot_csrng_hwapp_ready_irq to update its
          * readiness status, so client state past this point may have been
          * updated
          */
-        inst->hw.filler(inst->hw.opaque, bits, fips);
+        inst->hw.filler(inst->hw.opaque, swapped, fips);
     }
 
     inst->in_filler = false;
