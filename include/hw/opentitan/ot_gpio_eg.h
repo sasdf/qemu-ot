@@ -34,5 +34,11 @@
 OBJECT_DECLARE_TYPE(OtGpioEgState, OtGpioEgClass, OT_GPIO_EG)
 
 void ot_gpio_eg_notify_sysrst_change(void);
+uint64_t ot_gpio_eg_get_total_us(OtGpioEgState *s);
+void ot_gpio_eg_set_total_us(OtGpioEgState *s, uint64_t total_us);
+void ot_gpio_eg_clear_explicit_time(OtGpioEgState *s);
+void ot_gpio_eg_begin_batch(OtGpioEgState *s);
+void ot_gpio_eg_end_batch(OtGpioEgState *s);
+void ot_gpio_eg_notify_pattgen_change(OtGpioEgState *s);
 
 #endif /* HW_OPENTITAN_OT_GPIO_EG_H */

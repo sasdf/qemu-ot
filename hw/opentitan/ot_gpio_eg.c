@@ -36,6 +36,7 @@
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_i2c.h"
+#include "hw/opentitan/ot_pattgen.h"
 #include "hw/opentitan/ot_pinmux.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_pwm.h"
@@ -146,10 +147,16 @@ struct OtGpioEgState {
     OtGpioEgBackendState backend_state; /* cache */
 
     OtPinmuxEgState *pinmux;
+    OtPattgenState *pattgen;
     OtPwmState *pwm;
     OtSPIHostState *spi_host1;
     OtSysrstCtrlState *sysrst_ctrl;
     OtI2CState *i2c[3];
+    uint64_t time_offset_us;
+    uint64_t last_total_us;
+    bool explicit_time;
+    bool batch_mode;
+    GString *batch_buf;
     QEMUTimer *bb_timer;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
@@ -790,6 +797,9 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         if (outsel == 1u) {
             return true;
         }
+        if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+            return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
+        }
         if (outsel >= 65u && outsel < 71u && s->pwm) {
             return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
         }
@@ -1131,19 +1141,86 @@ static int ot_gpio_eg_chr_can_receive(void *opaque)
     return (int)sizeof(s->ibuf) - (int)s->ipos;
 }
 
+uint64_t ot_gpio_eg_get_total_us(OtGpioEgState *s)
+{
+    if (!s) {
+        return 0;
+    }
+    if (s->explicit_time) {
+        return s->last_total_us;
+    }
+    uint64_t rt_us =
+        (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    uint64_t total_us = rt_us + s->time_offset_us;
+    if (total_us < s->last_total_us) {
+        s->time_offset_us = s->last_total_us - rt_us;
+        total_us = s->last_total_us;
+    }
+    s->last_total_us = total_us;
+    return total_us;
+}
+
+void ot_gpio_eg_set_total_us(OtGpioEgState *s, uint64_t total_us)
+{
+    if (!s) {
+        return;
+    }
+    if (total_us < s->last_total_us) {
+        total_us = s->last_total_us;
+    }
+    s->last_total_us = total_us;
+    s->explicit_time = true;
+}
+
+void ot_gpio_eg_clear_explicit_time(OtGpioEgState *s)
+{
+    if (!s) {
+        return;
+    }
+    uint64_t rt_us =
+        (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    s->time_offset_us = s->last_total_us - rt_us;
+    s->explicit_time = false;
+}
+
+void ot_gpio_eg_begin_batch(OtGpioEgState *s)
+{
+    if (s) {
+        s->batch_mode = true;
+    }
+}
+
+void ot_gpio_eg_end_batch(OtGpioEgState *s)
+{
+    if (!s) {
+        return;
+    }
+    s->batch_mode = false;
+    if (s->batch_buf && s->batch_buf->len > 0) {
+        const uint8_t *ptr = (const uint8_t *)s->batch_buf->str;
+        size_t remaining = s->batch_buf->len;
+        while (remaining > 0) {
+            int chunk = (int)MIN(remaining, 4096u);
+            qemu_chr_fe_write_all(&s->chr, ptr, chunk);
+            ptr += chunk;
+            remaining -= (size_t)chunk;
+        }
+        g_string_set_size(s->batch_buf, 0);
+    }
+}
+
 static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
 {
     if (!qemu_chr_fe_backend_connected(&s->chr)) {
         return;
     }
 
-    uint32_t now_us =
-        (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    uint32_t now_us = (uint32_t)ot_gpio_eg_get_total_us(s);
     char buf[32u];
     int len = snprintf(buf, sizeof(buf), "T:%08x\r\nY:%08x\r\n", now_us,
                        s->regs[R_DATA_IN]);
     s->backend_state.in_m = s->regs[R_DATA_IN];
-    qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
 }
 
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
@@ -1219,7 +1296,7 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 ot_gpio_eg_update_backend(s, true);
                 char ack[16u];
                 int len = snprintf(ack, sizeof(ack), "R:%08x\r\n", data_in);
-                qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
+                qemu_chr_fe_write_all(&s->chr, (const uint8_t *)ack, len);
             } else {
                 qemu_log_mask(LOG_UNIMP, "%s: unsupported command %c\n",
                               __func__, cmd);
@@ -1238,7 +1315,7 @@ static void ot_gpio_eg_init_backend(OtGpioEgState *s)
         /* query backend for current input status */
         char buf[16u];
         int len = snprintf(buf, sizeof(buf), "C:%08x\r\n", 0);
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
     }
 }
 
@@ -1321,6 +1398,11 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             } else if (outsel == 1u) {
                 out_en |= (1u << p);
                 out_v |= (1u << p);
+            } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+                out_en |= (1u << p);
+                if (ot_pattgen_get_pin_level(s->pattgen, outsel - 49u)) {
+                    out_v |= (1u << p);
+                }
             } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
                 int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl,
                                                           outsel);
@@ -1368,7 +1450,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     char buf[128u];
     size_t len = 0;
 
-    uint32_t now_us = (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    uint32_t now_us = (uint32_t)ot_gpio_eg_get_total_us(s);
     len += snprintf(&buf[len], sizeof(buf) - len, "T:%08x\r\n", now_us);
 
     if (force || bstate.hi_z != s->backend_state.hi_z) {
@@ -1390,7 +1472,11 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     s->backend_state = bstate;
 
     if (len > 0) {
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
+        if (s->batch_mode && s->batch_buf) {
+            g_string_append_len(s->batch_buf, buf, (gssize)len);
+        } else {
+            qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, (int)len);
+        }
         /* replace CRLF so that trace is kept on a single line */
         for (size_t i = 0; i + 1 < len; i++) {
             if (buf[i] == '\r' && buf[i + 1] == '\n') {
@@ -1403,6 +1489,13 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             }
         }
         trace_ot_gpio_backend_send(s->ot_id, buf);
+    }
+}
+
+void ot_gpio_eg_notify_pattgen_change(OtGpioEgState *s)
+{
+    if (s) {
+        ot_gpio_eg_update_backend(s, false);
     }
 }
 
@@ -1424,7 +1517,7 @@ static void ot_gpio_eg_chr_event_hander(void *opaque, QEMUChrEvent event)
         /* query backend for current input status */
         char buf[16u];
         int len = snprintf(buf, sizeof(buf), "Q:%08x\r\n", s->data_oe);
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
+        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
         buf[MIN((unsigned)len - 1, sizeof(buf) - 1u)] = '\0';
         trace_ot_gpio_backend_send(s->ot_id, buf);
     }
@@ -1481,6 +1574,8 @@ static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_CHR("chardev", OtGpioEgState, chr),
     DEFINE_PROP_LINK("pinmux", OtGpioEgState, pinmux, TYPE_OT_PINMUX_EG,
                      OtPinmuxEgState *),
+    DEFINE_PROP_LINK("pattgen", OtGpioEgState, pattgen, TYPE_OT_PATTGEN,
+                     OtPattgenState *),
     DEFINE_PROP_LINK("pwm", OtGpioEgState, pwm, TYPE_OT_PWM, OtPwmState *),
     DEFINE_PROP_LINK("spi-host1", OtGpioEgState, spi_host1, TYPE_OT_SPI_HOST,
                      OtSPIHostState *),
@@ -1603,6 +1698,7 @@ static void ot_gpio_eg_init(Object *obj)
                             OT_PINMUX_PAD, PARAM_NUM_IO);
 
     s->bb_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_bitbang_step, s);
+    s->batch_buf = g_string_new(NULL);
 
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
