@@ -566,13 +566,14 @@ static void ot_aes_update_key(OtAESState *s)
         c->key[ix >> 1u] = key;
     }
 
-    if (!c->key_ready && ot_aes_key_touch_force_reseed(r)) {
+    bool reseed = !c->key_ready && ot_aes_key_touch_force_reseed(r);
+    c->key_ready = true;
+
+    if (reseed) {
         r->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
         trace_ot_aes_reseed(s->ot_id, "new key");
         ot_aes_trigger_reseed(s);
     }
-
-    c->key_ready = true;
 }
 
 static void ot_aes_update_iv(OtAESState *s)
@@ -652,8 +653,10 @@ static void ot_aes_handle_trigger(OtAESState *s)
     ibex_irq_set(&s->clock_active, (int)true);
 
     if (r->trigger & R_TRIGGER_PRNG_RESEED_MASK) {
-        trace_ot_aes_reseed(s->ot_id, "trigger write");
-        ot_aes_trigger_reseed(s);
+        if (!s->edn.scheduled) {
+            trace_ot_aes_reseed(s->ot_id, "trigger write");
+            ot_aes_trigger_reseed(s);
+        }
         if (s->edn.scheduled) {
             xtrace_ot_aes_debug(s->ot_id, "EDN scheduled, defer");
             return;
@@ -948,6 +951,12 @@ static void ot_aes_commit_data_out(OtAESRegisters *r)
 
 static inline void ot_aes_do_process(OtAESState *s)
 {
+    OtAESRegisters *r = s->regs;
+    if (ot_aes_is_manual(r)) {
+        xtrace_ot_aes_info(s->ot_id, "end of manual seq");
+        r->trigger &= ~R_TRIGGER_START_MASK;
+    }
+
     ot_aes_process(s);
     ot_aes_push(s);
     if (s->reseed_count) {
@@ -960,18 +969,12 @@ static inline void ot_aes_do_process(OtAESState *s)
          * which would not match the HW behavior
          */
         trace_ot_aes_reseed(s->ot_id, "reseed_count reached");
-        s->regs->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
-        ot_aes_reseed(s, OT_AES_PRNG_MASKING_WORDS);
         ot_aes_load_reseed_rate(s);
+        r->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
+        ot_aes_reseed(s, OT_AES_PRNG_MASKING_WORDS);
     } else {
         /* flag pushed data as immediately available */
-        ot_aes_commit_data_out(s->regs);
-    }
-
-    OtAESRegisters *r = s->regs;
-    if (ot_aes_is_manual(r)) {
-        xtrace_ot_aes_info(s->ot_id, "end of manual seq");
-        s->regs->trigger &= ~R_TRIGGER_START_MASK;
+        ot_aes_commit_data_out(r);
     }
 }
 
