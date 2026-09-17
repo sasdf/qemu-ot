@@ -264,12 +264,12 @@ static inline void ot_shadow_reg_init(OtShadowReg *sreg, uint32_t value)
 static inline int ot_shadow_reg_write(OtShadowReg *sreg, uint32_t value)
 {
     if (sreg->staged_p) {
+        sreg->staged_p = false;
         if (value != sreg->staged) {
             /* second write is different, return error status */
             return OT_SHADOW_REG_ERROR;
         }
         sreg->committed = value;
-        sreg->staged_p = false;
         return OT_SHADOW_REG_COMMITTED;
     } else {
         sreg->staged = value;

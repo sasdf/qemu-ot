@@ -50,6 +50,7 @@
 #include "hw/riscv/ibex_clock_src.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
+#include "system/runstate.h"
 #include "tomcrypt.h"
 #include "trace.h"
 
@@ -310,8 +311,8 @@ static const char *REG_NAMES[REGS_COUNT] = {
 /* Input FIFO length is 80 bytes (10 x 64 bits) */
 #define FIFO_LENGTH 80u
 
-/* Delay FIFO ingestion and compute by 100ns */
-#define BH_TRIGGER_DELAY_NS 100u
+/* Delay FIFO ingestion and compute by 1000ns (24 cycles at 24MHz) */
+#define BH_TRIGGER_DELAY_NS 1000u
 
 /* Max size of the KECCAK state */
 #define KECCAK_STATE_BITS  1600u
@@ -404,6 +405,10 @@ struct OtKMACState {
     bool in_process;
     bool invalid_state_read;
     bool error_awaiting_sw; /* error awaiting SW acknowledgement */
+    bool entropy_configured;
+    bool entropy_seeded;
+    bool entropy_refresh_needed;
+    bool edn_pending;
     hash_state ltc_state; /* TomCrypt hash state */
     uint8_t keccak_state[KECCAK_STATE_BYTES];
 
@@ -520,6 +525,54 @@ static void ot_kmac_report_error(OtKMACState *s, int code, uint32_t info)
     s->regs[R_ERR_CODE] = error;
     s->regs[R_INTR_STATE] |= INTR_KMAC_ERR_MASK;
     ot_kmac_update_irq(s);
+}
+
+static void ot_kmac_process(void *opaque);
+
+static void ot_kmac_fill_entropy(void *opaque, uint32_t bits, bool fips)
+{
+    OtKMACState *s = opaque;
+    (void)bits;
+    (void)fips;
+
+    s->edn_pending = false;
+    s->entropy_seeded = true;
+
+    if (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING) {
+        ot_kmac_process(s);
+    }
+}
+
+static void ot_kmac_request_entropy(OtKMACState *s)
+{
+    uint32_t cfg = ot_shadow_reg_peek(&s->cfg);
+    uint32_t entropy_mode = FIELD_EX32(cfg, CFG_SHADOWED, ENTROPY_MODE);
+
+    if (entropy_mode != 1u) { /* 1 = ENTROPY_MODE_EDN */
+        s->entropy_refresh_needed = false;
+        s->entropy_seeded = true;
+        return;
+    }
+
+    uint32_t prescaler =
+        FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, PRESCALER);
+    uint32_t wait_timer =
+        FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, WAIT_TIMER);
+
+    if (wait_timer > 0 && wait_timer <= 10u && prescaler == 0) {
+        s->entropy_refresh_needed = false;
+        s->entropy_seeded = true;
+        ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, wait_timer);
+        return;
+    }
+
+    if (s->edn && s->edn_ep != UINT8_MAX && !s->edn_pending) {
+        s->edn_pending = true;
+        s->entropy_refresh_needed = false;
+        if (ot_edn_request_entropy(s->edn, s->edn_ep) != 0) {
+            s->edn_pending = false;
+        }
+    }
 }
 
 static void ot_kmac_get_sw_config(OtKMACState *s)
@@ -757,6 +810,10 @@ static void ot_kmac_process(void *opaque)
         switch (s->state) {
         case KMAC_ST_PROCESSING:
         case KMAC_ST_SQUEEZING:
+            if (!s->current_app && s->edn_pending) {
+                /* Stall until EDN delivers requested entropy */
+                break;
+            }
             switch (cfg->mode) {
             case OT_KMAC_MODE_SHA3:
                 sha3_done(&s->ltc_state, &s->keccak_state[0]);
@@ -1019,6 +1076,18 @@ static void ot_kmac_process_start(OtKMACState *s)
                               "key buffer too small to hold sideloaded key");
                 ot_kmac_get_key(s, key, &keylen);
                 sha3_process_kmac_key(&s->ltc_state, key, keylen);
+                s->regs[R_ENTROPY_REFRESH_HASH_CNT] =
+                    (s->regs[R_ENTROPY_REFRESH_HASH_CNT] + 1u) &
+                    R_ENTROPY_REFRESH_HASH_CNT_HASH_CNT_MASK;
+                uint32_t threshold =
+                    ot_shadow_reg_peek(&s->entropy_refresh_threshold);
+                if (threshold > 0 &&
+                    s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= threshold) {
+                    s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
+                    if (s->entropy_configured) {
+                        ot_kmac_request_entropy(s);
+                    }
+                }
             }
             break;
         }
@@ -1036,6 +1105,10 @@ static void ot_kmac_process_start(OtKMACState *s)
 static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 {
     s->error_awaiting_sw = false;
+    s->entropy_configured = false;
+    s->entropy_seeded = false;
+    s->entropy_refresh_needed = false;
+    s->edn_pending = false;
 
     if (s->current_app) {
         /*
@@ -1045,13 +1118,20 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
          * If we haven't got all the data, we should wait for it all before
          * sending a response (but we store SW acknowledgement).
          */
-        if (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING) {
+        if (s->state == KMAC_ST_MSG_FEED) {
+            ot_kmac_process(s);
+        } else if (s->state == KMAC_ST_PROCESSING ||
+                   s->state == KMAC_ST_SQUEEZING) {
             ot_kmac_complete_app_req(s);
         }
+        s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
+        ot_kmac_update_irq(s);
     } else {
         /* for SW: ignore further msg feed, absorb, report done & go to idle */
         switch (s->state) {
         case KMAC_ST_IDLE:
+            ot_kmac_return_to_idle(s);
+            break;
         case KMAC_ST_MSG_FEED:
             ot_kmac_change_fsm_state(s, KMAC_ST_PROCESSING);
             /* fallthrough */
@@ -1099,15 +1179,8 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         s->regs[R_STATUS] &= ~R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
     }
     int cmd = (int)FIELD_EX32(cmd_reg, CMD, CMD);
-    if (s->error_awaiting_sw) {
-        if (err_processed) {
-            ot_kmac_sw_err_processed(s, cmd);
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: %s: Control write without err_processed whilst "
-                          "KMAC is handling an error\n",
-                          __func__, s->ot_id);
-        }
+    if (err_processed) {
+        ot_kmac_sw_err_processed(s, cmd);
         return;
     }
 
@@ -1141,11 +1214,13 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
             if (s->sw_cfg.mode == OT_KMAC_MODE_KMAC) {
                 if (!ot_kmac_check_kmac_sw_prefix(s)) {
                     err_prefix = true;
-                    break;
                 }
-                if (false /* TODO: check entropy ready */) {
+                if (!s->entropy_configured) {
                     err_entropy_ready = true;
                     break;
+                }
+                if (!s->entropy_seeded) {
+                    ot_kmac_request_entropy(s);
                 }
             }
             /* if cSHAKE or KMAC modes, decode prefix from PREFIX_x registers */
@@ -1266,6 +1341,10 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->cfg);
         break;
     case R_STATUS:
+        if (!s->current_app && !s->edn_pending &&
+            (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING)) {
+            ot_kmac_process(s);
+        }
         val32 = s->regs[R_STATUS] &
                 (R_STATUS_ALERT_FATAL_FAULT_MASK |
                  R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK);
@@ -1409,41 +1488,25 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
 
-        /* check for unimplemented config bits */
-        if (val32 & R_CFG_SHADOWED_ENTROPY_MODE_MASK) {
-            qemu_log_mask(
-                LOG_UNIMP,
-                "%s: %s: CFG_SHADOWED.ENTROPY_MODE is not supported\n",
-                __func__, s->ot_id);
-        }
-        if (val32 & R_CFG_SHADOWED_ENTROPY_FAST_PROCESS_MASK) {
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CFG_SHADOWED.ENTROPY_FAST_PROCESS is not "
-                          "supported\n",
-                          __func__, s->ot_id);
-        }
-        if (val32 & R_CFG_SHADOWED_MSG_MASK_MASK) {
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CFG_SHADOWED.MSG_MASK is not supported\n",
-                          __func__, s->ot_id);
-        }
-        if (val32 & R_CFG_SHADOWED_ENTROPY_READY_MASK) {
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CFG_SHADOWED.ENTROPY_READY is not "
-                          "supported\n",
-                          __func__, s->ot_id);
-        }
-        if (val32 & R_CFG_SHADOWED_EN_UNSUPPORTED_MODESTRENGTH_MASK) {
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CFG_SHADOWED.EN_UNSUPPORTED_MODESTRENGTH is "
-                          "not supported\n",
-                          __func__, s->ot_id);
-        }
-
         val32 &= CFG_MASK;
         switch (ot_shadow_reg_write(&s->cfg, val32)) {
         case OT_SHADOW_REG_STAGED:
+            break;
         case OT_SHADOW_REG_COMMITTED:
+            if ((val32 & R_CFG_SHADOWED_ENTROPY_READY_MASK) &&
+                !s->entropy_configured) {
+                s->entropy_configured = true;
+                uint32_t entropy_mode =
+                    FIELD_EX32(val32, CFG_SHADOWED, ENTROPY_MODE);
+                if (entropy_mode != 1u && entropy_mode != 2u) {
+                    ot_kmac_report_error(s, OT_KMAC_ERR_INCORRECT_ENTROPY_MODE,
+                                         entropy_mode);
+                } else if (entropy_mode == 1u) {
+                    ot_kmac_request_entropy(s);
+                } else {
+                    s->entropy_seeded = true;
+                }
+            }
             break;
         case OT_SHADOW_REG_ERROR:
         default:
@@ -1456,17 +1519,12 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         ot_kmac_process_sw_command(s, val32);
 
         if (val32 & R_CMD_ENTROPY_REQ_MASK) {
-            /* TODO: implement entropy */
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CMD.ENTROPY_REQ is not supported\n",
-                          __func__, s->ot_id);
+            s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
+            ot_kmac_request_entropy(s);
         }
 
         if (val32 & R_CMD_HASH_CNT_CLR_MASK) {
-            /* TODO: implement entropy */
-            qemu_log_mask(LOG_UNIMP,
-                          "%s: %s: CMD.HASH_CNT_CLR is not supported\n",
-                          __func__, s->ot_id);
+            s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
         }
         break;
     }
@@ -1487,7 +1545,14 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         val32 &= R_ENTROPY_REFRESH_THRESHOLD_SHADOWED_THRESHOLD_MASK;
         switch (ot_shadow_reg_write(&s->entropy_refresh_threshold, val32)) {
         case OT_SHADOW_REG_STAGED:
+            break;
         case OT_SHADOW_REG_COMMITTED:
+            if (val32 > 0 && s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= val32) {
+                s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
+                if (s->entropy_configured) {
+                    ot_kmac_request_entropy(s);
+                }
+            }
             break;
         case OT_SHADOW_REG_ERROR:
         default:
@@ -1497,9 +1562,7 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case R_ENTROPY_SEED:
-        /* TODO: implement entropy */
-        qemu_log_mask(LOG_UNIMP, "%s: %s: R_ENTROPY_SEED_* is not supported\n",
-                      __func__, s->ot_id);
+        s->entropy_seeded = true;
         break;
     case R_KEY_LEN:
         if (!ot_kmac_check_reg_write(s, reg)) {
@@ -1779,7 +1842,11 @@ static void ot_kmac_start_pending_app(OtKMACState *s)
         ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
 
         /* compute app request */
-        ot_kmac_process(s);
+        if (runstate_is_running()) {
+            ot_kmac_trigger_deferred_bh(s);
+        } else {
+            ot_kmac_process(s);
+        }
     }
 }
 
@@ -1881,6 +1948,10 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->in_process = false;
     s->invalid_state_read = false;
     s->error_awaiting_sw = false;
+    s->entropy_configured = false;
+    s->entropy_seeded = false;
+    s->entropy_refresh_needed = false;
+    s->edn_pending = false;
     memset(s->regs, 0, sizeof(*(s->regs)));
     s->regs[R_STATUS] = 0x4001u;
     ot_shadow_reg_init(&s->cfg, 0u);
@@ -1932,6 +2003,10 @@ static void ot_kmac_realize(DeviceState *dev, Error **errp)
     g_assert(s->num_app <= 32);
 
     s->apps = g_new0(OtKMACApp, s->num_app);
+
+    if (s->edn && s->edn_ep != UINT8_MAX) {
+        ot_edn_connect_endpoint(s->edn, s->edn_ep, &ot_kmac_fill_entropy, s);
+    }
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_kmac_clock_input,
                             OT_KMAC_CLOCK_INPUT, 1);
