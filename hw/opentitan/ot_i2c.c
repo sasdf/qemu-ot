@@ -392,6 +392,19 @@ struct OtI2CTarget {
     I2CSlave i2c;
 };
 
+#define TYPE_PMOD_I2C_STRETCH "pmod-i2c-stretch"
+OBJECT_DECLARE_SIMPLE_TYPE(PmodI2CStretchState, PMOD_I2C_STRETCH)
+
+struct PmodI2CStretchState {
+    I2CSlave parent_obj;
+    uint8_t reg_ptr;
+    bool has_reg_ptr;
+    uint8_t rx_delay_ms;
+    uint8_t tx_delay_ms;
+    uint8_t cache[63];
+    uint8_t cache_idx;
+};
+
 static uint8_t ot_i2c_address_abyte(uint8_t address, bool read)
 {
     return (address << 1u) | (read ? 1u : 0);
@@ -959,6 +972,23 @@ static unsigned ot_i2c_host_recv_fill_fifo(OtI2CState *s, unsigned chunk)
     return index;
 }
 
+static uint64_t ot_i2c_get_target_stretch_ns(OtI2CState *s, bool is_read)
+{
+    I2CNode *node;
+    QLIST_FOREACH(node, &s->bus->current_devs, next) {
+        Object *obj = OBJECT(node->elt);
+        PmodI2CStretchState *stretch_dev =
+            (PmodI2CStretchState *)object_dynamic_cast(
+                obj, TYPE_PMOD_I2C_STRETCH);
+        if (stretch_dev) {
+            uint8_t delay_ms =
+                is_read ? stretch_dev->rx_delay_ms : stretch_dev->tx_delay_ms;
+            return (uint64_t)delay_ms * 1000000ULL;
+        }
+    }
+    return 0;
+}
+
 static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
 {
     uint8_t fbyte = FIELD_EX32(fdata, FDATA, FBYTE);
@@ -1041,6 +1071,27 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
 
             /* Try to send contents of TX FIFO to the target. */
             ot_i2c_host_send(s);
+        }
+    }
+
+    uint64_t stretch_ns = 0;
+    if (readb) {
+        stretch_ns = ot_i2c_get_target_stretch_ns(s, true);
+    } else if (!start) {
+        stretch_ns = ot_i2c_get_target_stretch_ns(s, false);
+    }
+    if (stretch_ns > 0 &&
+        FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, EN)) {
+        uint32_t val = FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, VAL);
+        uint64_t timeout_ns =
+            s->pclk ? ((uint64_t)val * NANOSECONDS_PER_SECOND / s->pclk) : 0;
+        if (stretch_ns > timeout_ns) {
+            if (FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, MODE)) {
+                ARRAY_FIELD_DP32(s->regs, CONTROLLER_EVENTS, BUS_TIMEOUT, 1);
+                ot_i2c_irq_set_state(s, CONTROLLER_HALT, true);
+            } else {
+                ot_i2c_irq_set_state(s, STRETCH_TIMEOUT, true);
+            }
         }
     }
 
@@ -1682,10 +1733,143 @@ static const TypeInfo ot_i2c_info = {
     .class_init = &ot_i2c_class_init,
 };
 
+static void pmod_i2c_stretch_sw_reset(PmodI2CStretchState *s)
+{
+    s->rx_delay_ms = 0;
+    s->tx_delay_ms = 0;
+    memset(s->cache, 0, sizeof(s->cache));
+    s->cache_idx = 0;
+}
+
+static void pmod_i2c_stretch_reset(DeviceState *dev)
+{
+    PmodI2CStretchState *s = PMOD_I2C_STRETCH(dev);
+    s->reg_ptr = 0;
+    s->has_reg_ptr = false;
+    pmod_i2c_stretch_sw_reset(s);
+}
+
+static bool pmod_i2c_stretch_match_and_add(I2CSlave *candidate, uint8_t address,
+                                           bool broadcast,
+                                           I2CNodeList *current_devs)
+{
+    if (address != candidate->address) {
+        return false;
+    }
+    BusState *abus = qdev_get_parent_bus(DEVICE(candidate));
+    if (abus && abus->parent &&
+        object_dynamic_cast(OBJECT(abus->parent), TYPE_OT_I2C)) {
+        OtI2CState *ot_i2c = OT_I2C(abus->parent);
+        if (ot_i2c_target_enabled(ot_i2c) &&
+            ot_i2c_check_address_match(ot_i2c, address)) {
+            return false;
+        }
+    }
+    I2CNode *node = g_new0(struct I2CNode, 1u);
+    node->elt = candidate;
+    QLIST_INSERT_HEAD(current_devs, node, next);
+    return true;
+}
+
+static int pmod_i2c_stretch_event(I2CSlave *i2c, enum i2c_event event)
+{
+    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
+    switch (event) {
+    case I2C_START_SEND:
+    case I2C_START_SEND_ASYNC:
+        s->has_reg_ptr = false;
+        s->cache_idx = 0;
+        break;
+    case I2C_START_RECV:
+        s->cache_idx = 0;
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+static int pmod_i2c_stretch_send(I2CSlave *i2c, uint8_t data)
+{
+    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
+    if (!s->has_reg_ptr) {
+        s->reg_ptr = data;
+        s->has_reg_ptr = true;
+        s->cache_idx = 0;
+        if (s->reg_ptr == 0xdfu) {
+            pmod_i2c_stretch_sw_reset(s);
+        }
+        return 0;
+    }
+    switch (s->reg_ptr) {
+    case 0xdfu:
+        pmod_i2c_stretch_sw_reset(s);
+        break;
+    case 0xdcu:
+        s->rx_delay_ms = data;
+        break;
+    case 0xdbu:
+        s->tx_delay_ms = data;
+        break;
+    case 0xcfu:
+        if (s->cache_idx < sizeof(s->cache)) {
+            s->cache[s->cache_idx++] = data;
+        }
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+static uint8_t pmod_i2c_stretch_recv(I2CSlave *i2c)
+{
+    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
+    switch (s->reg_ptr) {
+    case 0xdeu:
+        return 0xa1u;
+    case 0xddu:
+        return 0xa2u;
+    case 0xdcu:
+        return s->rx_delay_ms;
+    case 0xdbu:
+        return s->tx_delay_ms;
+    case 0xcfu:
+        if (s->cache_idx < sizeof(s->cache)) {
+            return s->cache[s->cache_idx++];
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static void pmod_i2c_stretch_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
+    (void)data;
+
+    dc->desc = "PMOD I2C Clock Stretching Test Device";
+    device_class_set_legacy_reset(dc, &pmod_i2c_stretch_reset);
+    sc->match_and_add = &pmod_i2c_stretch_match_and_add;
+    sc->event = &pmod_i2c_stretch_event;
+    sc->send = &pmod_i2c_stretch_send;
+    sc->recv = &pmod_i2c_stretch_recv;
+}
+
+static const TypeInfo pmod_i2c_stretch_info = {
+    .name = TYPE_PMOD_I2C_STRETCH,
+    .parent = TYPE_I2C_SLAVE,
+    .instance_size = sizeof(PmodI2CStretchState),
+    .class_init = &pmod_i2c_stretch_class_init,
+};
+
 static void ot_i2c_register_types(void)
 {
     type_register_static(&ot_i2c_info);
     type_register_static(&ot_i2c_target_info);
+    type_register_static(&pmod_i2c_stretch_info);
 }
 
 type_init(ot_i2c_register_types);

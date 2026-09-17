@@ -2176,6 +2176,14 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
         qdev_realize_and_unref(eeprom, i2cbus, &error_fatal);
         g_free(eeprom_name);
 
+        /* PMOD I2C Clock Stretching test device (at 0x22) */
+        DeviceState *stretch = qdev_new("pmod-i2c-stretch");
+        qdev_prop_set_uint8(stretch, "address", 0x22);
+        char *stretch_name = g_strdup_printf("pmod-stretch%u", i2c_idx);
+        object_property_add_child(OBJECT(board), stretch_name, OBJECT(stretch));
+        qdev_realize_and_unref(stretch, i2cbus, &error_fatal);
+        g_free(stretch_name);
+
         g_free(busname);
     }
 }

@@ -1180,8 +1180,13 @@ static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
      * {wait_cyc_mask_i, {ReseedLfsrExtraBits{1'b1}}} = 19'h7ffff (524,287 cycles)
      * at the 24 MHz I/O Div4 clock (~21.845 ms).
      */
+    uint32_t pclk = s->pclks[OT_ALERT_CLOCK_SRC_IO];
+    if (pclk == 0) {
+        pclk = 24000000u;
+    }
+    uint64_t reseed_ns = muldiv64(0x7ffffULL, NANOSECONDS_PER_SECOND, pclk);
     timer_mod(&s->reseed_timer,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 21845291ULL);
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)reseed_ns);
 }
 
 static void ot_alert_request_entropy(OtAlertState *s)
