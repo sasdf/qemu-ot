@@ -463,7 +463,7 @@ static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
     timer_del(s->bh_timer);
     timer_mod(s->bh_timer,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + BH_TRIGGER_DELAY_NS);
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) + BH_TRIGGER_DELAY_NS);
 }
 
 static void ot_kmac_bh_timer_handler(void *opaque)
@@ -2044,7 +2044,8 @@ static void ot_kmac_init(Object *obj)
                                 &s->msgfifo_mmio);
 
     /* setup deferred processing */
-    s->bh_timer = timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_bh_timer_handler, s);
+    s->bh_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL_RT, &ot_kmac_bh_timer_handler, s);
     s->bh = qemu_bh_new(&ot_kmac_process, s);
 
     /* FIFO sizes as per OT Spec */
