@@ -270,6 +270,7 @@ struct OtHMACContext {
     hash_state state;
     OtHMACDigestSize digest_size_started;
     bool msg_length_overflow;
+    bool fifo_full_seen;
 };
 typedef struct OtHMACContext OtHMACContext;
 
@@ -645,8 +646,8 @@ static void ot_hmac_process_fifo(OtHMACState *s)
             ot_hmac_writeback_digest_state(s);
         }
 
-        /* assert FIFO Empty IRQ */
-        if (fifo8_is_empty(&s->input_fifo)) {
+        /* assert FIFO Empty IRQ only if FIFO was previously full (RTL hmac.sv) */
+        if (fifo8_is_empty(&s->input_fifo) && s->ctx->fifo_full_seen) {
             s->regs->intr_state |= INTR_FIFO_EMPTY_MASK;
         }
     }
@@ -654,6 +655,7 @@ static void ot_hmac_process_fifo(OtHMACState *s)
     if (stop && ot_hmac_get_curlen(s) == 0) {
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
         s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
+        s->ctx->fifo_full_seen = false;
         s->regs->cmd = 0;
     }
 
@@ -664,6 +666,7 @@ static void ot_hmac_process_fifo(OtHMACState *s)
         ot_hmac_compute_digest(s);
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
         s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
+        s->ctx->fifo_full_seen = false;
         s->regs->cmd = 0;
     }
 
@@ -927,6 +930,9 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             s->regs->cmd = R_CMD_HASH_START_MASK;
             s->regs->msg_length = 0;
             s->ctx->msg_length_overflow = false;
+            s->ctx->fifo_full_seen = false;
+            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
+            ot_hmac_update_irqs(s);
 
             ibex_irq_set(&s->clock_active, true);
 
@@ -973,6 +979,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
                 break;
             }
             s->regs->cmd |= R_CMD_HASH_PROCESS_MASK;
+            s->ctx->fifo_full_seen = false;
+            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /* trigger delayed processing of FIFO */
             ibex_irq_set(&s->clock_active, true);
@@ -982,6 +990,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         if (val32 & R_CMD_HASH_STOP_MASK) {
             s->regs->cmd = R_CMD_HASH_STOP_MASK;
             s->ctx->msg_length_overflow = false;
+            s->ctx->fifo_full_seen = false;
+            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /*
              * trigger delayed processing of FIFO until the next block is
@@ -1004,6 +1014,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
             s->regs->cmd = R_CMD_HASH_CONTINUE_MASK;
             s->ctx->msg_length_overflow = false;
+            s->ctx->fifo_full_seen = false;
+            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /*
              * Hold the previous digest size until the HMAC is started with the
@@ -1199,11 +1211,22 @@ static void ot_hmac_fifo_write(void *opaque, hwaddr addr, uint64_t value,
 
     ibex_irq_set(&s->clock_active, true);
 
+    bool was_empty = fifo8_is_empty(&s->input_fifo);
+
     for (unsigned i = 0; i < size; i++) {
         uint8_t b = value;
         g_assert(!fifo8_is_full(&s->input_fifo));
         fifo8_push(&s->input_fifo, b);
+        if (fifo8_is_full(&s->input_fifo)) {
+            s->ctx->fifo_full_seen = true;
+        }
         value >>= 8u;
+    }
+
+    if (was_empty && size > 0) {
+        s->ctx->fifo_full_seen = false;
+        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
+        ot_hmac_update_irqs(s);
     }
 
     uint64_t add_bits = (uint64_t)size * 8u;
