@@ -916,6 +916,16 @@ static void ot_spi_device_flash_pace_spibus(OtSPIDeviceState *s)
     ot_spi_device_flash_pace_spibus_ns(s, SPI_BUS_FLASH_READ_DELAY_NS);
 }
 
+static void ot_spi_device_update_passthrough_en(OtSPIDeviceState *s)
+{
+    bool busy_blocked =
+        (s->spi_regs[R_FLASH_STATUS] & R_FLASH_STATUS_BUSY_MASK) &&
+        (s->bus.state == SPI_BUS_IDLE);
+    bool en = (ot_spi_device_get_mode(s) == CTRL_MODE_PASSTHROUGH) &&
+              !busy_blocked;
+    ibex_irq_set(&s->passthrough_en, en);
+}
+
 static void ot_spi_device_release(OtSPIDeviceState *s)
 {
     SpiDeviceFlash *f = &s->flash;
@@ -1034,6 +1044,8 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     if (update_irq) {
         ot_spi_device_update_irqs(s);
     }
+
+    ot_spi_device_update_passthrough_en(s);
 }
 
 static void ot_spi_device_flash_clear_readbuffer(OtSPIDeviceState *s)
@@ -1604,6 +1616,9 @@ static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
 
 static uint8_t ot_spi_device_flash_spi_transfer(OtSPIDeviceState *s, uint8_t rx)
 {
+    if (ibex_irq_get_level(&s->passthrough_cs)) {
+        return SPI_DEFAULT_TX_RX_VALUE;
+    }
     OtSPIHostClass *spihostc = OT_SPI_HOST_GET_CLASS(s->spi_host);
     return spihostc->ssi_downstream_transfer(s->spi_host, rx);
 }
@@ -1888,6 +1903,13 @@ ot_spi_device_flash_transfer_passthrough(OtSPIDeviceState *s, uint8_t rx)
 
         if (ot_spi_device_flash_match_command_slot(s, rx)) {
             if (ot_spi_device_flash_try_intercept_hw_command(s)) {
+                if (!ot_spi_device_flash_command_is_filter(s, rx)) {
+                    ibex_irq_lower(&s->passthrough_cs);
+                    (void)ot_spi_device_flash_spi_transfer(s, rx);
+                } else {
+                    trace_ot_spi_device_flash_filtered_command(s->ot_id, rx);
+                    ibex_irq_raise(&s->passthrough_cs);
+                }
                 break;
             }
             /* only matched software/not intercepted commands can be uploaded */
@@ -2213,19 +2235,11 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
             }
         }
         s->spi_regs[reg] = val32;
-        switch (ot_spi_device_get_mode(s)) {
-        case CTRL_MODE_INVALID:
+        if (ot_spi_device_get_mode(s) == CTRL_MODE_INVALID) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: invalid mode\n", __func__,
                           s->ot_id);
-        /* fallthrough */
-        case CTRL_MODE_FLASH:
-        case CTRL_MODE_DISABLED:
-            ibex_irq_lower(&s->passthrough_en);
-            break;
-        case CTRL_MODE_PASSTHROUGH:
-            ibex_irq_raise(&s->passthrough_en);
-            break;
         }
+        ot_spi_device_update_passthrough_en(s);
         break;
     case R_CFG:
         val32 &= CFG_MASK;
@@ -2243,6 +2257,7 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
         s->spi_regs[reg] &= val32 & FLASH_STATUS_RW0C_MASK; /* RW0C */
         s->spi_regs[reg] &= ~FLASH_STATUS_RW_MASK;
         s->spi_regs[reg] |= val32 & FLASH_STATUS_RW_MASK; /* RW */
+        ot_spi_device_update_passthrough_en(s);
         if (!(s->spi_regs[reg] & R_FLASH_STATUS_BUSY_MASK) &&
             timer_pending(s->flash.irq_timer)) {
             trace_ot_spi_device_flash_pace(s->ot_id, "clear",
