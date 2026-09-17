@@ -889,6 +889,11 @@ static void ot_pwrmgr_escalate_rx(void *opaque, int n, int level)
 
     if (level) {
         s->regs[R_ESCALATE_RESET_STATUS] |= R_ESCALATE_RESET_STATUS_VAL_MASK;
+        if (s->f_state == OT_PWR_FAST_ST_ACTIVE) {
+            ibex_irq_set(&s->cpu_enable, (int)false);
+            s->boot_status.cpu_fetch_en = false;
+            ibex_irq_set(&s->boot_st, s->boot_status.i32);
+        }
         s->fsm_events.escalate = true;
         ot_pwrmgr_schedule_fsm(s);
     }

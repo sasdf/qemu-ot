@@ -1633,6 +1633,8 @@ static void ot_lc_ctrl_pwr_lc_req(void *opaque, int n, int level)
     }
 }
 
+static void ot_lc_ctrl_escalate_bh(void *opaque);
+
 static void ot_lc_ctrl_escalate_rx(void *opaque, int n, int level)
 {
     OtLcCtrlState *s = opaque;
@@ -1642,7 +1644,7 @@ static void ot_lc_ctrl_escalate_rx(void *opaque, int n, int level)
     trace_ot_lc_ctrl_escalate_rx(s->ot_id, (unsigned)n, (bool)level);
 
     if (level) {
-        qemu_bh_schedule(s->escalate_bh);
+        ot_lc_ctrl_escalate_bh(s);
     }
 }
 
@@ -1655,7 +1657,7 @@ static void ot_lc_ctrl_a0_force_raw(void *opaque, int n, int level)
     trace_ot_lc_ctrl_force_raw(s->ot_id, (bool)level);
 
     if (level) {
-        qemu_bh_schedule(s->escalate_bh);
+        ot_lc_ctrl_escalate_bh(s);
     }
 }
 
