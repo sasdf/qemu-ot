@@ -2581,6 +2581,7 @@ static void ot_spi_device_tpm_idle_state(OtSPIDeviceState *s,
     g_assert(size == 1u);
     SpiDeviceTpm *tpm = &s->tpm;
     fifo8_reset(&tpm->rdfifo);
+    tpm->write_pos = 0u;
     tpm->opcode = buf[0u];
     tpm->read = tpm->opcode >> TPM_OPCODE_READ_BIT;
     tpm->transfer_size = (tpm->opcode & TPM_OPCODE_SIZE_MASK) + 1u;
@@ -2595,22 +2596,26 @@ static void ot_spi_device_tpm_addr_state(OtSPIDeviceState *s,
     SpiDeviceTpm *tpm = &s->tpm;
     tpm->reg = buf[1u] << 8u | buf[2u];
     tpm->locality = tpm->reg >> 12u;
-    s->tpm_regs[R_TPM_CMD_ADDR] =
-        (tpm->opcode << R_TPM_CMD_ADDR_CMD_SHIFT) | tpm->reg;
-
-    /* When read, we immediately signal the software to fill the FIFO */
-    if (tpm->read) {
-        s->tpm_regs[R_TPM_STATUS] |= R_TPM_STATUS_CMDADDR_NOTEMPTY_MASK;
-        s->spi_regs[R_INTR_STATE] |= INTR_TPM_HEADER_NOT_EMPTY_MASK;
-        ot_spi_device_update_irqs(s);
-    }
 
     tpm->can_receive = 1u;
     tpm->should_sw_handle = true;
-    if (!ot_spi_device_is_tpm_mode_crb(s) &&
+    if (tpm->read && !ot_spi_device_is_tpm_mode_crb(s) &&
         !ot_spi_device_tpm_disable_hw_regs(s) && buf[0u] == TPM_ADDR_HEADER) {
         bool is_hw_register = ot_spi_device_tpm_get_hw_register(s, NULL);
         tpm->should_sw_handle = !is_hw_register;
+    }
+
+    /*
+     * When a read command is handled by software, immediately update
+     * TPM_CMD_ADDR and signal software to fill the FIFO. Return-by-HW
+     * register reads do not update TPM_CMD_ADDR or signal software.
+     */
+    if (tpm->read && tpm->should_sw_handle) {
+        s->tpm_regs[R_TPM_CMD_ADDR] =
+            (tpm->opcode << R_TPM_CMD_ADDR_CMD_SHIFT) | tpm->reg;
+        s->tpm_regs[R_TPM_STATUS] |= R_TPM_STATUS_CMDADDR_NOTEMPTY_MASK;
+        s->spi_regs[R_INTR_STATE] |= INTR_TPM_HEADER_NOT_EMPTY_MASK;
+        ot_spi_device_update_irqs(s);
     }
 
     tpm->state = tpm->should_sw_handle ? SPI_TPM_WAIT : SPI_TPM_START_BYTE;
@@ -2622,12 +2627,14 @@ static void ot_spi_device_tpm_write_state(OtSPIDeviceState *s,
     SpiDeviceTpm *tpm = &s->tpm;
     memcpy(&tpm->write_buffer[tpm->write_pos], buf, size);
     tpm->write_pos += size;
-    tpm->state =
-        tpm->write_pos >= tpm->transfer_size ? SPI_TPM_IDLE : tpm->state;
-
-    s->tpm_regs[R_TPM_STATUS] |= R_TPM_STATUS_CMDADDR_NOTEMPTY_MASK;
-    s->spi_regs[R_INTR_STATE] |= INTR_TPM_HEADER_NOT_EMPTY_MASK;
-    ot_spi_device_update_irqs(s);
+    if (tpm->write_pos >= tpm->transfer_size) {
+        tpm->state = SPI_TPM_IDLE;
+        s->tpm_regs[R_TPM_CMD_ADDR] =
+            (tpm->opcode << R_TPM_CMD_ADDR_CMD_SHIFT) | tpm->reg;
+        s->tpm_regs[R_TPM_STATUS] |= R_TPM_STATUS_CMDADDR_NOTEMPTY_MASK;
+        s->spi_regs[R_INTR_STATE] |= INTR_TPM_HEADER_NOT_EMPTY_MASK;
+        ot_spi_device_update_irqs(s);
+    }
 }
 
 static void ot_spi_device_tpm_read_state(OtSPIDeviceState *s, unsigned size,
