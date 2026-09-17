@@ -401,6 +401,7 @@ struct OtKMACState {
     OtShadowReg entropy_refresh_threshold;
 
     OtKMACFsmState state; /* Main FSM state */
+    bool in_process;
     bool invalid_state_read;
     bool error_awaiting_sw; /* error awaiting SW acknowledgement */
     hash_state ltc_state; /* TomCrypt hash state */
@@ -700,122 +701,131 @@ static void ot_kmac_complete_app_req(OtKMACState *s)
 static void ot_kmac_process(void *opaque)
 {
     OtKMACState *s = opaque;
-    OtKMACAppCfg *cfg = s->current_cfg;
-    OtKMACAppRsp rsp;
-
-    g_assert(cfg);
-
-    if (s->current_app) {
-        /* App mode, FIFO should be empty */
-        g_assert(fifo8_is_empty(&s->input_fifo));
-
-        if (s->current_app->req_pending) {
-            sha3_process(&s->ltc_state, s->current_app->req.msg_data,
-                         s->current_app->req.msg_len);
-            s->current_app->req_pending = false;
-            if (s->current_app->req.last) {
-                /* append right-encoded output width if KMAC */
-                if (cfg->mode == OT_KMAC_MODE_KMAC) {
-                    uint8_t enc_out_len[3];
-                    uint32_t output_length = OT_KMAC_APP_DIGEST_BYTES * 8u;
-                    enc_out_len[0] = (output_length >> 8u) & 0xffu;
-                    enc_out_len[1] = output_length & 0xffu;
-                    enc_out_len[2] = 2u;
-                    sha3_process(&s->ltc_state, enc_out_len,
-                                 sizeof(enc_out_len));
-                }
-                /* go to PROCESSING state, response will be sent there */
-                ot_kmac_change_fsm_state(s, KMAC_ST_PROCESSING);
-            } else {
-                /* send empty response as acknowledge */
-                if (s->current_app->fn) {
-                    memset(&rsp, 0, sizeof(rsp));
-                    s->current_app->fn(s->current_app->opaque, &rsp);
-                }
-            }
-        }
-    } else {
-        /* SW mode, process FIFO data */
-        if (!fifo8_is_empty(&s->input_fifo)) {
-            while (!fifo8_is_empty(&s->input_fifo)) {
-                uint8_t value = fifo8_pop(&s->input_fifo);
-                sha3_process(&s->ltc_state, &value, 1);
-            }
-
-            /* assert FIFO Empty interrupt */
-            s->regs[R_INTR_STATE] |= INTR_FIFO_EMPTY_MASK;
-        }
+    if (s->in_process) {
+        return;
     }
+    s->in_process = true;
 
-    switch (s->state) {
-    case KMAC_ST_PROCESSING:
-    case KMAC_ST_SQUEEZING:
-        switch (cfg->mode) {
-        case OT_KMAC_MODE_SHA3:
-            sha3_done(&s->ltc_state, &s->keccak_state[0]);
-            break;
-        case OT_KMAC_MODE_SHAKE:
-            sha3_shake_done(&s->ltc_state, &s->keccak_state[0],
-                            ot_kmac_get_keccak_rate_bytes(cfg->strength));
-            break;
-        /* NOLINTNEXTLINE(bugprone-branch-clone) */
-        case OT_KMAC_MODE_CSHAKE:
-        case OT_KMAC_MODE_KMAC:
-            sha3_cshake_done(&s->ltc_state, &s->keccak_state[0],
-                             ot_kmac_get_keccak_rate_bytes(cfg->strength));
-            break;
-        default:
-            /*
-             * should never happen: mode was validated when going from state
-             * IDLE to START
-             */
-            g_assert_not_reached();
-        }
+    do {
+        OtKMACAppCfg *cfg = s->current_cfg;
+        OtKMACAppRsp rsp;
 
-        /*
-         * "If key is sideloaded and KMAC is SW initiated, hide the capacity
-         * from SW by zeroing", i.e. if not doing a SW-initiated sideloaded
-         * operation, the entire Keccak state (including the meaningless
-         * capacity bytes) should be loaded.
-         */
-        uint32_t reg_cfg = ot_shadow_reg_peek(&s->cfg);
-        bool sideload = FIELD_EX32(reg_cfg, CFG_SHADOWED, SIDELOAD) != 0;
-        if (!sideload || s->current_app) {
-            static_assert(sizeof(s->ltc_state.sha3.sb) == KECCAK_STATE_BYTES,
-                          "LibTomCrypt's Keccak state is an unexpected size");
-            /* manually extract entire Keccak state, including capacity */
-            memcpy(&s->keccak_state[0], s->ltc_state.sha3.sb,
-                   KECCAK_STATE_BYTES);
-        }
+        g_assert(cfg);
 
         if (s->current_app) {
-            /* App mode, send response and go back to IDLE state */
-            if (s->current_app->fn) {
-                rsp.done = true;
-                memcpy(&rsp.digest_share0[0], &s->keccak_state[0],
-                       sizeof(rsp.digest_share0));
-                memset(&rsp.digest_share1[0], 0, sizeof(rsp.digest_share1));
-                s->current_app->fn(s->current_app->opaque, &rsp);
-            }
-            if (!s->error_awaiting_sw) {
-                ot_kmac_complete_app_req(s);
+            /* App mode, FIFO should be empty */
+            g_assert(fifo8_is_empty(&s->input_fifo));
+
+            if (s->current_app->req_pending) {
+                sha3_process(&s->ltc_state, s->current_app->req.msg_data,
+                             s->current_app->req.msg_len);
+                s->current_app->req_pending = false;
+                if (s->current_app->req.last) {
+                    /* append right-encoded output width if KMAC */
+                    if (cfg->mode == OT_KMAC_MODE_KMAC) {
+                        uint8_t enc_out_len[3];
+                        uint32_t output_length = OT_KMAC_APP_DIGEST_BYTES * 8u;
+                        enc_out_len[0] = (output_length >> 8u) & 0xffu;
+                        enc_out_len[1] = output_length & 0xffu;
+                        enc_out_len[2] = 2u;
+                        sha3_process(&s->ltc_state, enc_out_len,
+                                     sizeof(enc_out_len));
+                    }
+                    /* go to PROCESSING state, response will be sent there */
+                    ot_kmac_change_fsm_state(s, KMAC_ST_PROCESSING);
+                } else {
+                    /* send empty response as acknowledge */
+                    if (s->current_app->fn) {
+                        memset(&rsp, 0, sizeof(rsp));
+                        s->current_app->fn(s->current_app->opaque, &rsp);
+                    }
+                }
             }
         } else {
-            /* SW mode, go to ABSORBED state */
-            ot_kmac_change_fsm_state(s, KMAC_ST_ABSORBED);
+            /* SW mode, process FIFO data */
+            if (!fifo8_is_empty(&s->input_fifo)) {
+                while (!fifo8_is_empty(&s->input_fifo)) {
+                    uint8_t value = fifo8_pop(&s->input_fifo);
+                    sha3_process(&s->ltc_state, &value, 1);
+                }
 
-            /* assert KMAC Done interrupt */
-            s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
-            s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
+                /* assert FIFO Empty interrupt */
+                s->regs[R_INTR_STATE] |= INTR_FIFO_EMPTY_MASK;
+            }
         }
 
-        break;
-    default:
-        /* nothing to do for other states */
-        break;
-    }
+        switch (s->state) {
+        case KMAC_ST_PROCESSING:
+        case KMAC_ST_SQUEEZING:
+            switch (cfg->mode) {
+            case OT_KMAC_MODE_SHA3:
+                sha3_done(&s->ltc_state, &s->keccak_state[0]);
+                break;
+            case OT_KMAC_MODE_SHAKE:
+                sha3_shake_done(&s->ltc_state, &s->keccak_state[0],
+                                ot_kmac_get_keccak_rate_bytes(cfg->strength));
+                break;
+            /* NOLINTNEXTLINE(bugprone-branch-clone) */
+            case OT_KMAC_MODE_CSHAKE:
+            case OT_KMAC_MODE_KMAC:
+                sha3_cshake_done(&s->ltc_state, &s->keccak_state[0],
+                                 ot_kmac_get_keccak_rate_bytes(cfg->strength));
+                break;
+            default:
+                /*
+                 * should never happen: mode was validated when going from state
+                 * IDLE to START
+                 */
+                g_assert_not_reached();
+            }
 
-    ot_kmac_update_irq(s);
+            /*
+             * "If key is sideloaded and KMAC is SW initiated, hide the capacity
+             * from SW by zeroing", i.e. if not doing a SW-initiated sideloaded
+             * operation, the entire Keccak state (including the meaningless
+             * capacity bytes) should be loaded.
+             */
+            uint32_t reg_cfg = ot_shadow_reg_peek(&s->cfg);
+            bool sideload = FIELD_EX32(reg_cfg, CFG_SHADOWED, SIDELOAD) != 0;
+            if (!sideload || s->current_app) {
+                static_assert(sizeof(s->ltc_state.sha3.sb) == KECCAK_STATE_BYTES,
+                              "LibTomCrypt's Keccak state is an unexpected size");
+                /* manually extract entire Keccak state, including capacity */
+                memcpy(&s->keccak_state[0], s->ltc_state.sha3.sb,
+                       KECCAK_STATE_BYTES);
+            }
+
+            if (s->current_app) {
+                /* App mode, send response and go back to IDLE state */
+                if (s->current_app->fn) {
+                    rsp.done = true;
+                    memcpy(&rsp.digest_share0[0], &s->keccak_state[0],
+                           sizeof(rsp.digest_share0));
+                    memset(&rsp.digest_share1[0], 0, sizeof(rsp.digest_share1));
+                    s->current_app->fn(s->current_app->opaque, &rsp);
+                }
+                if (!s->error_awaiting_sw) {
+                    ot_kmac_complete_app_req(s);
+                }
+            } else {
+                /* SW mode, go to ABSORBED state */
+                ot_kmac_change_fsm_state(s, KMAC_ST_ABSORBED);
+
+                /* assert KMAC Done interrupt */
+                s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
+                s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
+            }
+
+            break;
+        default:
+            /* nothing to do for other states */
+            break;
+        }
+
+        ot_kmac_update_irq(s);
+    } while (s->current_app && s->current_app->req_pending);
+
+    s->in_process = false;
 }
 
 static inline bool ot_kmac_config_enabled(const OtKMACState *s)
@@ -1768,8 +1778,8 @@ static void ot_kmac_start_pending_app(OtKMACState *s)
         ot_kmac_process_start(s);
         ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
 
-        /* trigger deferred compute */
-        qemu_bh_schedule(s->bh);
+        /* compute app request */
+        ot_kmac_process(s);
     }
 }
 
@@ -1803,8 +1813,8 @@ static void ot_kmac_app_request(OtKMACState *s, unsigned app_idx,
     /* check if app already started */
     if (s->current_app == app &&
         (s->state == KMAC_ST_IDLE || s->state == KMAC_ST_MSG_FEED)) {
-        /* yes, receiving more data, trigger deferred compute */
-        qemu_bh_schedule(s->bh);
+        /* yes, receiving more data, compute app request */
+        ot_kmac_process(s);
     } else {
         /* no, mark as pending and try to start */
         s->pending_apps |= (1u << app_idx);
@@ -1868,6 +1878,7 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     memset(&s->sw_cfg, 0, sizeof(OtKMACAppCfg));
     s->current_app = NULL;
     s->pending_apps = 0;
+    s->in_process = false;
     s->invalid_state_read = false;
     s->error_awaiting_sw = false;
     memset(s->regs, 0, sizeof(*(s->regs)));

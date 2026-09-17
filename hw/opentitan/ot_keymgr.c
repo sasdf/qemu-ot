@@ -1870,14 +1870,10 @@ static void ot_keymgr_fsm_tick(void *opaque)
 {
     OtKeyMgrState *s = opaque;
 
-    bool fsm_state_changed = ot_keymgr_main_fsm_tick(s);
-    if (fsm_state_changed) {
-        /* FSM state changed, so schedule an FSM update once more */
-        ot_keymgr_schedule_fsm(s);
-    } else {
-        /* no FSM state change, so go idle and wait for some external event */
-        trace_ot_keymgr_go_idle(s->ot_id);
+    while (ot_keymgr_main_fsm_tick(s)) {
+        /* continue ticking until FSM transitions settle */
     }
+    trace_ot_keymgr_go_idle(s->ot_id);
 }
 
 static void ot_keymgr_lc_signal(void *opaque, int irq, int level)
