@@ -1199,6 +1199,7 @@ static void ot_usbdev_link_reset_complete(void *opaque)
         s->frozen_frame = 0u;
         ot_usbdev_schedule_frame_timer(s);
     }
+    qemu_chr_fe_accept_input(&s->usb_chr);
 }
 
 /*
@@ -1697,6 +1698,8 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_DISCONNECTED_MASK;
         s->regs[R_USBCTRL] =
             FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
+        timer_del(&s->frame_timer);
+        timer_del(&s->bus_reset_timer);
 
         if (ot_usbdev_has_vbus(s)) {
             ot_usbdev_server_report_connected(s, false);
@@ -2784,7 +2787,7 @@ static void ot_usbdev_chr_cmd_receive(void *opaque, const uint8_t *buf,
         size_t cmd_size = eol - s->cmd_buf;
         ot_usbdev_chr_process_cmd(s, s->cmd_buf, cmd_size);
         memmove(s->cmd_buf, eol + 1u, s->cmd_buf_pos - cmd_size - 1u);
-        s->cmd_buf_pos -= cmd_size - 1u;
+        s->cmd_buf_pos -= cmd_size + 1u;
     }
 }
 
@@ -2844,6 +2847,11 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
     }
 
     ot_usbdev_cancel_all_transfers(s, "device going into reset");
+
+    if (ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED &&
+        ot_usbdev_has_vbus(s)) {
+        ot_usbdev_server_report_connected(s, false);
+    }
 
     /*
      * If there is a bus reset in progress, we cancel it.
