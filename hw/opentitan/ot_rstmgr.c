@@ -42,6 +42,7 @@
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_spi_device.h"
 #include "hw/opentitan/ot_spi_host.h"
+#include "hw/opentitan/ot_usbdev.h"
 #include "hw/qdev-core.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -214,15 +215,11 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [0u] = { TYPE_OT_SPI_DEVICE, 0u },
             [1u] = { TYPE_OT_SPI_HOST, 0u },
             [2u] = { TYPE_OT_SPI_HOST, 1u },
-            /*
-             * Not yet supported
-             *
-             * [3u] = { TYPE_OT_USB, 0u },
-             * [4u] = { TYPE_OT_USB, 1u },
-             * [5u] = { TYPE_OT_I2C_EG, 0u },
-             * [6u] = { TYPE_OT_I2C_EG, 1u },
-             * [7u] = { TYPE_OT_I2C_EG, 2u },
-             */
+            [3u] = { TYPE_OT_USBDEV, 0u },
+            [4u] = { NULL, 0u }, /* USB_AON has no software-visible CSRs */
+            [5u] = { TYPE_OT_I2C, 0u },
+            [6u] = { TYPE_OT_I2C, 1u },
+            [7u] = { TYPE_OT_I2C, 2u },
         }
     },
     [OT_RSTMGR_VERSION_DJ] = {
@@ -534,7 +531,7 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             uint32_t change = s->regs[reg] ^ val32;
             s->regs[reg] = val32;
             unsigned devix = (unsigned)reg - R_SW_RST_CTRL_N_0;
-            if (change & (1u << devix)) {
+            if (change & SW_RST_CTRL_VAL_MASK) {
                 ot_rstmgr_update_sw_reset(s, devix);
             }
         } else {

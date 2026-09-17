@@ -929,6 +929,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
     },
     [OT_EG_SOC_DEV_USBDEV] = {
         .type = TYPE_OT_USBDEV,
+        .instance = IBEX_MAKE_INSTANCE_NUM(0),
         .cfg = &ot_eg_soc_usbdev_configure,
         .memmap = MEMMAPENTRIES(
             { .base = 0x40320000u }

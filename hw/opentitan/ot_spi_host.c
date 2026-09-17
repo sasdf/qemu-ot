@@ -1454,15 +1454,9 @@ static void ot_spi_host_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    s->regs[R_INTR_STATE] = 0x00u;
-    s->regs[R_INTR_ENABLE] = 0x00u;
-    s->regs[R_INTR_TEST] = 0x00u;
-    s->regs[R_ALERT_TEST] = 0x00u;
+    memset(s->regs, 0, REGS_SIZE);
     s->regs[R_CONTROL] = 0x7fu;
-    s->regs[R_CSID] = 0x00u;
     s->regs[R_ERROR_ENABLE] = 0x1fu;
-    s->regs[R_ERROR_STATUS] = 0x00u;
-    s->regs[R_EVENT_ENABLE] = 0x00u;
 
     s->on_reset = true;
 
