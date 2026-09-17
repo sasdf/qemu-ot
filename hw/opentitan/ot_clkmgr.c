@@ -298,9 +298,35 @@ static void ot_clkmgr_update_alerts(OtClkMgrState *s)
     ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], recov);
 }
 
+static OtClkMgrClock *ot_clkmgr_find_clock(GList *clock_list, const char *name);
+
 static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
                                           const OtClkMgrClock *clk)
 {
+    const OtClkMgrClock *target_clk = clk;
+    if (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL) ==
+        OT_MULTIBITBOOL4_TRUE) {
+        bool hi_speed = (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
+                                    HI_SPEED_SEL) == OT_MULTIBITBOOL4_TRUE);
+        if (!hi_speed) {
+            if (!strcmp(clk->name, "io") || !strcmp(clk->name, "main")) {
+                const OtClkMgrClock *io_div2 =
+                    ot_clkmgr_find_clock(s->clocks, "io_div2");
+                if (io_div2) {
+                    target_clk = io_div2;
+                }
+            }
+        } else {
+            if (!strcmp(clk->name, "main")) {
+                const OtClkMgrClock *io =
+                    ot_clkmgr_find_clock(s->clocks, "io");
+                if (io) {
+                    target_clk = io;
+                }
+            }
+        }
+    }
+
     const OtClkMgrClock *ref_clk = NULL;
     for (GList *node = s->clocks; node; node = node->next) {
         const OtClkMgrClock *c = (const OtClkMgrClock *)node->data;
@@ -309,9 +335,9 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
             break;
         }
     }
-    uint32_t ratio = clk->ratio;
-    if (ref_clk && ref_clk->frequency > 0 && clk->frequency > 0) {
-        ratio = clk->frequency / ref_clk->frequency;
+    uint32_t ratio = target_clk->ratio;
+    if (ref_clk && ref_clk->frequency > 0 && target_clk->frequency > 0) {
+        ratio = target_clk->frequency / ref_clk->frequency;
     }
     return ratio > 0 ? (ratio - 1u) : 0u;
 }
@@ -1176,6 +1202,13 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
         if (s->regs[R_EXTCLK_CTRL_REGWEN]) {
             val32 &= R_EXTCLK_CTRL_SEL_MASK | R_EXTCLK_CTRL_HI_SPEED_SEL_MASK;
             s->regs[reg] = val32;
+            uint32_t sel = FIELD_EX32(val32, EXTCLK_CTRL, SEL);
+            s->regs[R_EXTCLK_STATUS] = (sel == OT_MULTIBITBOOL4_TRUE) ?
+                                           OT_MULTIBITBOOL4_TRUE :
+                                           OT_MULTIBITBOOL4_FALSE;
+            for (unsigned ix = 0; ix < s->measure_count; ix++) {
+                ot_clkmgr_check_measurement(s, ix);
+            }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: EXTCLK_CTRL protected w/ REGWEN\n", __func__);
@@ -1341,10 +1374,7 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    uint32_t recov_err_code =
-        s->input_clock_connected ? s->regs[R_RECOV_ERR_CODE] : 0u;
     memset(s->regs, 0, sizeof(s->regs));
-    s->regs[R_RECOV_ERR_CODE] = recov_err_code;
 
     s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
     s->regs[R_EXTCLK_CTRL] = 0x99u;
