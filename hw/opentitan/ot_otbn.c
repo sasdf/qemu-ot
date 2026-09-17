@@ -175,6 +175,7 @@ struct OtOTBNState {
     uint32_t load_checksum;
 
     enum OtOTBNCommand last_cmd;
+    int64_t exec_start_ns;
 
     char *ot_id;
     char *clock_name;
@@ -326,9 +327,14 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
              */
             uint32_t insncount = ot_otbn_proxy_get_instruction_count(s->proxy);
             uint64_t delay_ns = MAX(500000ULL, (uint64_t)insncount * 64ULL);
+            int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            int64_t min_end_ns = s->exec_start_ns + (int64_t)delay_ns;
             timer_del(s->proxy_defer);
-            timer_mod(s->proxy_defer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
+            if (now_ns < min_end_ns) {
+                timer_mod(s->proxy_defer, min_end_ns);
+            } else {
+                ot_otbn_post_execute(s);
+            }
         } else {
             ot_otbn_post_execute(s);
         }
@@ -449,14 +455,17 @@ static void ot_otbn_handle_command(OtOTBNState *s, unsigned command)
     switch (command) {
     case (unsigned)OT_OTBN_CMD_EXECUTE:
         s->last_cmd = command;
+        s->exec_start_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         ot_otbn_proxy_execute(s->proxy, false);
         break;
     case (unsigned)OT_OTBN_CMD_SEC_WIPE_DMEM:
         s->last_cmd = command;
+        s->exec_start_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         ot_otbn_proxy_wipe_memory(s->proxy, false);
         break;
     case (unsigned)OT_OTBN_CMD_SEC_WIDE_IMEM:
         s->last_cmd = command;
+        s->exec_start_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         ot_otbn_proxy_wipe_memory(s->proxy, true);
         break;
     default:
@@ -755,6 +764,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
     s->load_checksum = 0;
 
     s->last_cmd = OT_OTBN_CMD_NONE;
+    s->exec_start_ns = 0;
     ibex_irq_set(&s->irq_done, 0);
     for (unsigned ix = 0; ix < ALERT_COUNT; ix++) {
         ibex_irq_set(&s->alerts[ix], 0);

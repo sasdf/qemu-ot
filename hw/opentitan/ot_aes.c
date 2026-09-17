@@ -235,12 +235,17 @@ typedef struct OtAESContext {
     int aes_cipher; /* AES handle for tomcrypt */
 } OtAESContext;
 
+#define OT_AES_PRNG_MASKING_WORDS  6u
+#define OT_AES_PRNG_CLEARING_WORDS 2u
+#define OT_AES_PRNG_FULL_WORDS \
+    (OT_AES_PRNG_MASKING_WORDS + OT_AES_PRNG_CLEARING_WORDS)
+
 typedef struct OtAESEDN {
     OtEDNState *device;
     uint8_t ep;
     bool connected;
     bool scheduled;
-    unsigned rem_words;
+    unsigned pending_words;
 } OtAESEDN;
 
 typedef struct {
@@ -317,7 +322,7 @@ struct OtAESClass {
 #define xtrace_ot_aes_error(_otid_, _msg_) \
     trace_ot_aes_error(__func__, __LINE__, _otid_, _msg_)
 
-static void ot_aes_reseed(OtAESState *s);
+static void ot_aes_reseed(OtAESState *s, unsigned words);
 
 static void ot_aes_randomize(OtAESState *s, uint32_t *regs, size_t count)
 {
@@ -514,19 +519,9 @@ static bool ot_aes_is_mode_ready(OtAESRegisters *r, bool *need_iv)
     }
 }
 
-static void ot_aes_trigger_reseed(OtAESState *s, bool full_reseed)
+static void ot_aes_trigger_reseed(OtAESState *s)
 {
-    /*
-     * In RTL (aes_core.sv / aes_prng_clearing.sv / aes_prng_masking.sv), an
-     * explicit TRIGGER.PRNG_RESEED reseeds both the clearing PRNG (2 x 32-bit
-     * words) and the masking PRNG (6 x 32-bit words), consuming 8 EDN words
-     * (two 128-bit CSRNG packets).
-     */
-    unsigned words = full_reseed ? 8u : 1u;
-    if (s->edn.rem_words < words) {
-        s->edn.rem_words = words;
-    }
-    ot_aes_reseed(s);
+    ot_aes_reseed(s, OT_AES_PRNG_FULL_WORDS);
 }
 
 
@@ -574,7 +569,7 @@ static void ot_aes_update_key(OtAESState *s)
     if (!c->key_ready && ot_aes_key_touch_force_reseed(r)) {
         r->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
         trace_ot_aes_reseed(s->ot_id, "new key");
-        ot_aes_trigger_reseed(s, false);
+        ot_aes_trigger_reseed(s);
     }
 
     c->key_ready = true;
@@ -658,7 +653,7 @@ static void ot_aes_handle_trigger(OtAESState *s)
 
     if (r->trigger & R_TRIGGER_PRNG_RESEED_MASK) {
         trace_ot_aes_reseed(s->ot_id, "trigger write");
-        ot_aes_trigger_reseed(s, true);
+        ot_aes_trigger_reseed(s);
         if (s->edn.scheduled) {
             xtrace_ot_aes_debug(s->ot_id, "EDN scheduled, defer");
             return;
@@ -955,13 +950,6 @@ static inline void ot_aes_do_process(OtAESState *s)
 {
     ot_aes_process(s);
     ot_aes_push(s);
-
-    OtAESRegisters *r = s->regs;
-    if (ot_aes_is_manual(r)) {
-        xtrace_ot_aes_info(s->ot_id, "end of manual seq");
-        s->regs->trigger &= ~R_TRIGGER_START_MASK;
-    }
-
     if (s->reseed_count) {
         s->reseed_count -= 1u;
     }
@@ -973,11 +961,17 @@ static inline void ot_aes_do_process(OtAESState *s)
          */
         trace_ot_aes_reseed(s->ot_id, "reseed_count reached");
         s->regs->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
+        ot_aes_reseed(s, OT_AES_PRNG_MASKING_WORDS);
         ot_aes_load_reseed_rate(s);
-        ot_aes_trigger_reseed(s, false);
     } else {
         /* flag pushed data as immediately available */
         ot_aes_commit_data_out(s->regs);
+    }
+
+    OtAESRegisters *r = s->regs;
+    if (ot_aes_is_manual(r)) {
+        xtrace_ot_aes_info(s->ot_id, "end of manual seq");
+        s->regs->trigger &= ~R_TRIGGER_START_MASK;
     }
 }
 
@@ -1027,20 +1021,20 @@ static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
         return;
     }
     trace_ot_aes_fill_entropy(s->ot_id, bits, fips);
-    edn->scheduled = false;
-
     ot_prng_reseed(s->prng, bits);
 
-    if (edn->rem_words > 0) {
-        edn->rem_words -= 1u;
-    }
-    if (edn->rem_words > 0) {
-        ot_aes_reseed(s);
-        if (edn->scheduled) {
-            return;
+    if (edn->pending_words > 1u) {
+        edn->pending_words -= 1u;
+        if (ot_edn_request_entropy(edn->device, edn->ep)) {
+            edn->scheduled = false;
+            edn->pending_words = 0u;
+            xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
         }
+        return;
     }
 
+    edn->pending_words = 0u;
+    edn->scheduled = false;
     r->trigger &= ~R_TRIGGER_PRNG_RESEED_MASK;
 
     /*
@@ -1049,6 +1043,9 @@ static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
      * completed to maintain a coherent IDLE state.
      */
     ot_aes_commit_data_out(r);
+
+    ot_aes_update_key(s);
+    ot_aes_update_config(s);
 
     ot_aes_handle_trigger(s);
 }
@@ -1060,7 +1057,7 @@ static void ot_aes_handle_process(void *opaque)
     ot_aes_do_process(s);
 }
 
-static void ot_aes_reseed(OtAESState *s)
+static void ot_aes_reseed(OtAESState *s, unsigned words)
 {
     OtAESEDN *edn = &s->edn;
 
@@ -1071,10 +1068,14 @@ static void ot_aes_reseed(OtAESState *s)
     if (!edn->scheduled) {
         trace_ot_aes_request_entropy(s->ot_id);
         edn->scheduled = true;
+        edn->pending_words = words;
         if (ot_edn_request_entropy(edn->device, edn->ep)) {
             edn->scheduled = false;
+            edn->pending_words = 0u;
             xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
         }
+    } else if (words > edn->pending_words) {
+        edn->pending_words = words;
     }
 }
 
@@ -1407,7 +1408,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     r->status = 0u;
     r->data_out_rdy = false;
     e->scheduled = false;
-    e->rem_words = 0;
+    e->pending_words = 0u;
     ot_aes_load_reseed_rate(s);
 
     for (unsigned ix = 0; ix < PARAM_NUM_ALERTS; ix++) {
