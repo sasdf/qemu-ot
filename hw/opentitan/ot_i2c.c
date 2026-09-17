@@ -1542,7 +1542,7 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
         break;
     }
     case I2C_NACK:
-        g_assert_not_reached();
+        /* Host NACKs the last byte of a target read transfer before STOP. */
         break;
     case I2C_FINISH:
         /* Signal STOP or NACK_STOP as the last entry in the fifo. */
