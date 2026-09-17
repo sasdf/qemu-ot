@@ -69,6 +69,7 @@
 #include "hw/opentitan/ot_spi_device.h"
 #include "hw/opentitan/ot_spi_host.h"
 #include "hw/opentitan/ot_sram_ctrl.h"
+#include "hw/opentitan/ot_sysrst_ctrl.h"
 #include "hw/opentitan/ot_timer.h"
 #include "hw/opentitan/ot_uart.h"
 #include "hw/opentitan/ot_unimp.h"
@@ -595,6 +596,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_SYSBUS_IRQ(29, PLIC, 66),
             OT_EG_SOC_GPIO_SYSBUS_IRQ(30, PLIC, 67),
             OT_EG_SOC_GPIO_SYSBUS_IRQ(31, PLIC, 68),
+            OT_EG_SOC_SIGNAL(OT_GPIO_OUT, 22, PINMUX, OT_PINMUX_PAD_IN, 22),
             OT_EG_SOC_GPIO_ALERT(0, 4)
         )
     },
@@ -955,6 +957,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_SYSBUS_IRQ(15, PLIC, 150),
             OT_EG_SOC_GPIO_SYSBUS_IRQ(16, PLIC, 151),
             OT_EG_SOC_GPIO_SYSBUS_IRQ(17, PLIC, 152),
+            OT_EG_SOC_SIGNAL(OT_USBDEV_WKUP, 0, PWRMGR,
+                             OT_PWRMGR_WKUP, OT_PWRMGR_WAKEUP_USBDEV),
             OT_EG_SOC_GPIO_ALERT(0, 21)
             /* The VBUS sense pin is handled by a chardev */
         ),
@@ -1025,21 +1029,19 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
     },
     [OT_EG_SOC_DEV_SYSRST_CTRL] = {
-        .type = TYPE_OT_UNIMP,
-        .cfg = &ibex_unimp_configure,
+        .type = TYPE_OT_SYSRST_CTRL,
         .memmap = MEMMAPENTRIES(
             { .base = 0x40430000u }
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "sysrst_ctrl"),
-            IBEX_DEV_UINT_PROP("size", 0x100u),
-            IBEX_DEV_UINT_PROP("irq-ro-mask", 0x1u),
-            IBEX_DEV_UINT_PROP("irq-count", 1u),
-            IBEX_DEV_UINT_PROP("alert-count", 1u),
-            IBEX_DEV_BOOL_PROP("warn-once", true)
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "sysrst_ctrl")
         ),
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 154),
+            OT_EG_SOC_SIGNAL(OT_SYSRST_CTRL_WKUP_REQ, 0, PWRMGR,
+                             OT_PWRMGR_WKUP, OT_PWRMGR_WAKEUP_SYSRST),
+            OT_EG_SOC_SIGNAL(OT_SYSRST_CTRL_RST_REQ, 0, PWRMGR,
+                             OT_PWRMGR_RST, OT_EG_RESET_SYSRST_CTRL),
             OT_EG_SOC_GPIO_ALERT(0, 27)
         )
     },
@@ -1084,7 +1086,21 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             { .base = 0x40460000u }
         ),
         .gpio = IBEXGPIOCONNDEFS(
-            OT_EG_SOC_GPIO_ALERT(0, 30)
+            OT_EG_SOC_GPIO_ALERT(0, 30),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_WKUP, 0, PWRMGR,
+                             OT_PWRMGR_WKUP, OT_PWRMGR_WAKEUP_PINMUX),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 0, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 0),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 1, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 1),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 2, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 2),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 3, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 3),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 4, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 4),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 5, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 5)
         )
     },
     [OT_EG_SOC_DEV_AON_TIMER] = {
@@ -1126,6 +1142,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 158),
             OT_EG_SOC_GPIO_SYSBUS_IRQ(1, PLIC, 159),
+            OT_EG_SOC_SIGNAL(OT_SENSOR_WKUP, 0, PWRMGR,
+                             OT_PWRMGR_WKUP, OT_PWRMGR_WAKEUP_SENSOR),
             OT_EG_SOC_GPIO_ALERT(0, 32),
             OT_EG_SOC_GPIO_ALERT(1, 33)
         ),

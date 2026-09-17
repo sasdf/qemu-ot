@@ -217,6 +217,15 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_intr_level(s);
     ot_gpio_eg_update_intr_edge(s, prev);
     ot_gpio_eg_update_irqs(s);
+
+    for (unsigned ix = 0; ix < PARAM_NUM_IO; ix++) {
+        if (!((s->data_oe >> ix) & 1u)) {
+            int level = (int)((data_mix >> ix) & 1u);
+            if (level != ibex_irq_get_level(&s->gpos[ix])) {
+                ibex_irq_set(&s->gpos[ix], level);
+            }
+        }
+    }
 }
 
 static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
@@ -235,11 +244,11 @@ static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
 
     trace_ot_gpio_out_update(s->ot_id, outv, 0, 0);
     for (unsigned ix = 0; ix < PARAM_NUM_IO; ix++) {
-        if ((out_en >> ix) & 1u) {
-            int level = (int)((outv >> ix) & 1u);
-            if (level != ibex_irq_get_level(&s->gpos[ix])) {
-                trace_ot_gpio_out_update_line_bool(s->ot_id, ix, level);
-            }
+        int level = ((out_en >> ix) & 1u) ?
+                        (int)((outv >> ix) & 1u) :
+                        (int)((s->regs[R_DATA_IN] >> ix) & 1u);
+        if (level != ibex_irq_get_level(&s->gpos[ix])) {
+            trace_ot_gpio_out_update_line_bool(s->ot_id, ix, level);
             ibex_irq_set(&s->gpos[ix], level);
         }
     }

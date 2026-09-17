@@ -508,6 +508,10 @@ static void ot_pwrmgr_rom_done(void *opaque, int irq, int level)
 
 static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
 {
+    if (s->regs[R_RESET_STATUS]) {
+        return;
+    }
+
     uint32_t active_wkup = s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
 
     if (active_wkup && (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) {

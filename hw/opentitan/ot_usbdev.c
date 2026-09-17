@@ -532,6 +532,7 @@ struct OtUsbdevState {
 
     IbexIRQ irqs[USBDEV_INTR_NUM];
     IbexIRQ alert;
+    IbexIRQ wkup;
 
     /* Register content */
     uint32_t regs[REGS_COUNT];
@@ -2085,13 +2086,20 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_SET_NAK_OUT:
         s->regs[reg] = val32;
         break;
+    case R_WAKE_CONTROL:
+        s->regs[reg] = val32;
+        if (val32 & R_WAKE_CONTROL_SUSPEND_REQ_MASK) {
+            ibex_irq_set(&s->wkup, 1);
+        } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
+            ibex_irq_set(&s->wkup, 0);
+        }
+        break;
     case R_OUT_ISO:
     case R_IN_ISO:
     case R_OUT_DATA_TOGGLE:
     case R_IN_DATA_TOGGLE:
     case R_PHY_PINS_SENSE:
     case R_PHY_PINS_DRIVE:
-    case R_WAKE_CONTROL:
     case R_WAKE_EVENTS:
     case R_FIFO_CTRL:
     case R_COUNT_OUT:
@@ -2919,6 +2927,7 @@ static void ot_usbdev_init(Object *obj)
         ibex_sysbus_init_irq(obj, &s->irqs[idx]);
     }
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
+    ibex_qdev_init_irq(obj, &s->wkup, OT_USBDEV_WKUP);
 
     memory_region_init(&s->mmio.main, obj, TYPE_OT_USBDEV ".mmio",
                        USBDEV_DEVICE_SIZE);

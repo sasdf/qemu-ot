@@ -196,8 +196,11 @@ struct OtPinmuxEgState {
 
     MemoryRegion mmio;
     IbexIRQ alert;
+    IbexIRQ wkup;
     IbexIRQ *dios;
     IbexIRQ *mios;
+    IbexIRQ *sysrst_inputs;
+    uint32_t pad_in_level;
 
     OtPinmuxEgStateRegs *regs;
 };
@@ -206,6 +209,77 @@ struct OtPinmuxEgClass {
     SysBusDeviceClass parent_class;
     ResettablePhases parent_phases;
 };
+
+static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
+{
+    for (unsigned i = 0; i < 6u; i++) {
+        uint32_t sel = s->regs->mio_periph_insel[50u + i];
+        int level = 0;
+        if (sel == 1u) {
+            level = 1;
+        } else if (sel >= 2u && (sel - 2u) < 32u) {
+            level = (int)((s->pad_in_level >> (sel - 2u)) & 1u);
+        }
+        ibex_irq_set(&s->sysrst_inputs[i], level);
+    }
+}
+
+static void ot_pinmux_eg_pad_in(void *opaque, int irq, int level)
+{
+    OtPinmuxEgState *s = opaque;
+    OtPinmuxEgStateRegs *regs = s->regs;
+
+    g_assert((unsigned)irq < 32u);
+
+    uint32_t bit = 1u << irq;
+    int prev = (int)((s->pad_in_level >> irq) & 1u);
+    if (level) {
+        s->pad_in_level |= bit;
+    } else {
+        s->pad_in_level &= ~bit;
+    }
+
+    ot_pinmux_eg_update_sysrst_inputs(s);
+
+    if (prev == level) {
+        return;
+    }
+
+    uint32_t target_padsel = (uint32_t)irq + 2u;
+    for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
+        if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
+            continue;
+        }
+        if (regs->wkup_detector_padsel[i] != target_padsel) {
+            continue;
+        }
+        uint32_t mode = regs->wkup_detector_cfg[i] & 0x7u;
+        bool match = false;
+        switch (mode) {
+        case 0: /* Posedge */
+            match = (prev == 0 && level == 1);
+            break;
+        case 1: /* Negedge */
+            match = (prev == 1 && level == 0);
+            break;
+        case 2: /* Edge */
+            match = (prev != level);
+            break;
+        case 3: /* High */
+            match = (level == 1);
+            break;
+        case 4: /* Low */
+            match = (level == 0);
+            break;
+        default:
+            break;
+        }
+        if (match) {
+            regs->wkup_cause |= (1u << i);
+            ibex_irq_set(&s->wkup, 1);
+        }
+    }
+}
 
 static uint32_t ot_pinmux_eg_sel_mask(unsigned val)
 {
@@ -342,6 +416,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             }
             regs->mio_periph_insel[reg - R_MIO_PERIPH_INSEL] = val32;
             ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
+            ot_pinmux_eg_update_sysrst_inputs(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -466,24 +541,24 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(WKUP_DETECTOR_CFG, PARAM_N_WKUP_DETECT):
         val32 &= WKUP_DETECTOR_CFG_MASK;
-        regs->wkup_detector[reg - R_WKUP_DETECTOR_CFG] = val32;
+        regs->wkup_detector_cfg[reg - R_WKUP_DETECTOR_CFG] = val32;
         break;
     case CASE_RANGE(WKUP_DETECTOR_CNT_TH, PARAM_N_WKUP_DETECT):
         val32 &= R_WKUP_DETECTOR_CNT_TH_TH_MASK;
         regs->wkup_detector_cnt_th[reg - R_WKUP_DETECTOR_CNT_TH] = val32;
         break;
     case CASE_RANGE(WKUP_DETECTOR_PADSEL, PARAM_N_WKUP_DETECT):
-        if (val32 >= N_MAX_PADS) {
+        if (val32 >= PARAM_N_MIO_PADS + 2u) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x too large: %u\n",
                           __func__, (unsigned)reg, val32);
-            uint32_t mask = ot_pinmux_eg_sel_mask(N_MAX_PADS);
+            uint32_t mask = ot_pinmux_eg_sel_mask(PARAM_N_MIO_PADS + 2u);
             val32 &= mask;
         }
         regs->wkup_detector_padsel[reg - R_WKUP_DETECTOR_PADSEL] = val32;
         break;
     case CASE_SCALAR(WKUP_CAUSE):
-        val32 %= WKUP_CAUSE_MASK;
-        regs->wkup_cause = val32;
+        regs->wkup_cause &= (val32 & WKUP_CAUSE_MASK);
+        ibex_irq_set(&s->wkup, (int)(bool)regs->wkup_cause);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%x\n", __func__,
@@ -510,7 +585,9 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     }
 
     OtPinmuxEgStateRegs *regs = s->regs;
+    uint32_t wkup_cause = regs->wkup_cause;
     memset(regs, 0, sizeof(*regs));
+    regs->wkup_cause = wkup_cause;
 
     for (unsigned ix = 0; ix < PARAM_N_MIO_PERIPH_IN; ix++) {
         regs->mio_periph_insel_regwen[ix] = 0x1u;
@@ -532,6 +609,8 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     }
 
     ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
+    ot_pinmux_eg_update_sysrst_inputs(s);
+    ibex_irq_set(&s->wkup, (int)(bool)regs->wkup_cause);
     ibex_irq_set(&s->alert, 0);
 }
 
@@ -545,13 +624,19 @@ static void ot_pinmux_eg_init(Object *obj)
 
     s->regs = g_new0(OtPinmuxEgStateRegs, 1u);
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
+    ibex_qdev_init_irq(obj, &s->wkup, OT_PINMUX_WKUP);
 
     s->dios = g_new(IbexIRQ, PARAM_N_DIO_PADS);
     s->mios = g_new(IbexIRQ, PARAM_N_MIO_PADS);
+    s->sysrst_inputs = g_new(IbexIRQ, 6u);
     ibex_qdev_init_irqs_default(obj, s->dios, OT_PINMUX_DIO, PARAM_N_DIO_PADS,
                                 PAD_ATTR_ENABLE(false));
     ibex_qdev_init_irqs_default(obj, s->mios, OT_PINMUX_MIO, PARAM_N_MIO_PADS,
                                 PAD_ATTR_ENABLE(false));
+    ibex_qdev_init_irqs_default(obj, s->sysrst_inputs, OT_PINMUX_SYSRST_IN, 6u,
+                                0);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_pad_in, OT_PINMUX_PAD_IN,
+                            32u);
 }
 
 static void ot_pinmux_eg_class_init(ObjectClass *klass, const void *data)

@@ -231,12 +231,13 @@ static void ot_aon_timer_update_irqs(OtAonTimerState *s)
 {
     bool wkup = (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK);
     bool bark = (bool)(s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK);
+    bool wkup_req = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
     trace_ot_aon_timer_irqs(s->ot_id, wkup, bark, s->wdog_bite);
 
     ibex_irq_set(&s->irq_wkup, wkup);
     ibex_irq_set(&s->irq_bark, bark);
     ibex_irq_set(&s->nmi_bark, bark);
-    ibex_irq_set(&s->pwrmgr_wkup, wkup);
+    ibex_irq_set(&s->pwrmgr_wkup, wkup_req);
     ibex_irq_set(&s->pwrmgr_bite, s->wdog_bite);
 }
 
@@ -262,6 +263,7 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
 
     if (count >= threshold) {
         s->regs[R_INTR_STATE] |= INTR_WKUP_TIMER_EXPIRED_MASK;
+        s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
     } else {
         uint32_t prescaler =
             FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
@@ -311,6 +313,7 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     s->wdog_bark_level = bark_level;
 
     if (bark_level) {
+        s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
         threshold = UINT32_MAX;
         pending = false;
     } else {
@@ -575,9 +578,23 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[R_INTR_STATE] |= val32 & INTR_MASK;
         ot_aon_timer_update_irqs(s);
         break;
-    case R_WKUP_CAUSE:
-        /* ignore write, in QEMU wkup_cause is always 0 */
+    case R_WKUP_CAUSE: {
+        uint32_t prev = s->regs[R_WKUP_CAUSE];
+        s->regs[R_WKUP_CAUSE] &= val32 & R_WKUP_CAUSE_CAUSE_MASK; /* rw0c */
+        uint32_t change = prev ^ s->regs[R_WKUP_CAUSE];
+        ot_aon_timer_update_irqs(s);
+        if (change && s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]) {
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            int64_t next = ot_aon_timer_compute_next_timeout(s, now, 0);
+            if (ot_aon_timer_is_wkup_enabled(s)) {
+                timer_mod_anticipate(s->wkup_timer, next);
+            }
+            if (ot_aon_timer_is_wdog_enabled(s)) {
+                timer_mod_anticipate(s->wdog_timer, next);
+            }
+        }
         break;
+    }
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
@@ -616,13 +633,16 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
     timer_del(s->wkup_timer);
     timer_del(s->wdog_timer);
 
-    if ((s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) &&
+    if (((s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) ||
+         (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK)) &&
         !s->wdog_bite) {
         if (s->regs[R_WDOG_CTRL] & R_WDOG_CTRL_PAUSE_IN_SLEEP_MASK) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             int64_t pre_sleep_delta = MAX(s->wkup_origin_ns - s->wdog_origin_ns, 0);
             s->wdog_origin_ns = now - pre_sleep_delta;
         }
+        s->regs[R_INTR_STATE] = 0;
+        s->regs[R_WDOG_REGWEN] = 1u;
     } else {
         memset(s->regs, 0, sizeof(s->regs));
         s->regs[R_WDOG_REGWEN] = 1u;

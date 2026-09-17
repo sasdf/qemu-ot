@@ -34,4 +34,6 @@
 #define TYPE_OT_USBDEV "ot-usbdev"
 OBJECT_DECLARE_TYPE(OtUsbdevState, OtUsbdevClass, OT_USBDEV)
 
+#define OT_USBDEV_WKUP TYPE_OT_USBDEV "-wkup"
+
 #endif /* HW_OPENTITAN_OT_USBDEV_H */
