@@ -1513,10 +1513,11 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .type = TYPE_SPLIT_IRQ,
         .gpio = IBEXGPIOCONNDEFS(
             OT_DJ_SOC_S2D(0, OTP_CTRL, OT_LC_BROADCAST,
-                                  OT_OTP_LC_ESCALATE_EN)
+                                  OT_OTP_LC_ESCALATE_EN),
+            OT_DJ_SOC_S2D(1, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 1u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 2u) /* @todo to be changed */
         )
     }
     /* clang-format on */

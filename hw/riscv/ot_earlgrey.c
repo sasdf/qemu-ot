@@ -1486,10 +1486,11 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_S2D(0, OTP_CTRL, OT_LC_BROADCAST,
                           OT_OTP_LC_ESCALATE_EN),
             OT_EG_SOC_S2D(1, FLASH_CTRL, OT_LC_BROADCAST,
-                          OT_FLASH_LC_ESCALATE_EN)
+                          OT_FLASH_LC_ESCALATE_EN),
+            OT_EG_SOC_S2D(2, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 2u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 3u) /* @todo to be changed */
         )
     },
     [OT_EG_SOC_SPLITTER_LC_SEED_HW_RD] = {

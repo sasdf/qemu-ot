@@ -127,6 +127,7 @@ struct OtAonTimerState {
     int64_t wkup_origin_ns;
     int64_t wdog_origin_ns;
     bool wdog_bite;
+    bool lc_escalate_en;
     uint32_t pclks[OT_AON_TIMER_CLOCK_SRC_COUNT];
     const char *clock_src_names[OT_AON_TIMER_CLOCK_SRC_COUNT];
 
@@ -203,13 +204,15 @@ static int64_t ot_aon_timer_compute_next_timeout(OtAonTimerState *s,
 
 static inline bool ot_aon_timer_is_wkup_enabled(OtAonTimerState *s)
 {
-    return (bool)FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, ENABLE);
+    return (bool)FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, ENABLE) &&
+           !s->lc_escalate_en;
 }
 
 static inline bool ot_aon_timer_is_wdog_enabled(OtAonTimerState *s)
 {
     return (bool)FIELD_EX32(s->regs[R_WDOG_REGWEN], WDOG_REGWEN, REGWEN) &&
-           (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE);
+           (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE) &&
+           !s->lc_escalate_en;
 }
 
 static inline bool ot_aon_timer_wdog_register_write_enabled(OtAonTimerState *s)
@@ -354,6 +357,34 @@ static void ot_aon_timer_clock_input(void *opaque, int irq, int level)
     /* TODO: @loic: update on-going timer */
 }
 
+static void ot_aon_timer_lc_escalate(void *opaque, int irq, int level)
+{
+    OtAonTimerState *s = opaque;
+
+    g_assert(irq == 0);
+
+    bool esc = (bool)level;
+    if (esc == s->lc_escalate_en) {
+        return;
+    }
+
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+
+    if (esc) {
+        if (ot_aon_timer_is_wkup_enabled(s)) {
+            uint64_t count = ot_aon_timer_get_wkup_count(s, (uint64_t)now);
+            s->regs[R_WKUP_COUNT_HI] = (uint32_t)(count >> 32u);
+            s->regs[R_WKUP_COUNT_LO] = (uint32_t)count;
+        }
+        if (ot_aon_timer_is_wdog_enabled(s)) {
+            s->regs[R_WDOG_COUNT] = ot_aon_timer_get_wdog_count(s, (uint64_t)now);
+        }
+    }
+
+    s->lc_escalate_en = esc;
+    ot_aon_timer_rearm_wkup(s, true);
+    ot_aon_timer_rearm_wdog(s, true);
+}
 
 static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -592,6 +623,7 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
         memset(s->regs, 0, sizeof(s->regs));
         s->regs[R_WDOG_REGWEN] = 1u;
         s->wdog_bite = false;
+        s->lc_escalate_en = false;
     }
 
     ot_aon_timer_update_irqs(s);
@@ -640,6 +672,9 @@ static void ot_aon_timer_init(Object *obj)
     ibex_qdev_init_irq(obj, &s->pwrmgr_wkup, OT_AON_TIMER_WKUP);
     ibex_qdev_init_irq(obj, &s->pwrmgr_bite, OT_AON_TIMER_BITE);
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
+
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_aon_timer_lc_escalate,
+                            OT_AON_TIMER_LC_ESCALATE, 1);
 
     memory_region_init_io(&s->mmio, obj, &ot_aon_timer_ops, s,
                           TYPE_OT_AON_TIMER, REGS_SIZE);
