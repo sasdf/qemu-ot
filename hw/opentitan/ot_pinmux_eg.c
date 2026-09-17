@@ -31,6 +31,7 @@
 #include "qom/object.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
+#include "hw/opentitan/ot_uart.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
@@ -340,6 +341,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 val32 &= mask;
             }
             regs->mio_periph_insel[reg - R_MIO_PERIPH_INSEL] = val32;
+            ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -359,6 +361,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 val32 &= mask;
             }
             regs->mio_outsel[reg - R_MIO_OUTSEL] = val32;
+            ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -528,6 +531,7 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
         regs->wkup_detector_regwen[ix] = 0x1u;
     }
 
+    ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
     ibex_irq_set(&s->alert, 0);
 }
 

@@ -31,11 +31,14 @@
  */
 
 #include "qemu/osdep.h"
+#include <termios.h>
 #include "qemu/fifo8.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "qapi/error.h"
 #include "chardev/char-fe.h"
+#include "io/channel-file.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_uart.h"
@@ -122,7 +125,9 @@ REG32(TIMEOUT_CTRL, 0x30u)
      R_CTRL_RXBLVL_MASK | R_CTRL_NCO_MASK)
 
 #define CTRL_SUP_MASK \
-    (R_CTRL_RX_MASK | R_CTRL_TX_MASK | R_CTRL_SLPBK_MASK | R_CTRL_NCO_MASK)
+    (R_CTRL_RX_MASK | R_CTRL_TX_MASK | R_CTRL_SLPBK_MASK | R_CTRL_LLPBK_MASK | \
+     R_CTRL_PARITY_EN_MASK | R_CTRL_PARITY_ODD_MASK | R_CTRL_RXBLVL_MASK | \
+     R_CTRL_NCO_MASK)
 
 /* FIFO depths match uart_reg_pkg.sv (TxFifoDepth=32, RxFifoDepth=64). */
 #define OT_UART_NCO_BITS     16u
@@ -179,7 +184,19 @@ struct OtUARTState {
     CharFrontend chr;
     bool oversample_break; /* Should mock break in the oversampled VAL reg? */
     bool toggle_break; /* Are incoming breaks temporary or toggled? */
+
+    OtUARTState *tx_chr_owner;
+    OtUARTState *rx_target_uart;
+    QEMUTimer *tx_timer;
+    bool tx_busy;
 };
+
+typedef struct {
+    Chardev parent;
+    QIOChannel *ioc;
+} OtPtyChardev;
+
+static OtUARTState *ot_uart_instances[4];
 
 struct OtUARTClass {
     SysBusDeviceClass parent_class;
@@ -289,6 +306,124 @@ static bool ot_uart_is_rx_enabled(const OtUARTState *s)
     return (bool)FIELD_EX32(s->regs[R_CTRL], CTRL, RX);
 }
 
+static CharFrontend *ot_uart_get_tx_chr(OtUARTState *s)
+{
+    if (s->tx_chr_owner) {
+        return &s->tx_chr_owner->chr;
+    }
+    return &s->chr;
+}
+
+static CharFrontend *ot_uart_get_rx_chr(OtUARTState *s)
+{
+    for (int i = 0; i < 4; i++) {
+        if (ot_uart_instances[i] &&
+            ot_uart_instances[i]->rx_target_uart == s) {
+            return &ot_uart_instances[i]->chr;
+        }
+    }
+    return &s->chr;
+}
+
+void ot_uart_update_pinmux(const uint32_t *mio_outsel,
+                           const uint32_t *mio_periph_insel)
+{
+    static const unsigned out_pads[4] = { 26u, 14u, 5u, 1u };
+    static const unsigned in_sels[4] = { 27u, 15u, 6u, 2u };
+
+    if (!mio_outsel || !mio_periph_insel) {
+        for (int i = 0; i < 4; i++) {
+            if (ot_uart_instances[i]) {
+                ot_uart_instances[i]->tx_chr_owner = ot_uart_instances[i];
+                ot_uart_instances[i]->rx_target_uart = ot_uart_instances[i];
+            }
+        }
+        return;
+    }
+
+    for (int u = 0; u < 4; u++) {
+        OtUARTState *s = ot_uart_instances[u];
+        if (!s) {
+            continue;
+        }
+        OtUARTState *owner = NULL;
+        for (int ch = 0; ch < 4; ch++) {
+            if (mio_outsel[out_pads[ch]] == (uint32_t)(45 + u)) {
+                owner = ot_uart_instances[ch];
+                break;
+            }
+        }
+        if (!owner && mio_outsel[out_pads[u]] <= 2u) {
+            owner = s;
+        }
+        s->tx_chr_owner = owner;
+    }
+
+    for (int ch = 0; ch < 4; ch++) {
+        OtUARTState *ch_dev = ot_uart_instances[ch];
+        if (!ch_dev) {
+            continue;
+        }
+        OtUARTState *target = NULL;
+        for (int u = 0; u < 4; u++) {
+            if (mio_periph_insel[42 + u] == in_sels[ch]) {
+                target = ot_uart_instances[u];
+                break;
+            }
+        }
+        if (!target && mio_periph_insel[42 + ch] <= 1u &&
+            mio_outsel[out_pads[ch]] <= 2u) {
+            target = ch_dev;
+        }
+        ch_dev->rx_target_uart = target;
+    }
+
+    for (int ch = 0; ch < 4; ch++) {
+        OtUARTState *ch_dev = ot_uart_instances[ch];
+        if (ch_dev && ch_dev->rx_target_uart) {
+            OtUARTState *target = ch_dev->rx_target_uart;
+            if ((ot_uart_is_rx_enabled(target) ||
+                 (target->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+                !ot_uart_is_sys_loopack_enabled(target)) {
+                qemu_chr_fe_accept_input(&ch_dev->chr);
+            }
+        }
+    }
+}
+
+static bool ot_uart_check_pty_parity(OtUARTState *s, OtUARTState *rx_owner)
+{
+    if (!(s->regs[R_CTRL] & R_CTRL_PARITY_EN_MASK)) {
+        return true;
+    }
+    if (!rx_owner || !rx_owner->chr.chr || !rx_owner->chr.chr->filename) {
+        return true;
+    }
+    if (!g_str_has_prefix(rx_owner->chr.chr->filename, "pty:")) {
+        return true;
+    }
+    OtPtyChardev *pty = (OtPtyChardev *)rx_owner->chr.chr;
+    if (!pty->ioc ||
+        !object_dynamic_cast(OBJECT(pty->ioc), TYPE_QIO_CHANNEL_FILE)) {
+        return true;
+    }
+    int master_fd = QIO_CHANNEL_FILE(pty->ioc)->fd;
+    if (master_fd >= 0) {
+        struct termios tio;
+        if (tcgetattr(master_fd, &tio) == 0) {
+            if ((tio.c_cflag & PARENB) || (tio.c_iflag & INPCK)) {
+                bool host_odd = (tio.c_cflag & PARODD) != 0;
+                bool dev_odd =
+                    (s->regs[R_CTRL] & R_CTRL_PARITY_ODD_MASK) != 0;
+                if (host_odd != dev_odd) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static void ot_uart_check_baudrate(const OtUARTState *s)
 {
     uint32_t nco = FIELD_EX32(s->regs[R_CTRL], CTRL, NCO);
@@ -306,31 +441,74 @@ static void ot_uart_reset_rx_fifo(OtUARTState *s)
     fifo8_reset(&s->rx_fifo);
     s->regs[R_INTR_STATE] &= ~INTR_RX_WATERMARK_MASK;
     s->regs[R_INTR_STATE] &= ~INTR_RX_OVERFLOW_MASK;
-    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(&s->chr);
+    if ((ot_uart_is_rx_enabled(s) ||
+         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+        !ot_uart_is_sys_loopack_enabled(s)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
 }
 
 static int ot_uart_can_receive(void *opaque)
 {
-    OtUARTState *s = opaque;
+    OtUARTState *rx_owner = opaque;
+    OtUARTState *s = rx_owner->rx_target_uart;
+    if (!s) {
+        return 0;
+    }
+
+    if (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) {
+        return (int)OT_UART_RX_FIFO_SIZE;
+    }
 
     if (s->regs[R_CTRL] & R_CTRL_RX_MASK) {
-        return (int)fifo8_num_free(&s->rx_fifo);
+        int free_space = (int)fifo8_num_free(&s->rx_fifo);
+        if (free_space == 0 &&
+            (s->regs[R_INTR_ENABLE] & INTR_RX_OVERFLOW_MASK) &&
+            !(s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
+            !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK)) {
+            /*
+             * When the RX FIFO is full, RX watermark interrupt is disabled,
+             * and RX overflow interrupt is enabled (and not yet pending),
+             * accept 1 byte so incoming serial data triggers INTR_RX_OVERFLOW_MASK
+             * in ot_uart_receive_bytes without dropping normal burst bytes.
+             */
+            return 1;
+        }
+        return free_space;
     }
 
     return 0;
 }
 
-static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
+static void ot_uart_receive_bytes(OtUARTState *s, OtUARTState *rx_owner,
+                                  const uint8_t *buf, int size)
 {
-    OtUARTState *s = opaque;
-    size_t count = MIN(fifo8_num_free(&s->rx_fifo), (size_t)size);
-
     if (size && !s->toggle_break) {
         /* no longer breaking, so emulate idle in oversampled VAL register */
         s->in_break = false;
     }
+
+    if (rx_owner && (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) {
+        if (ot_uart_is_tx_enabled(s)) {
+            CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
+            if (qemu_chr_fe_backend_connected(tx_chr)) {
+                qemu_chr_fe_write_all(tx_chr, buf, size);
+            }
+        }
+        return;
+    }
+
+    if (rx_owner && !ot_uart_check_pty_parity(s, rx_owner)) {
+        s->regs[R_INTR_STATE] |= INTR_RX_PARITY_ERR_MASK;
+        ot_uart_update_irqs(s);
+        return;
+    }
+
+    if (!(s->regs[R_CTRL] & R_CTRL_RX_MASK)) {
+        return;
+    }
+
+    size_t count = MIN(fifo8_num_free(&s->rx_fifo), (size_t)size);
 
     for (size_t index = 0; index < count; index++) {
         fifo8_push(&s->rx_fifo, buf[index]);
@@ -345,12 +523,26 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
     ot_uart_update_irqs(s);
 }
 
+static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
+{
+    OtUARTState *rx_owner = opaque;
+    OtUARTState *s = rx_owner->rx_target_uart;
+    if (!s) {
+        return;
+    }
+    ot_uart_receive_bytes(s, rx_owner, buf, size);
+}
+
 static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
 {
-    OtUARTState *s = opaque;
+    OtUARTState *rx_owner = opaque;
+    OtUARTState *s = rx_owner->rx_target_uart;
+    if (!s) {
+        return;
+    }
 
     if (event == CHR_EVENT_BREAK) {
-        if (!s->in_break || !s->oversample_break) {
+        if (!s->in_break) {
             /* ignore CTRL.RXBLVL as we have no notion of break "time" */
             s->regs[R_INTR_STATE] |= INTR_RX_BREAK_ERR_MASK;
             ot_uart_update_irqs(s);
@@ -359,6 +551,9 @@ static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
         } else if (s->toggle_break) {
             /* emulate toggling break off in the oversampled VAL register */
             s->in_break = false;
+        } else {
+            s->regs[R_INTR_STATE] |= INTR_RX_BREAK_ERR_MASK;
+            ot_uart_update_irqs(s);
         }
     }
 }
@@ -384,7 +579,7 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
     ot_uart_update_irqs(s);
 
     if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(&s->chr);
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
 
     return val;
@@ -392,12 +587,65 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
 
 static void ot_uart_reset_tx_fifo(OtUARTState *s)
 {
+    if (s->tx_timer) {
+        timer_del(s->tx_timer);
+    }
+    s->tx_busy = false;
     fifo8_reset(&s->tx_fifo);
     /*
      * tx_done is event-type and latched here; tx_empty and tx_watermark are
      * status-type and follow the (now empty) FIFO live via ot_uart_update_irqs.
      */
     s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
+}
+
+static void ot_uart_send_byte(OtUARTState *s, uint8_t ch)
+{
+    if (ot_uart_is_sys_loopack_enabled(s)) {
+        ot_uart_receive_bytes(s, NULL, &ch, 1);
+    } else {
+        CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
+        if (qemu_chr_fe_backend_connected(tx_chr)) {
+            qemu_chr_fe_write_all(tx_chr, &ch, 1);
+        }
+    }
+}
+
+static uint64_t ot_uart_char_ns(const OtUARTState *s)
+{
+    uint32_t nco = FIELD_EX32(s->regs[R_CTRL], CTRL, NCO);
+    if (nco && s->pclk) {
+        uint64_t baud = ((uint64_t)nco * (uint64_t)s->pclk) >>
+                        (R_CTRL_NCO_LENGTH + 4);
+        if (baud) {
+            return (10ULL * NANOSECONDS_PER_SECOND) / baud;
+        }
+    }
+    return 86805ULL;
+}
+
+static void ot_uart_tx_timer_cb(void *opaque)
+{
+    OtUARTState *s = opaque;
+
+    if (!ot_uart_is_tx_enabled(s)) {
+        s->tx_busy = false;
+        ot_uart_update_irqs(s);
+        return;
+    }
+
+    if (!fifo8_is_empty(&s->tx_fifo)) {
+        uint8_t ch = fifo8_pop(&s->tx_fifo);
+        s->tx_busy = true;
+        ot_uart_send_byte(s, ch);
+        timer_mod(s->tx_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + ot_uart_char_ns(s));
+        ot_uart_update_irqs(s);
+    } else {
+        s->tx_busy = false;
+        s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
+        ot_uart_update_irqs(s);
+    }
 }
 
 static void ot_uart_xmit(OtUARTState *s)
@@ -414,7 +662,7 @@ static void ot_uart_xmit(OtUARTState *s)
         /* system loopback mode, just forward to RX FIFO */
         uint32_t count = fifo8_num_used(&s->tx_fifo);
         buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-        ot_uart_receive(s, buf, (int)size);
+        ot_uart_receive_bytes(s, NULL, buf, (int)size);
         count -= size;
         /*
          * there may be more data to send if data wraps around the end of TX
@@ -422,11 +670,12 @@ static void ot_uart_xmit(OtUARTState *s)
          */
         if (count) {
             buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-            ot_uart_receive(s, buf, (int)size);
+            ot_uart_receive_bytes(s, NULL, buf, (int)size);
         }
     } else {
+        CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
         /* instant drain the fifo when there's no back-end */
-        if (!qemu_chr_fe_backend_connected(&s->chr)) {
+        if (!qemu_chr_fe_backend_connected(tx_chr)) {
             ot_uart_reset_tx_fifo(s);
             ot_uart_update_irqs(s);
             return;
@@ -436,7 +685,7 @@ static void ot_uart_xmit(OtUARTState *s)
         buf =
             fifo8_peek_bufptr(&s->tx_fifo, fifo8_num_used(&s->tx_fifo), &size);
         /* send as much as possible */
-        ret = qemu_chr_fe_write(&s->chr, buf, (int)size);
+        ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
         /* if some characters where sent, remove them from the FIFO */
         if (ret >= 0) {
             fifo8_drop(&s->tx_fifo, ret);
@@ -452,6 +701,30 @@ static void ot_uart_xmit(OtUARTState *s)
     ot_uart_update_irqs(s);
 }
 
+static void ot_uart_tx_schedule(OtUARTState *s)
+{
+    if (!ot_uart_is_tx_enabled(s)) {
+        return;
+    }
+    bool use_timer =
+        (s->regs[R_INTR_ENABLE] &
+         (INTR_TX_DONE_MASK | INTR_TX_WATERMARK_MASK | INTR_TX_EMPTY_MASK)) !=
+            0 ||
+        s->tx_busy;
+    if (!use_timer) {
+        ot_uart_xmit(s);
+        return;
+    }
+    if (!s->tx_busy && !fifo8_is_empty(&s->tx_fifo)) {
+        uint8_t ch = fifo8_pop(&s->tx_fifo);
+        s->tx_busy = true;
+        ot_uart_send_byte(s, ch);
+        timer_mod(s->tx_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + ot_uart_char_ns(s));
+    }
+    ot_uart_update_irqs(s);
+}
+
 static gboolean ot_uart_watch_cb(void *do_not_use, GIOCondition cond,
                                  void *opaque)
 {
@@ -460,7 +733,7 @@ static gboolean ot_uart_watch_cb(void *do_not_use, GIOCondition cond,
     (void)cond;
 
     s->watch_tag = 0;
-    ot_uart_xmit(s);
+    ot_uart_tx_schedule(s);
 
     return FALSE;
 }
@@ -475,7 +748,7 @@ static void uart_write_tx_fifo(OtUARTState *s, uint8_t val)
     fifo8_push(&s->tx_fifo, val);
 
     if (ot_uart_is_tx_enabled(s)) {
-        ot_uart_xmit(s);
+        ot_uart_tx_schedule(s);
     } else {
         /* tx_watermark/tx_empty are status-type: refresh from the new level. */
         ot_uart_update_irqs(s);
@@ -533,7 +806,10 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         /* report TXEMPTY+TXIDLE or TXFULL */
         switch (fifo8_num_used(&s->tx_fifo)) {
         case 0:
-            val32 |= R_STATUS_TXEMPTY_MASK | R_STATUS_TXIDLE_MASK;
+            val32 |= R_STATUS_TXEMPTY_MASK;
+            if (!s->tx_busy) {
+                val32 |= R_STATUS_TXIDLE_MASK;
+            }
             break;
         case OT_UART_TX_FIFO_SIZE:
             val32 |= R_STATUS_TXFULL_MASK;
@@ -638,6 +914,9 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= INTR_MASK;
         s->regs[R_INTR_ENABLE] = val32;
         ot_uart_update_irqs(s);
+        if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        }
         break;
     case R_INTR_TEST:
         val32 &= INTR_MASK;
@@ -662,13 +941,15 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         if (change & R_CTRL_NCO_MASK) {
             ot_uart_check_baudrate(s);
         }
-        if ((change & R_CTRL_RX_MASK) && ot_uart_is_rx_enabled(s) &&
+        if ((change & (R_CTRL_RX_MASK | R_CTRL_LLPBK_MASK)) &&
+            (ot_uart_is_rx_enabled(s) ||
+             (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
             !ot_uart_is_sys_loopack_enabled(s)) {
-            qemu_chr_fe_accept_input(&s->chr);
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         }
         if ((change & R_CTRL_TX_MASK) && ot_uart_is_tx_enabled(s)) {
             /* try sending pending data from TX FIFO if any */
-            ot_uart_xmit(s);
+            ot_uart_tx_schedule(s);
         }
         break;
     case R_WDATA:
@@ -729,7 +1010,7 @@ static const Property ot_uart_properties[] = {
     DEFINE_PROP_LINK("clock-src", OtUARTState, clock_src, TYPE_DEVICE,
                      DeviceState *),
     DEFINE_PROP_BOOL("oversample-break", OtUARTState, oversample_break, false),
-    DEFINE_PROP_BOOL("toggle-break", OtUARTState, toggle_break, false),
+    DEFINE_PROP_BOOL("toggle-break", OtUARTState, toggle_break, true),
 };
 
 static int ot_uart_be_change(void *opaque)
@@ -768,14 +1049,13 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     ot_uart_reset_rx_fifo(s);
 
     /*
-     * do not reset `s->in_break`, as that tracks whether we are currently
-     * receiving a break condition over UART RX from some device talking
-     * to OpenTitan, which should survive resets. The QEMU CharDev only
-     * supports transient break events and not the notion of holding the
-     * UART in break, so remembering breaks like this is required to
-     * support mocking of break conditions in the oversampled `VAL` reg.
+     * do not reset `s->in_break` if `oversample_break` is set, as that tracks
+     * whether we are currently receiving a break condition over UART RX from
+     * some device talking to OpenTitan, which should survive resets.
      */
-    if (s->in_break) {
+    if (!s->oversample_break) {
+        s->in_break = false;
+    } else if (s->in_break) {
         /* ignore CTRL.RXBLVL as we have no notion of break "time" */
         s->regs[R_INTR_STATE] |= INTR_RX_BREAK_ERR_MASK;
     }
@@ -809,6 +1089,14 @@ static void ot_uart_realize(DeviceState *dev, Error **errp)
 
     fifo8_create(&s->tx_fifo, OT_UART_TX_FIFO_SIZE);
     fifo8_create(&s->rx_fifo, OT_UART_RX_FIFO_SIZE);
+
+    s->tx_chr_owner = s;
+    s->rx_target_uart = s;
+    s->tx_timer = timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_tx_timer_cb, s);
+    if (s->ot_id[0] == 'u' && s->ot_id[1] >= '0' && s->ot_id[1] <= '3' &&
+        s->ot_id[2] == '\0') {
+        ot_uart_instances[s->ot_id[1] - '0'] = s;
+    }
 
     qemu_chr_fe_set_handlers(&s->chr, ot_uart_can_receive, ot_uart_receive,
                              ot_uart_event_handler, ot_uart_be_change, s, NULL,
