@@ -269,6 +269,7 @@ typedef struct OtHMACRegisters OtHMACRegisters;
 struct OtHMACContext {
     hash_state state;
     OtHMACDigestSize digest_size_started;
+    bool msg_length_overflow;
 };
 typedef struct OtHMACContext OtHMACContext;
 
@@ -465,9 +466,9 @@ static void ot_hmac_restore_context(OtHMACState *s)
      * SW interface. This is because the extra block containing the key XORed
      * with the inner pad is not included in the SW-visible message length.
      */
-    unsigned msg_length = s->regs->msg_length;
+    uint64_t msg_length = s->regs->msg_length;
     if (s->regs->cfg & R_CFG_HMAC_EN_MASK) {
-        msg_length += ot_hmac_get_block_size_bytes(s) * 8u;
+        msg_length += (uint64_t)ot_hmac_get_block_size_bytes(s) * 8u;
     }
 
     switch (s->ctx->digest_size_started) {
@@ -657,6 +658,9 @@ static void ot_hmac_process_fifo(OtHMACState *s)
     }
 
     if (s->regs->cmd & R_CMD_HASH_PROCESS_MASK) {
+        if (s->ctx->msg_length_overflow) {
+            return;
+        }
         ot_hmac_compute_digest(s);
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
         s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
@@ -856,7 +860,13 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
     case R_CFG:
         /* ignore write if engine is not idle */
         if (s->regs->cmd) {
-            break;
+            if (s->ctx->msg_length_overflow && !(val32 & R_CFG_SHA_EN_MASK)) {
+                s->regs->cmd = 0;
+                s->ctx->msg_length_overflow = false;
+                fifo8_reset(&s->input_fifo);
+            } else {
+                break;
+            }
         }
 
         val32 &=
@@ -916,6 +926,7 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             }
             s->regs->cmd = R_CMD_HASH_START_MASK;
             s->regs->msg_length = 0;
+            s->ctx->msg_length_overflow = false;
 
             ibex_irq_set(&s->clock_active, true);
 
@@ -970,6 +981,7 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
         if (val32 & R_CMD_HASH_STOP_MASK) {
             s->regs->cmd = R_CMD_HASH_STOP_MASK;
+            s->ctx->msg_length_overflow = false;
 
             /*
              * trigger delayed processing of FIFO until the next block is
@@ -991,6 +1003,7 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             }
 
             s->regs->cmd = R_CMD_HASH_CONTINUE_MASK;
+            s->ctx->msg_length_overflow = false;
 
             /*
              * Hold the previous digest size until the HMAC is started with the
@@ -1193,7 +1206,11 @@ static void ot_hmac_fifo_write(void *opaque, hwaddr addr, uint64_t value,
         value >>= 8u;
     }
 
-    s->regs->msg_length += (uint64_t)size * 8u;
+    uint64_t add_bits = (uint64_t)size * 8u;
+    if (s->regs->msg_length + add_bits < s->regs->msg_length) {
+        s->ctx->msg_length_overflow = true;
+    }
+    s->regs->msg_length += add_bits;
 
     /*
      * Note: real HW may stall the bus till some room is available in the input
