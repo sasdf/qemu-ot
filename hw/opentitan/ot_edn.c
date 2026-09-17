@@ -30,6 +30,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/typedefs.h"
+#include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_csrng.h"
@@ -355,6 +356,9 @@ int ot_edn_request_entropy(OtEDNState *s, unsigned ep_id)
 
     trace_ot_edn_schedule(s->rng.appid, "external entropy request");
     qemu_bh_schedule(s->ep_bh);
+    if (current_cpu) {
+        cpu_exit(current_cpu);
+    }
 
     return 0;
 }

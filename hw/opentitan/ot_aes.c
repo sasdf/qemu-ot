@@ -1027,6 +1027,9 @@ static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
 
     ot_prng_reseed(s->prng, bits);
 
+    ot_aes_update_key(s);
+    ot_aes_update_config(s);
+
     ot_aes_handle_trigger(s);
 }
 
@@ -1235,7 +1238,8 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
                           __func__, s->ot_id);
             break;
         }
-        if (ot_aes_is_idle(s)) {
+        if (ot_aes_is_idle(s) ||
+            (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
             r->keyshare[reg - R_KEY_SHARE0_0] = val32;
             set_bit((int64_t)(reg - R_KEY_SHARE0_0), r->keyshare_bm);
             ot_aes_update_key(s);
@@ -1246,7 +1250,8 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IV_1:
     case R_IV_2:
     case R_IV_3:
-        if (ot_aes_is_idle(s)) {
+        if (ot_aes_is_idle(s) ||
+            (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
             r->iv[reg - R_IV_0] = val32;
             set_bit((int64_t)(reg - R_IV_0), r->iv_bm);
             ot_aes_update_iv(s);
