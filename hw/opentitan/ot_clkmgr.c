@@ -958,6 +958,14 @@ static gint ot_clkmgr_compare_swcg_by_name(gconstpointer a, gconstpointer b)
     const OtClkMgrSwCgClock *sa = a;
     const OtClkMgrSwCgClock *sb = b;
 
+    if (sa->output && sb->output && sa->output->clock && sb->output->clock) {
+        int div_diff = (int)sb->output->clock->divider -
+                       (int)sa->output->clock->divider;
+        if (div_diff != 0) {
+            return div_diff;
+        }
+    }
+
     return strcmp(sa->name, sb->name);
 }
 
@@ -1386,10 +1394,7 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
     s->regs[R_CLK_HINTS_STATUS] = 0xfu;
     s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
 
-    for (unsigned ix = 0; ix < s->swcg_count; ix++) {
-        g_assert(s->swcgs[ix] && s->swcgs[ix]->output);
-        s->swcgs[ix]->output->disabled = 0;
-    }
+    ot_clkmgr_update_swcg(s, (1u << s->swcg_count) - 1u);
 
     ot_clkmgr_reset_measure_regs(s);
 

@@ -42,6 +42,7 @@
 #include "hw/opentitan/ot_rom_ctrl.h"
 #include "hw/opentitan/ot_rom_ctrl_img.h"
 #include "hw/riscv/ibex_common.h"
+#include "hw/sysbus.h"
 #include "trace.h"
 
 typedef struct OtCommonObjectNode {
@@ -430,4 +431,15 @@ void ot_common_ignore_chr_status_lines(CharFrontend *chr)
     tty.c_cflag |= CLOCAL; /* ignore modem status lines */
     tcsetattr(fioc->fd, TCSANOW, &tty);
 #endif
+}
+
+void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
+{
+    CPUState *cpu = ot_common_get_local_cpu(dev);
+    if (cpu && current_cpu == cpu) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+        hwaddr base = sbd->mmio[0].addr;
+        dev->mem_reentrancy_guard.engaged_in_io = false;
+        ibex_stall_cpu_on_unclocked_mmio(cpu, base + offset);
+    }
 }

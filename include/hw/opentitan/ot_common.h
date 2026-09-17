@@ -403,4 +403,6 @@ void ot_common_configure_device_opts(DeviceState **devices, unsigned count);
                                    module_obj_name, MODULE_OBJ_NAME, \
                                    PARENT_MODULE_OBJ_NAME, true, { NULL })
 
+void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset);
+
 #endif /* HW_OPENTITAN_OT_COMMON_H */

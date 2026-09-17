@@ -500,6 +500,11 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     uint32_t val32;
 
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return 0;
+    }
+
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
     case R_INTR_STATE:
@@ -606,6 +611,11 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
     OtUARTState *s = opaque;
     (void)size;
     uint32_t val32 = val64;
+
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return;
+    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -809,6 +819,7 @@ static void ot_uart_init(Object *obj)
 {
     OtUARTState *s = OT_UART(obj);
 
+    s->pclk = 1u;
     for (unsigned index = 0; index < OT_UART_IRQ_NUM; index++) {
         ibex_sysbus_init_irq(obj, &s->irqs[index]);
     }

@@ -432,6 +432,7 @@ target_ulong helper_mret(CPURISCVState *env)
             cpu_interrupt(env_cpu(env), CPU_INTERRUPT_RNMI);
         }
     } else {
+        env->sync_exc_seen = false;
         mstatus = set_field(mstatus, MSTATUS_MPIE, 1);
         mstatus = set_field(mstatus, MSTATUS_MPP,
                             riscv_has_ext(env, RVU) ? PRV_U : PRV_M);
@@ -606,6 +607,18 @@ void helper_wfi(CPURISCVState *env)
         riscv_raise_exception(env, RISCV_EXCP_VIRT_INSTRUCTION_FAULT, GETPC());
     } else {
         if (!unlikely(env->debugger || env->debug_cs)) {
+            env->wfi_pc = env->pc - 4;
+            uint32_t insn = cpu_ldl_code(env, env->wfi_pc - 4);
+            if ((insn & 0x7f) == 0x23) {
+                uint32_t rs1 = (insn >> 15) & 0x1f;
+                int32_t imm = (((int32_t)insn >> 25) << 5) |
+                              ((insn >> 7) & 0x1f);
+                env->last_data_addr = env->gpr[rs1] + imm;
+            } else if ((insn & 0x7f) == 0x03) {
+                uint32_t rs1 = (insn >> 15) & 0x1f;
+                int32_t imm = (int32_t)insn >> 20;
+                env->last_data_addr = env->gpr[rs1] + imm;
+            }
             cs->halted = 1;
             cs->exception_index = EXCP_HLT;
             cpu_loop_exit(cs);

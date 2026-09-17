@@ -37,6 +37,7 @@
 #include "qemu/error-report.h"
 #include "qemu/fifo8.h"
 #include "qemu/log.h"
+#include "qapi/error.h"
 #include "chardev/char-fe.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
@@ -45,6 +46,7 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/riscv/ibex_clock_src.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "trace.h"
@@ -525,6 +527,8 @@ struct OtUsbdevState {
     char *usbclk_name;
     /* Name of the AON clock. */
     char *aonclk_name;
+    unsigned pclk;
+    const char *clock_src_name;
 
     IbexIRQ irqs[USBDEV_INTR_NUM];
     IbexIRQ alert;
@@ -1839,11 +1843,25 @@ ot_usbdev_update_ep_stalled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
  * Register read/write handling
  */
 
+static void ot_usbdev_clock_input(void *opaque, int irq, int level)
+{
+    OtUsbdevState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->pclk = (unsigned)level;
+}
+
 static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtUsbdevState *s = opaque;
     (void)size;
     uint32_t val32;
+
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return 0;
+    }
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -1944,6 +1962,11 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     OtUsbdevState *s = opaque;
     (void)size;
     uint32_t val32 = (uint32_t)val64;
+
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return;
+    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -2091,6 +2114,12 @@ static uint64_t ot_usbdev_buffer_read(void *opaque, hwaddr addr, unsigned size)
     OtUsbdevState *s = opaque;
     (void)size;
 
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
+                                              USBDEV_BUFFER_OFFSET + addr);
+        return 0;
+    }
+
     hwaddr word = R32_OFF(addr);
     uint32_t val32 = s->buffer[word];
 
@@ -2106,6 +2135,12 @@ static void ot_usbdev_buffer_write(void *opaque, hwaddr addr, uint64_t val64,
     OtUsbdevState *s = opaque;
     (void)size;
     uint32_t val32 = val64;
+
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
+                                              USBDEV_BUFFER_OFFSET + addr);
+        return;
+    }
 
     hwaddr word = R32_OFF(addr);
     s->buffer[word] = val32;
@@ -2819,6 +2854,16 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
     fifo8_reset(&s->av_setup_fifo);
     fifo8_reset(&s->av_out_fifo);
 
+    if (!s->clock_src_name && s->clock_src && s->usbclk_name) {
+        IbexClockSrcIfClass *ic = IBEX_CLOCK_SRC_IF_GET_CLASS(s->clock_src);
+        IbexClockSrcIf *ii = IBEX_CLOCK_SRC_IF(s->clock_src);
+
+        s->clock_src_name =
+            ic->get_clock_source(ii, s->usbclk_name, DEVICE(s), &error_fatal);
+        qemu_irq in_irq = qdev_get_gpio_in_named(DEVICE(s), "clock-in", 0);
+        qdev_connect_gpio_out_named(s->clock_src, s->clock_src_name, 0, in_irq);
+    }
+
     ot_usbdev_update_status_irqs(s);
     ot_usbdev_update_irqs(s);
 }
@@ -2857,6 +2902,8 @@ static void ot_usbdev_realize(DeviceState *dev, Error **errp)
     g_assert(s->usbclk_name);
     g_assert(s->aonclk_name);
 
+    qdev_init_gpio_in_named(DEVICE(s), &ot_usbdev_clock_input, "clock-in", 1);
+
     /* If not in VBUS override mode, the VBUS gate starts on by default. */
     if (!s->vbus_override) {
         s->vbus_gate = true;
@@ -2867,6 +2914,7 @@ static void ot_usbdev_init(Object *obj)
 {
     OtUsbdevState *s = OT_USBDEV(obj);
 
+    s->pclk = 1u;
     for (unsigned idx = 0u; idx < ARRAY_SIZE(s->irqs); idx++) {
         ibex_sysbus_init_irq(obj, &s->irqs[idx]);
     }

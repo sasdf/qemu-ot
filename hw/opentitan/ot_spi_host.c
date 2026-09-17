@@ -1045,6 +1045,11 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
     OtSPIHostState *s = opaque;
     uint32_t val32;
 
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return 0u;
+    }
+
     if (s->on_reset) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: device in reset\n", __func__,
                       s->ot_id);
@@ -1155,6 +1160,11 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtSPIHostState *s = opaque;
     uint32_t val32 = val64;
+
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return;
+    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -1522,6 +1532,7 @@ static void ot_spi_host_instance_init(Object *obj)
 {
     OtSPIHostState *s = OT_SPI_HOST(obj);
 
+    s->pclk = 1u;
     memory_region_init_io(&s->mmio, obj, &ot_spi_host_ops, s, TYPE_OT_SPI_HOST,
                           0x40u);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);

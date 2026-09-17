@@ -880,4 +880,14 @@ static void ibex_register_types(void)
     monitor_register_hmp("ibex", true, &hmp_info_ibex);
 }
 
+void ibex_get_crash_dump(CPUState *cs, uint32_t dump[8])
+{
+    riscv_cpu_get_crash_dump(cs, dump);
+}
+
+void ibex_stall_cpu_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr)
+{
+    riscv_cpu_stall_on_unclocked_mmio(cs, phys_addr);
+}
+
 type_init(ibex_register_types);

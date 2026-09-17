@@ -510,6 +510,14 @@ struct CPUArchState {
     target_ulong secureseed;
 #endif
 
+    bool sync_exc_seen;
+    bool double_fault_seen;
+    bool unclocked_mmio_stall;
+    target_ulong prev_exception_pc;
+    target_ulong prev_exception_addr;
+    target_ulong last_data_addr;
+    target_ulong wfi_pc;
+
     /* Fields from here on are preserved across CPU reset. */
     QEMUTimer *stimer; /* Internal timer for S-mode interrupt */
     QEMUTimer *vstimer; /* Internal timer for VS-mode interrupt */
@@ -685,6 +693,8 @@ uint64_t riscv_cpu_update_mip(CPURISCVState *env, uint64_t mask,
                               uint64_t value);
 void riscv_cpu_set_rnmi(RISCVCPU *cpu, uint32_t irq, bool level);
 void riscv_cpu_set_clock_freq(CPUState *cs, uint64_t freq_hz);
+void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8]);
+void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr);
 void riscv_cpu_interrupt(CPURISCVState *env);
 #define BOOL_TO_MASK(x) (-!!(x)) /* helper for riscv_cpu_update_mip value */
 void riscv_cpu_set_rdtime_fn(CPURISCVState *env, uint64_t (*fn)(void *),

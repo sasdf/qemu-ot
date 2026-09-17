@@ -34,6 +34,7 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "hw/opentitan/ot_alert.h"
@@ -168,9 +169,11 @@ struct OtRstMgrState {
     IbexIRQ sw_reset;
     IbexIRQ alerts[PARAM_NUM_ALERTS];
     QEMUBH *bus_reset_bh;
+    QEMUTimer *sw_reset_timer;
     CPUState *cpu;
 
     uint32_t *regs;
+    uint32_t cpu_info_dump[8];
     bool por; /* Power-On Reset property */
 
     char *ot_id;
@@ -285,6 +288,13 @@ static void ot_rstmgr_update_alerts(OtRstMgrState *s)
     }
 }
 
+static void ot_rstmgr_sw_reset_timer_cb(void *opaque)
+{
+    OtRstMgrState *s = opaque;
+
+    ibex_irq_raise(&s->sw_reset);
+}
+
 static void ot_rstmgr_reset_bus(void *opaque)
 {
     OtRstMgrState *s = opaque;
@@ -299,6 +309,10 @@ static void ot_rstmgr_reset_bus(void *opaque)
         bql_lock();
     }
     qemu_notify_event();
+
+    if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
+        ibex_get_crash_dump(s->cpu, s->cpu_info_dump);
+    }
 
     ibex_irq_raise(&s->soc_reset);
 }
@@ -412,8 +426,6 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_ALERT_INFO:
     case R_CPU_REGWEN:
     case R_CPU_INFO_CTRL:
-    case R_CPU_INFO_ATTR:
-    case R_CPU_INFO:
     case R_SW_RST_REGWEN_0:
     case R_SW_RST_REGWEN_1:
     case R_SW_RST_REGWEN_2:
@@ -432,6 +444,13 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_SW_RST_CTRL_N_7:
     case R_ERR_CODE:
         val32 = s->regs[reg];
+        break;
+    case R_CPU_INFO_ATTR:
+        val32 = 8u;
+        break;
+    case R_CPU_INFO:
+        val32 = s->cpu_info_dump[FIELD_EX32(s->regs[R_CPU_INFO_CTRL],
+                                            CPU_INFO_CTRL, INDEX) % 8u];
         break;
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x02%x (%s)\n",
@@ -473,8 +492,12 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             /*
              * "Upon completion of reset, this bit is automatically cleared by
              * hardware."
+             * Schedule software reset request with a short delay (1 us) to model
+             * pwrmgr synchronization latency, allowing software to execute
+             * trailing instructions (e.g. wfi) before reset assertion.
              */
-            ibex_irq_raise(&s->sw_reset);
+            timer_mod(s->sw_reset_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
             if (s->fatal_reset) {
                 s->fatal_reset--;
                 if (!s->fatal_reset) {
@@ -593,12 +616,14 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
     }
 
     qemu_bh_cancel(s->bus_reset_bh);
+    timer_del(s->sw_reset_timer);
 
     uint32_t reset_info = s->regs[R_RESET_INFO];
 
     memset(s->regs, 0, REGS_SIZE);
 
     if (s->por) {
+        memset(s->cpu_info_dump, 0, sizeof(s->cpu_info_dump));
         s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK;
         s->por = false;
         ot_rstmgr_last_reset_low_power = false;
@@ -684,6 +709,8 @@ static void ot_rstmgr_init(Object *obj)
                             OT_RSTMGR_RST_REQ, 1);
 
     s->bus_reset_bh = qemu_bh_new(&ot_rstmgr_reset_bus, s);
+    s->sw_reset_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
+                                     &ot_rstmgr_sw_reset_timer_cb, s);
 }
 
 static void ot_rstmgr_class_init(ObjectClass *klass, const void *data)
