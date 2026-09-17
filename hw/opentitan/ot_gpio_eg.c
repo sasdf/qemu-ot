@@ -215,17 +215,21 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     if (s->pinmux) {
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
-            unsigned pad = (insel >= 2u && (insel - 2u) < PARAM_NUM_IO) ?
-                               (insel - 2u) :
-                               g;
-            if ((s->data_ib >> pad) & 1u) {
+            int mio_pad = (insel >= 2u && (insel - 2u) < 47u) ?
+                              (int)(insel - 2u) :
+                              -1;
+            unsigned host_pin = (mio_pad >= 0 && mio_pad < (int)PARAM_NUM_IO) ?
+                                    (unsigned)mio_pad :
+                                    g;
+            if ((s->data_ib >> host_pin) & 1u) {
                 routed_ib |= (1u << g);
             }
-            if (!((s->data_bi >> pad) & 1u)) {
+            if (!((s->data_bi >> host_pin) & 1u)) {
                 routed_bi &= ~(1u << g);
             }
-            if (((s->data_oe >> g) & 1u) &&
-                ot_pinmux_eg_get_mio_outsel(s->pinmux, pad) == (3u + g)) {
+            if (((s->data_oe >> g) & 1u) && mio_pad >= 0 &&
+                ot_pinmux_eg_get_mio_outsel(s->pinmux, (unsigned)mio_pad) ==
+                    (3u + g)) {
                 eff_oe |= (1u << g);
             }
         }
@@ -601,7 +605,7 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
             }
         }
     }
-    if (!((s->data_bi >> pad) & 1u)) {
+    if (pad < PARAM_NUM_IO && !((s->data_bi >> pad) & 1u)) {
         return (bool)((s->data_ib >> pad) & 1u);
     }
     return false;
