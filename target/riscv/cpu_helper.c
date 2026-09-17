@@ -691,6 +691,12 @@ void riscv_cpu_set_geilen(CPURISCVState *env, target_ulong geilen)
     env->geilen = geilen;
 }
 
+void riscv_cpu_set_clock_freq(CPUState *cs, uint64_t freq_hz)
+{
+    RISCVCPU *cpu = RISCV_CPU(cs);
+    cpu->env.cpu_freq_hz = freq_hz;
+}
+
 void riscv_cpu_set_rnmi(RISCVCPU *cpu, uint32_t irq, bool level)
 {
     CPURISCVState *env = &cpu->env;

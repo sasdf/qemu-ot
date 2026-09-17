@@ -898,10 +898,12 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
             OT_DJ_SOC_GPIO_ALERT(3, 104)
         ),
         .link = IBEXDEVICELINKDEFS(
+            OT_DJ_SOC_DEVLINK("clock-src", CLKMGR),
             OT_DJ_SOC_DEVLINK("edn", EDN0),
             OT_DJ_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP("clock-name", "infra.main"),
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
             IBEX_DEV_UINT_PROP("num-regions", OT_DJ_IBEX_WRAPPER_NUM_REGIONS)
         ),

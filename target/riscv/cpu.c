@@ -24,6 +24,7 @@
 #include "cpu.h"
 #include "cpu_vendorid.h"
 #include "internals.h"
+#include "pmu.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
@@ -789,6 +790,7 @@ static void riscv_cpu_reset_hold(Object *obj, ResetType type)
 
     env->rnmip = 0;
     env->nmi_mode = false;
+    riscv_pmu_reset(env);
     if (cpu->cfg.ext_smrnmi) {
         env->mnstatus = set_field(env->mnstatus, MNSTATUS_NMIE, false);
     }

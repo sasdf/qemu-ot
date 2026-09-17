@@ -55,6 +55,7 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/riscv/ibex_clock_src.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "exec/cpu-interrupt.h"
@@ -235,7 +236,11 @@ struct OtIbexWrapperState {
     bool esc_rx;
     uint32_t nmi_in;
 
+    uint32_t pclk;
+    const char *clock_src_name;
     char *ot_id;
+    char *clock_name;
+    DeviceState *clock_src;
     char *lc_ignore_ids;
     OtEDNState *edn;
     OtVMapperState *vmapper;
@@ -915,6 +920,7 @@ static void ot_ibex_wrapper_cpu_enable_recv(void *opaque, int n, int level)
 }
 
 extern void riscv_cpu_set_rnmi(CPUState *cpu, uint32_t irq, bool level);
+extern void riscv_cpu_set_clock_freq(CPUState *cpu, uint64_t freq_hz);
 
 static void ot_ibex_wrapper_update_nmi(OtIbexWrapperState *s)
 {
@@ -953,6 +959,17 @@ static void ot_ibex_wrapper_wdog_bark_rx(void *opaque, int n, int level)
         s->nmi_in &= ~NMI_WDOG_EN_MASK;
     }
     ot_ibex_wrapper_update_nmi(s);
+}
+
+static void ot_ibex_wrapper_clock_input(void *opaque, int irq, int level)
+{
+    OtIbexWrapperState *s = opaque;
+    (void)irq;
+
+    s->pclk = (uint32_t)level;
+    if (s->cpu && s->pclk) {
+        riscv_cpu_set_clock_freq(s->cpu, s->pclk);
+    }
 }
 
 /*
@@ -1416,6 +1433,9 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
 /* all properties are optional */
 static const Property ot_ibex_wrapper_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtIbexWrapperState, ot_id),
+    DEFINE_PROP_STRING("clock-name", OtIbexWrapperState, clock_name),
+    DEFINE_PROP_LINK("clock-src", OtIbexWrapperState, clock_src, TYPE_DEVICE,
+                     DeviceState *),
     DEFINE_PROP_LINK("edn", OtIbexWrapperState, edn, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_LINK("vmapper", OtIbexWrapperState, vmapper, TYPE_OT_VMAPPER,
                      OtVMapperState *),
@@ -1468,6 +1488,20 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
             g_assert_not_reached();
         }
         s->cpu = cpu;
+    }
+
+    if (s->clock_src && !s->clock_src_name) {
+        IbexClockSrcIfClass *ic = IBEX_CLOCK_SRC_IF_GET_CLASS(s->clock_src);
+        IbexClockSrcIf *ii = IBEX_CLOCK_SRC_IF(s->clock_src);
+
+        s->clock_src_name =
+            ic->get_clock_source(ii, s->clock_name, DEVICE(s), &error_fatal);
+        qemu_irq in_irq = qdev_get_gpio_in_named(DEVICE(s), "clock-in", 0);
+        qdev_connect_gpio_out_named(s->clock_src, s->clock_src_name, 0, in_irq);
+    }
+
+    if (s->cpu) {
+        riscv_cpu_set_clock_freq(s->cpu, s->pclk ? s->pclk : 24000000u);
     }
 
     for (unsigned slot = 0; slot < (unsigned)s->num_regions; slot++) {
@@ -1571,6 +1605,8 @@ static void ot_ibex_wrapper_init(Object *obj)
                             OT_ALERT_ESCALATE, 1);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_wdog_bark_rx,
                             OT_IBEX_WRAPPER_WDOG_BARK, 1);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_clock_input,
+                            "clock-in", 1);
 
     s->log_engine = g_new0(OtIbexTestLogEngine, 1u);
 }

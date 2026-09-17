@@ -517,6 +517,7 @@ struct CPUArchState {
 
     hwaddr kernel_addr;
     hwaddr fdt_addr;
+    uint64_t cpu_freq_hz;
 
 #ifdef CONFIG_KVM
     /* kvm timer */
@@ -683,6 +684,7 @@ int riscv_cpu_claim_interrupts(RISCVCPU *cpu, uint64_t interrupts);
 uint64_t riscv_cpu_update_mip(CPURISCVState *env, uint64_t mask,
                               uint64_t value);
 void riscv_cpu_set_rnmi(RISCVCPU *cpu, uint32_t irq, bool level);
+void riscv_cpu_set_clock_freq(CPUState *cs, uint64_t freq_hz);
 void riscv_cpu_interrupt(CPURISCVState *env);
 #define BOOL_TO_MASK(x) (-!!(x)) /* helper for riscv_cpu_update_mip value */
 void riscv_cpu_set_rdtime_fn(CPURISCVState *env, uint64_t (*fn)(void *),

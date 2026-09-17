@@ -1281,10 +1281,14 @@ static target_ulong riscv_pmu_ctr_get_fixed_counters_val(CPURISCVState *env,
     }
 
     if (!cfg_val) {
-        if (icount_enabled()) {
-                curr_val = inst ? icount_get_raw() : icount_get();
+        if (inst) {
+            if (icount_enabled()) {
+                curr_val = icount_get_raw();
+            } else {
+                curr_val = cpu_get_host_ticks();
+            }
         } else {
-            curr_val = cpu_get_host_ticks();
+            curr_val = riscv_pmu_get_cpu_cycles(env);
         }
 
         goto done;

@@ -229,6 +229,18 @@ static void riscv_pmu_icount_update_priv(CPURISCVState *env,
     counter_arr[env->priv] += delta;
 }
 
+uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
+{
+    if (env->cpu_freq_hz) {
+        return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                        env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
+    }
+    if (icount_enabled()) {
+        return icount_get();
+    }
+    return cpu_get_host_ticks();
+}
+
 static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
                                         target_ulong newpriv, bool new_virt)
 {
@@ -237,11 +249,7 @@ static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
     uint64_t *counter_arr;
     uint64_t delta;
 
-    if (icount_enabled()) {
-        current_ticks = icount_get();
-    } else {
-        current_ticks = cpu_get_host_ticks();
-    }
+    current_ticks = riscv_pmu_get_cpu_cycles(env);
 
     if (env->virt_enabled) {
         g_assert(env->priv <= PRV_S);
@@ -366,11 +374,14 @@ static gboolean pmu_remove_event_map(gpointer key, gpointer value,
     return (GPOINTER_TO_UINT(value) == GPOINTER_TO_UINT(udata)) ? true : false;
 }
 
-static int64_t pmu_icount_ticks_to_ns(int64_t value)
+static int64_t pmu_icount_ticks_to_ns(CPURISCVState *env, uint32_t ctr_idx,
+                                      int64_t value)
 {
     int64_t ret = 0;
 
-    if (icount_enabled()) {
+    if (riscv_pmu_ctr_monitor_cycles(env, ctr_idx) && env->cpu_freq_hz) {
+        ret = muldiv64(value, NANOSECONDS_PER_SECOND, env->cpu_freq_hz);
+    } else if (icount_enabled()) {
         ret = icount_to_ns(value);
     } else {
         ret = (NANOSECONDS_PER_SECOND / RISCV_TIMEBASE_FREQ) * value;
@@ -562,8 +573,9 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
 
     if (riscv_pmu_ctr_monitor_cycles(env, ctr_idx) ||
         riscv_pmu_ctr_monitor_instructions(env, ctr_idx)) {
-        overflow_ns = pmu_icount_ticks_to_ns((int64_t)overflow_delta);
-        overflow_left = pmu_icount_ticks_to_ns(overflow_left) ;
+        overflow_ns = pmu_icount_ticks_to_ns(env, ctr_idx,
+                                             (int64_t)overflow_delta);
+        overflow_left = pmu_icount_ticks_to_ns(env, ctr_idx, overflow_left);
     } else {
         return -1;
     }
@@ -582,6 +594,17 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
     return 0;
 }
 
+void riscv_pmu_reset(CPURISCVState *env)
+{
+    env->mcountinhibit = 0;
+    memset(env->pmu_ctrs, 0, sizeof(env->pmu_ctrs));
+    uint64_t cyc = riscv_pmu_get_cpu_cycles(env);
+    uint64_t inst = icount_enabled() ? icount_get_raw() : cpu_get_host_ticks();
+    env->pmu_ctrs[0].mhpmcounter_prev = (target_ulong)cyc;
+    env->pmu_ctrs[0].mhpmcounterh_prev = (target_ulong)(cyc >> 32);
+    env->pmu_ctrs[2].mhpmcounter_prev = (target_ulong)inst;
+    env->pmu_ctrs[2].mhpmcounterh_prev = (target_ulong)(inst >> 32);
+}
 
 void riscv_pmu_init(RISCVCPU *cpu, Error **errp)
 {
