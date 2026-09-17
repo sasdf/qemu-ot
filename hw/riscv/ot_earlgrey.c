@@ -885,7 +885,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
                              OT_LC_BROADCAST, OT_FLASH_LC_RMA),
             /* Signals to OTP */
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_CHECK_BYP_EN, OTP_CTRL,
-                             OT_LC_BROADCAST, OT_OTP_LC_CHECK_BYP_EN)
+                             OT_LC_BROADCAST, OT_OTP_LC_CHECK_BYP_EN),
+            /* Signals to pwrmgr */
+            OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_DFT_EN, PWRMGR,
+                             OT_PWRMGR_LC_DFT_EN, 0)
         ),
         .link = IBEXDEVICELINKDEFS(
             OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
@@ -1605,10 +1608,11 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .type = TYPE_SPLIT_IRQ,
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_S2D(0, SRAM_MAIN_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(1, SRAM_RET_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0)
+            OT_EG_SOC_S2D(1, SRAM_RET_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(2, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 2u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 3u) /* @todo to be changed */
         )
     },
     [OT_EG_SOC_SPLITTER_LC_ESCALATE] = {

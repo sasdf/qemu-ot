@@ -175,6 +175,7 @@ struct OtRomCtrlState {
     uint8_t kmac_app;
     char *nonce_xstr;
     char *key_xstr;
+    bool corrupt_digest;
 };
 
 static void ot_rom_ctrl_get_mem_bounds(OtRomCtrlState *s, hwaddr *minaddr,
@@ -471,12 +472,12 @@ static void ot_rom_ctrl_compare_and_notify(OtRomCtrlState *s)
     for (unsigned ix = 0u; ix < ROM_DIGEST_WORDS; ix++) {
         if (s->regs[R_EXP_DIGEST_0 + ix] != s->regs[R_DIGEST_0 + ix]) {
             rom_good = false;
-            error_setg(&error_fatal,
-                       "ot_rom_ctrl: %s: Digest mismatch (expected 0x%08x got "
-                       "0x%08x) @ %u, errors: %u single-bit, %u double-bit\n",
-                       s->ot_id, s->regs[R_EXP_DIGEST_0 + ix],
-                       s->regs[R_DIGEST_0 + ix], ix, s->recovered_error_count,
-                       s->unrecoverable_error_count);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "ot_rom_ctrl: %s: Digest mismatch (expected 0x%08x got "
+                          "0x%08x) @ %u, errors: %u single-bit, %u double-bit\n",
+                          s->ot_id, s->regs[R_EXP_DIGEST_0 + ix],
+                          s->regs[R_DIGEST_0 + ix], ix, s->recovered_error_count,
+                          s->unrecoverable_error_count);
         }
     }
 
@@ -537,6 +538,9 @@ ot_rom_ctrl_handle_kmac_response(void *opaque, const OtKMACAppRsp *rsp)
         if (s->scrambled.local_gen) {
             s->regs[R_EXP_DIGEST_0 + ix] = s->regs[R_DIGEST_0 + ix];
         }
+    }
+    if (s->corrupt_digest) {
+        s->regs[R_EXP_DIGEST_0] ^= 1u;
     }
 
     if (trace_event_get_state(TRACE_OT_ROM_CTRL_COMPUTED_DIGEST)) {
@@ -1132,6 +1136,7 @@ static const Property ot_rom_ctrl_properties[] = {
     DEFINE_PROP_UINT8("kmac-app", OtRomCtrlState, kmac_app, UINT8_MAX),
     DEFINE_PROP_STRING("nonce", OtRomCtrlState, nonce_xstr),
     DEFINE_PROP_STRING("key", OtRomCtrlState, key_xstr),
+    DEFINE_PROP_BOOL("corrupt-digest", OtRomCtrlState, corrupt_digest, false),
 };
 
 static const MemoryRegionOps ot_rom_ctrl_mem_ops = {

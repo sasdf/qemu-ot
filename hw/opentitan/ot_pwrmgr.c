@@ -257,6 +257,8 @@ struct OtPwrMgrState {
     uint8_t version;
     bool main; /* main power manager (for machines w/ multiple PwrMgr) */
     bool fetch_ctrl;
+    bool lc_dft_en;
+    bool lc_hw_debug_en;
 };
 
 struct OtPwrMgrClass {
@@ -491,6 +493,8 @@ static void ot_pwrmgr_rom_good(void *opaque, int irq, int level)
     if (level) {
         s->fsm_events.rom_good |= 1u << irq;
         ot_pwrmgr_schedule_fsm(s);
+    } else {
+        s->fsm_events.rom_good &= ~(1u << irq);
     }
 }
 
@@ -504,6 +508,30 @@ static void ot_pwrmgr_rom_done(void *opaque, int irq, int level)
 
     if (level) {
         s->fsm_events.rom_done |= 1u << irq;
+        ot_pwrmgr_schedule_fsm(s);
+    } else {
+        s->fsm_events.rom_done &= ~(1u << irq);
+    }
+}
+
+static void ot_pwrmgr_lc_dft_en(void *opaque, int irq, int level)
+{
+    OtPwrMgrState *s = opaque;
+    (void)irq;
+
+    s->lc_dft_en = (bool)level;
+    if (s->f_state == OT_PWR_FAST_ST_ROM_CHECK_GOOD) {
+        ot_pwrmgr_schedule_fsm(s);
+    }
+}
+
+static void ot_pwrmgr_lc_hw_debug_en(void *opaque, int irq, int level)
+{
+    OtPwrMgrState *s = opaque;
+    (void)irq;
+
+    s->lc_hw_debug_en = (bool)level;
+    if (s->f_state == OT_PWR_FAST_ST_ROM_CHECK_GOOD) {
         ot_pwrmgr_schedule_fsm(s);
     }
 }
@@ -752,14 +780,17 @@ static void ot_pwrmgr_fast_fsm_tick(OtPwrMgrState *s)
             PWR_CHANGE_FAST_STATE(s, ROM_CHECK_GOOD);
         }
         break;
-    case OT_PWR_FAST_ST_ROM_CHECK_GOOD:
+    case OT_PWR_FAST_ST_ROM_CHECK_GOOD: {
         s->boot_status.rom_good = s->fsm_events.rom_good;
         ibex_irq_set(&s->boot_st, s->boot_status.i32);
-        if ((s->fsm_events.rom_good == (1u << s->num_rom) - 1u) &&
-            !s->fsm_events.holdon_fetch) {
+        bool rom_intg_chk_dis = s->lc_dft_en && s->lc_hw_debug_en;
+        bool rom_good = (s->fsm_events.rom_good == (1u << s->num_rom) - 1u) ||
+                        rom_intg_chk_dis;
+        if (rom_good && !s->fsm_events.holdon_fetch) {
             PWR_CHANGE_FAST_STATE(s, ACTIVE);
         }
         break;
+    }
     case OT_PWR_FAST_ST_ACTIVE:
         if (!s->regs[R_RESET_STATUS]) {
             ibex_irq_set(&s->cpu_enable, (int)true);
@@ -1157,6 +1188,10 @@ static void ot_pwrmgr_realize(DeviceState *dev, Error **errp)
         qdev_init_gpio_in_named(dev, &ot_pwrmgr_holdon_fetch,
                                 OT_PWRMGR_HOLDON_FETCH, 1u);
     }
+
+    qdev_init_gpio_in_named(dev, &ot_pwrmgr_lc_dft_en, OT_PWRMGR_LC_DFT_EN, 1);
+    qdev_init_gpio_in_named(dev, &ot_pwrmgr_lc_hw_debug_en,
+                            OT_PWRMGR_LC_HW_DEBUG_EN, 1);
 
     ot_pwrmgr_parse_clocks(s, &error_fatal);
 }

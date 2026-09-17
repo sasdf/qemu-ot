@@ -94,6 +94,9 @@ typedef union {
 #define OT_PWRMGR_ROM_GOOD TYPE_OT_PWRMGR "-rom-good"
 #define OT_PWRMGR_ROM_DONE TYPE_OT_PWRMGR "-rom-done"
 
+#define OT_PWRMGR_LC_DFT_EN      TYPE_OT_PWRMGR "-lc-dft-en"
+#define OT_PWRMGR_LC_HW_DEBUG_EN TYPE_OT_PWRMGR "-lc-hw-debug-en"
+
 /* custom extension */
 #define OT_PWRMGR_HOLDON_FETCH TYPE_OT_PWRMGR "-holdon-fetch"
 
