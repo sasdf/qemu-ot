@@ -30,6 +30,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
@@ -194,6 +195,8 @@ struct OtSensorEgState {
     IbexIRQ irqs[2u];
     IbexIRQ alerts[NUM_ALERTS];
     IbexIRQ wkup;
+    QEMUTimer *io_change_timer;
+    unsigned io_change_count;
 
     uint32_t *regs;
 };
@@ -211,6 +214,41 @@ static void ot_sensor_eg_update_irqs(OtSensorEgState *s)
         int level = (int)(bool)(levels & (1u << ix));
         ibex_irq_set(&s->irqs[ix], level);
     }
+}
+
+static void ot_sensor_eg_schedule_io_change(OtSensorEgState *s)
+{
+    if ((s->regs[R_INTR_ENABLE] & INTR_IO_STATUS_CHANGE_MASK) &&
+        !(s->regs[R_INTR_STATE] & INTR_IO_STATUS_CHANGE_MASK)) {
+        timer_mod(s->io_change_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 10000);
+    } else {
+        timer_del(s->io_change_timer);
+    }
+}
+
+static void ot_sensor_eg_io_change_timer_cb(void *opaque)
+{
+    OtSensorEgState *s = opaque;
+
+    if (!(s->regs[R_INTR_ENABLE] & INTR_IO_STATUS_CHANGE_MASK) ||
+        (s->regs[R_INTR_STATE] & INTR_IO_STATUS_CHANGE_MASK)) {
+        return;
+    }
+
+    CPUState *cpu = qemu_get_cpu(0);
+    if (cpu && !cpu->halted) {
+        timer_mod(s->io_change_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+        return;
+    }
+
+    uint32_t io_pok = FIELD_EX32(s->regs[R_STATUS], STATUS, IO_POK);
+    io_pok ^= (1u << (s->io_change_count & 1u));
+    s->io_change_count++;
+    s->regs[R_STATUS] = FIELD_DP32(s->regs[R_STATUS], STATUS, IO_POK, io_pok);
+    s->regs[R_INTR_STATE] |= INTR_IO_STATUS_CHANGE_MASK;
+    ot_sensor_eg_update_irqs(s);
 }
 
 static uint32_t ot_sensor_eg_get_alert_en_mask(const OtSensorEgState *s)
@@ -327,11 +365,13 @@ static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= INTR_MASK;
         s->regs[R_INTR_STATE] &= ~val32; /* RW1C */
         ot_sensor_eg_update_irqs(s);
+        ot_sensor_eg_schedule_io_change(s);
         break;
     case R_INTR_ENABLE:
         val32 &= INTR_MASK;
         s->regs[R_INTR_ENABLE] = val32;
         ot_sensor_eg_update_irqs(s);
+        ot_sensor_eg_schedule_io_change(s);
         break;
     case R_INTR_TEST:
         val32 &= INTR_MASK;
@@ -431,6 +471,9 @@ static void ot_sensor_eg_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    timer_del(s->io_change_timer);
+    s->io_change_count = 0u;
+
     uint32_t alert_trig = s->regs[R_ALERT_TRIG];
     uint32_t recov_alert = s->regs[R_RECOV_ALERT];
     memset(s->regs, 0, REGS_SIZE);
@@ -438,6 +481,7 @@ static void ot_sensor_eg_reset_enter(Object *obj, ResetType type)
     s->regs[R_RECOV_ALERT] = recov_alert;
 
     s->regs[R_CFG_REGWEN] = 0x1u;
+    s->regs[R_STATUS] = R_STATUS_AST_INIT_DONE_MASK | R_STATUS_IO_POK_MASK;
     for (unsigned rix = R_ALERT_EN_0; rix <= R_ALERT_EN_10; rix++) {
         s->regs[rix] = 0x6u;
     }
@@ -466,6 +510,8 @@ static void ot_sensor_eg_init(Object *obj)
         ibex_qdev_init_irq(obj, &s->alerts[ix], OT_DEVICE_ALERT);
     }
     ibex_qdev_init_irq(obj, &s->wkup, OT_SENSOR_WKUP);
+    s->io_change_timer =
+        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_sensor_eg_io_change_timer_cb, s);
 }
 
 static void ot_sensor_eg_class_init(ObjectClass *klass, const void *data)
