@@ -289,9 +289,6 @@ typedef enum {
     LC_IF_DMI, /* DMI requester */
 } OtLcCtrlIf;
 
-#define EXCLUSIVE_SLOTS_COUNT 2u
-#define LC_XSLOT(_ifreq_)     (((unsigned)(_ifreq_)) - 1u)
-
 typedef enum {
     ST_RESET,
     ST_IDLE,
@@ -383,7 +380,7 @@ struct OtLcCtrlState {
     IbexIRQ soc_dbg_tx;
 
     uint32_t *regs; /* slots in xregs are not used in regs */
-    uint32_t xregs[EXCLUSIVE_SLOTS_COUNT][EXCLUSIVE_REGS_COUNT];
+    uint32_t xregs[EXCLUSIVE_REGS_COUNT];
     OtLcState lc_state;
     uint32_t lc_tcount;
     OtLcCtrlKeyMgrDivType km_div_type;
@@ -406,7 +403,7 @@ struct OtLcCtrlState {
     bool ext_clock_en; /* request for external clock */
     bool volatile_unlocked; /* set on successful volatile unlock */
     bool force_raw; /* survivability mode */
-    uint8_t volatile_raw_unlock_bm; /* xslot-indexed bitmap */
+    uint8_t volatile_raw_unlock_bm; /* volatile raw unlock enabled */
     uint8_t state_invalid_error_bm; /* error bitmap */
     char *hexstr;
 
@@ -1064,16 +1061,12 @@ static OtLcState ot_lc_ctrl_safe_convert_code_to_state(uint32_t enc_state)
 
 static uint32_t ot_lc_ctrl_get_target_state(const OtLcCtrlState *s)
 {
-    unsigned sreq = LC_XSLOT(s->owner);
-
-    return s->xregs[sreq][R_TRANSITION_TARGET - R_FIRST_EXCLUSIVE_REG];
+    return s->xregs[R_TRANSITION_TARGET - R_FIRST_EXCLUSIVE_REG];
 }
 
 static void ot_lc_ctrl_load_hashed_token(OtLcCtrlState *s)
 {
-    g_assert(LC_XSLOT(s->owner) < EXCLUSIVE_SLOTS_COUNT);
-
-    const uint32_t *xregs = s->xregs[LC_XSLOT(s->owner)];
+    const uint32_t *xregs = s->xregs;
 
     s->hash_token.lo =
         (uint64_t)xregs[XREGS_OFFSET(R_TRANSITION_TOKEN_0)] |
@@ -1085,9 +1078,7 @@ static void ot_lc_ctrl_load_hashed_token(OtLcCtrlState *s)
 
 static void ot_lc_ctrl_kmac_request(OtLcCtrlState *s)
 {
-    g_assert(LC_XSLOT(s->owner) < EXCLUSIVE_SLOTS_COUNT);
-
-    const uint32_t *xregs = s->xregs[LC_XSLOT(s->owner)];
+    const uint32_t *xregs = s->xregs;
     const uint32_t *token =
         &xregs[(s->kmac_state == ST_KMAC_SECOND ?
                     XREGS_OFFSET(R_TRANSITION_TOKEN_2) :
@@ -1333,8 +1324,7 @@ static void ot_lc_ctrl_start_transition(OtLcCtrlState *s)
 
     s->regs[R_STATUS] &= ~R_STATUS_READY_MASK;
 
-    bool tvolatile =
-        (bool)(s->volatile_raw_unlock_bm & LC_XSLOT(1u << s->owner));
+    bool tvolatile = (bool)(s->volatile_raw_unlock_bm & 1u);
 
     uint32_t target_code = ot_lc_ctrl_get_target_state(s);
     OtLcState target = ot_lc_ctrl_safe_convert_code_to_state(target_code);
@@ -1730,7 +1720,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
             if (s->ext_clock_en) {
                 val32 |= R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK;
             }
-            if (s->volatile_raw_unlock_bm & (1u << LC_XSLOT(ifreq))) {
+            if (s->volatile_raw_unlock_bm & 1u) {
                 val32 |= R_TRANSITION_CTRL_VOLATILE_RAW_UNLOCK_MASK;
             }
         }
@@ -1745,8 +1735,9 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     case R_TRANSITION_TOKEN_2:
     case R_TRANSITION_TOKEN_3:
     case R_TRANSITION_TARGET:
-        g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
-        val32 = s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG];
+        val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ?
+                    s->xregs[reg - R_FIRST_EXCLUSIVE_REG] :
+                    0u;
         break;
     case R_STATUS:
     case R_TRANSITION_CMD:
@@ -1872,9 +1863,9 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         }
         if (s->volatile_raw_unlock) {
             if (val32 & R_TRANSITION_CTRL_VOLATILE_RAW_UNLOCK_MASK) {
-                s->volatile_raw_unlock_bm |= 1u << LC_XSLOT(ifreq);
+                s->volatile_raw_unlock_bm |= 1u;
             } else {
-                s->volatile_raw_unlock_bm &= ~(1u << LC_XSLOT(ifreq));
+                s->volatile_raw_unlock_bm &= ~1u;
             }
         }
         break;
@@ -1887,8 +1878,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                           __func__, s->ot_id);
             break;
         }
-        g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
-        s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
+        s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
         break;
     case R_TRANSITION_TARGET:
         if (!ot_lc_ctrl_is_transition_en(s, ifreq)) {
@@ -1898,8 +1888,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         }
         val32 &= R_TRANSITION_TARGET_STATE_MASK;
         if (ot_lc_ctrl_is_known_state(val32)) {
-            g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
-            s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
+            s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
         }
         break;
     case R_OTP_VENDOR_TEST_CTRL:
