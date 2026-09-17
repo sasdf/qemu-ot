@@ -35,6 +35,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_clock_ctrl.h"
 #include "hw/opentitan/ot_common.h"
+#include "hw/opentitan/ot_flash.h"
 #include "hw/opentitan/ot_pwrmgr.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/qdev-properties.h"
@@ -552,6 +553,20 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             return;
         }
         if (!s->in_low_power) {
+            OtFlashState *flash = (OtFlashState *)object_resolve_path_type(
+                "", TYPE_OT_FLASH, NULL);
+            if (flash && !ot_flash_is_idle(flash)) {
+                /* FastPwrStateNvmIdleChk: abort low power entry if flash busy */
+                if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                      R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+                    s->regs[R_WAKE_INFO] |= WAKE_INFO_ABORT_MASK_MASK(s);
+                }
+                s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                s->regs[R_INTR_STATE] |= WAKEUP_MASK;
+                ot_pwrmgr_update_irq(s);
+                return;
+            }
             s->in_low_power = true;
             ibex_irq_set(&s->sleep_en, 1);
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {

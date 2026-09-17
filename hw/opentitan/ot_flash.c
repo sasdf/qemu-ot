@@ -751,7 +751,8 @@ enum {
     BIN_APP_COUNT,
 };
 
-#define OP_INIT_DURATION_NS     10000u /* 10 us */
+#define OP_INIT_DURATION_NS     10000u  /* 10 us */
+#define OP_ERASE_DURATION_NS    400000u /* 400 us */
 #define ELFNAME_SIZE            256u
 #define OT_FLASH_READ_FIFO_SIZE 16u
 #define OT_FLASH_PROG_FIFO_SIZE 16u
@@ -1090,6 +1091,11 @@ static bool ot_flash_fifo_in_reset(const OtFlashState *s)
 static bool ot_flash_in_operation(const OtFlashState *s)
 {
     return s->op.kind != OP_NONE;
+}
+
+bool ot_flash_is_idle(const OtFlashState *s)
+{
+    return !ot_flash_in_operation(s);
 }
 
 static bool ot_flash_in_hw_operation(const OtFlashState *s)
@@ -1803,7 +1809,8 @@ static void ot_flash_op_erase_page(OtFlashState *s, unsigned address)
         }
     }
 
-    ot_flash_op_complete(s);
+    timer_mod(s->op_delay,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_ERASE_DURATION_NS);
 }
 
 static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
@@ -1896,7 +1903,8 @@ static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
         }
     }
 
-    ot_flash_op_complete(s);
+    timer_mod(s->op_delay,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_ERASE_DURATION_NS);
 }
 
 static void ot_flash_op_erase(OtFlashState *s)
@@ -2228,14 +2236,20 @@ static void ot_flash_init_complete(void *opaque)
 {
     OtFlashState *s = opaque;
 
-    s->regs[R_STATUS] = FIELD_DP32(s->regs[R_STATUS], STATUS, INIT_WIP, 0u);
-    s->regs[R_STATUS] = FIELD_DP32(s->regs[R_STATUS], STATUS, INITIALIZED, 1u);
-    s->regs[R_PHY_STATUS] =
-        FIELD_DP32(s->regs[R_PHY_STATUS], PHY_STATUS, INIT_WIP, 0u);
+    if (s->op.kind == OP_INIT) {
+        s->regs[R_STATUS] = FIELD_DP32(s->regs[R_STATUS], STATUS, INIT_WIP, 0u);
+        s->regs[R_STATUS] =
+            FIELD_DP32(s->regs[R_STATUS], STATUS, INITIALIZED, 1u);
+        s->regs[R_PHY_STATUS] =
+            FIELD_DP32(s->regs[R_PHY_STATUS], PHY_STATUS, INIT_WIP, 0u);
 
-    trace_ot_flash_op_complete(s->ot_id, OP_NAME(s->op.kind), s->op.hw, true);
+        trace_ot_flash_op_complete(s->ot_id, OP_NAME(s->op.kind), s->op.hw,
+                                   true);
 
-    s->op.kind = OP_NONE;
+        s->op.kind = OP_NONE;
+    } else if (s->op.kind != OP_NONE) {
+        ot_flash_op_complete(s);
+    }
 }
 
 static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -2526,12 +2540,10 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_ERASE_SUSPEND:
-        /*
-         * @todo We do not implement the erase suspend operation in QEMU as we
-         * do all erases synchronously, and so just immediately clear the erase
-         * suspend request. To implement this feature properly we would have to
-         * add delay to bank erases & check for erase suspends at each step.
-         */
+        if ((val32 & R_ERASE_SUSPEND_REQ_MASK) && s->op.kind == OP_ERASE) {
+            timer_del(s->op_delay);
+            ot_flash_op_complete(s);
+        }
         s->regs[reg] = 0u;
         break;
     case R_REGION_CFG_REGWEN_0:

@@ -83,4 +83,6 @@ struct OtFlashClass {
                               OtFlashKeyMgrSecret *secret);
 };
 
+bool ot_flash_is_idle(const OtFlashState *s);
+
 #endif /* HW_OPENTITAN_OT_FLASH_H */
