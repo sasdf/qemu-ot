@@ -28,6 +28,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "chardev/char-fe.h"
@@ -38,6 +39,7 @@
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_pwm.h"
 #include "hw/opentitan/ot_spi_host.h"
+#include "hw/opentitan/ot_sysrst_ctrl.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -145,12 +147,15 @@ struct OtGpioEgState {
     OtPinmuxEgState *pinmux;
     OtPwmState *pwm;
     OtSPIHostState *spi_host1;
+    OtSysrstCtrlState *sysrst_ctrl;
     QEMUTimer *bb_timer;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
     uint64_t bb_period_ns;
     uint32_t bb_num_samples;
     uint32_t bb_idx;
+    uint32_t last_read_data_in;
+    uint32_t poll_count;
     int64_t bb_start_ns;
     unsigned bb_pins[32];
     unsigned bb_npins;
@@ -172,7 +177,18 @@ struct OtGpioEgClass {
     ResettablePhases parent_phases;
 };
 
+static OtGpioEgState *ot_gpio_eg_instance;
+
 static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force);
+static void ot_gpio_eg_update_data_in(OtGpioEgState *s);
+
+void ot_gpio_eg_notify_sysrst_change(void)
+{
+    if (ot_gpio_eg_instance) {
+        ot_gpio_eg_update_data_in(ot_gpio_eg_instance);
+        ot_gpio_eg_update_backend(ot_gpio_eg_instance, false);
+    }
+}
 
 static void ot_gpio_eg_update_irqs(OtGpioEgState *s)
 {
@@ -248,14 +264,23 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                     driven_by_dev = true;
                     level = (int)((periph_out_v >> g) & 1u);
                 }
+            } else if (outsel >= 35u && outsel <= 42u && s->sysrst_ctrl) {
+                driven_by_dev = true;
+                level = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
             }
             if (!driven_by_dev) {
-                if ((s->connected & ~s->data_gi) & (1u << p)) {
+                if (p == 14u || p == 15u) {
+                    /* Open-drain DIO pins (IOR8/ec_rst_l, IOR9/flash_wp_l) with board pull-ups */
+                    bool host_low = !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
+                    level = host_low ? 0 : 1;
+                } else if ((s->connected & ~s->data_gi) & (1u << p)) {
                     level = (int)((s->data_ii >> p) & 1u);
                 } else if (!((s->data_bi >> p) & 1u)) {
                     level = (int)((s->data_ib >> p) & 1u);
                 } else if ((periph_pull_en >> gp) & 1u) {
                     level = (int)((periph_pull_v >> gp) & 1u);
+                } else if ((s->host_pull >> p) & 1u) {
+                    level = (int)((s->host_pull >> p) & 1u);
                 } else {
                     level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
                 }
@@ -500,6 +525,20 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
     case R_DATA_IN:
         ot_gpio_eg_update_data_in(s);
         val32 = s->regs[reg];
+        if (val32 == s->last_read_data_in) {
+            s->poll_count++;
+            if (s->poll_count > 16u &&
+                qemu_chr_fe_backend_connected(&s->chr)) {
+                bql_unlock();
+                g_usleep(50);
+                bql_lock();
+                ot_gpio_eg_update_data_in(s);
+                val32 = s->regs[reg];
+            }
+        } else {
+            s->poll_count = 0;
+            s->last_read_data_in = val32;
+        }
         break;
     case R_INTR_STATE:
     case R_INTR_ENABLE:
@@ -945,8 +984,11 @@ static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
         return;
     }
 
-    char buf[16u];
-    int len = snprintf(buf, sizeof(buf), "Y:%08x\r\n", s->regs[R_DATA_IN]);
+    uint32_t now_us =
+        (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    char buf[32u];
+    int len = snprintf(buf, sizeof(buf), "T:%08x\r\nY:%08x\r\n", now_us,
+                       s->regs[R_DATA_IN]);
     s->backend_state.in_m = s->regs[R_DATA_IN];
     qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
 }
@@ -1009,16 +1051,22 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 s->data_bi = data_in;
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
             } else if (cmd == 'I') {
                 s->data_ib = data_in;
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
             } else if (cmd == 'P') {
                 s->host_pull = data_in;
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
             } else if (cmd == 'R') {
                 ot_gpio_eg_update_backend(s, true);
+                char ack[16u];
+                int len = snprintf(ack, sizeof(ack), "R:%08x\r\n", data_in);
+                qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
             } else {
                 qemu_log_mask(LOG_UNIMP, "%s: unsupported command %c\n",
                               __func__, cmd);
@@ -1077,6 +1125,26 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     uint32_t periph_pull_v = s->pull_sel;
     if (s->pinmux) {
         for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
+            if (p == 14u && s->sysrst_ctrl) {
+                bool host_low = !((s->data_bi >> p) & 1u) &&
+                                !((s->data_ib >> p) & 1u);
+                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 100u);
+                out_en |= (1u << p);
+                if (drv != 0 && !host_low) {
+                    out_v |= (1u << p);
+                }
+                continue;
+            }
+            if (p == 15u && s->sysrst_ctrl) {
+                bool host_low = !((s->data_bi >> p) & 1u) &&
+                                !((s->data_ib >> p) & 1u);
+                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 101u);
+                out_en |= (1u << p);
+                if (drv != 0 && !host_low) {
+                    out_v |= (1u << p);
+                }
+                continue;
+            }
             uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
             unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
@@ -1100,6 +1168,13 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             } else if (outsel == 1u) {
                 out_en |= (1u << p);
                 out_v |= (1u << p);
+            } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
+                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl,
+                                                          outsel);
+                out_en |= (1u << p);
+                if (drv != 0) {
+                    out_v |= (1u << p);
+                }
             } else if (outsel >= 3u && outsel < 35u) {
                 unsigned g = outsel - 3u;
                 if ((periph_out_en >> g) & 1u) {
@@ -1137,8 +1212,11 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
         return;
     }
 
-    char buf[64u];
+    char buf[128u];
     size_t len = 0;
+
+    uint32_t now_us = (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+    len += snprintf(&buf[len], sizeof(buf) - len, "T:%08x\r\n", now_us);
 
     if (force || bstate.hi_z != s->backend_state.hi_z) {
         len += snprintf(&buf[len], sizeof(buf) - len, "Z:%08x\r\n", bstate.hi_z);
@@ -1253,6 +1331,8 @@ static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_LINK("pwm", OtGpioEgState, pwm, TYPE_OT_PWM, OtPwmState *),
     DEFINE_PROP_LINK("spi-host1", OtGpioEgState, spi_host1, TYPE_OT_SPI_HOST,
                      OtSPIHostState *),
+    DEFINE_PROP_LINK("sysrst-ctrl", OtGpioEgState, sysrst_ctrl,
+                     TYPE_OT_SYSRST_CTRL, OtSysrstCtrlState *),
 };
 
 static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
@@ -1372,6 +1452,7 @@ static void ot_gpio_eg_init(Object *obj)
     s->data_ib = 0u;
     s->data_bi = UINT32_MAX;
     s->host_pull = 0u;
+    ot_gpio_eg_instance = s;
 }
 
 static void ot_gpio_eg_class_init(ObjectClass *klass, const void *data)

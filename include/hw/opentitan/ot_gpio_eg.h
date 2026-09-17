@@ -33,4 +33,6 @@
 #define TYPE_OT_GPIO_EG "ot-gpio-eg"
 OBJECT_DECLARE_TYPE(OtGpioEgState, OtGpioEgClass, OT_GPIO_EG)
 
+void ot_gpio_eg_notify_sysrst_change(void);
+
 #endif /* HW_OPENTITAN_OT_GPIO_EG_H */

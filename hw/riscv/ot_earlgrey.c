@@ -635,7 +635,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .link = IBEXDEVICELINKDEFS(
             OT_EG_SOC_DEVLINK("pinmux", PINMUX),
             OT_EG_SOC_DEVLINK("pwm", PWM),
-            OT_EG_SOC_DEVLINK("spi-host1", SPI_HOST1)
+            OT_EG_SOC_DEVLINK("spi-host1", SPI_HOST1),
+            OT_EG_SOC_DEVLINK("sysrst-ctrl", SYSRST_CTRL)
         )
     },
     [OT_EG_SOC_DEV_SPI_DEVICE] = {
@@ -1140,6 +1141,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
                              OT_SYSRST_CTRL_INPUT, 4),
             OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 5, SYSRST_CTRL,
                              OT_SYSRST_CTRL_INPUT, 5),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 6, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 6),
+            OT_EG_SOC_SIGNAL(OT_PINMUX_SYSRST_IN, 7, SYSRST_CTRL,
+                             OT_SYSRST_CTRL_INPUT, 7),
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_PAD, 0, GPIO, OT_PINMUX_PAD, 0),
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_PAD, 1, GPIO, OT_PINMUX_PAD, 1),
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_PAD, 2, GPIO, OT_PINMUX_PAD, 2),
