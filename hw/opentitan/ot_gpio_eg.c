@@ -215,6 +215,13 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     uint32_t routed_bi = UINT32_MAX;
     uint32_t eff_oe = 0;
     if (s->pinmux) {
+        bool all_muxed = true;
+        for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
+            if (ot_pinmux_eg_get_periph_insel(s->pinmux, g) < 2u) {
+                all_muxed = false;
+                break;
+            }
+        }
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
             if (insel == 0u) {
@@ -224,7 +231,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 routed_bi &= ~(1u << g);
             } else if (insel >= 2u && (insel - 2u) < 47u) {
                 unsigned mio_pad = insel - 2u;
-                int hp = ot_pinmux_eg_mio_to_host_pin(mio_pad);
+                int hp = all_muxed ? (int)g :
+                                     ot_pinmux_eg_mio_to_host_pin(mio_pad);
                 if (hp >= 0 && hp < (int)PARAM_NUM_IO) {
                     unsigned host_pin = (unsigned)hp;
                     if ((s->data_ib >> host_pin) & 1u) {
