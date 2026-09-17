@@ -1042,6 +1042,11 @@ static void ot_edn_handle_sw_cmd_req(OtEDNState *s, uint32_t value)
                 break;
             case OT_CSRNG_CMD_GENERATE:
                 c->rem_packet_count = FIELD_EX32(value, OT_CSNRG_CMD, GLEN);
+                while (ot_fifo32_num_free(&c->bits_fifo) <
+                           c->rem_packet_count * OT_CSRNG_PACKET_WORD_COUNT &&
+                       !ot_fifo32_is_empty(&c->bits_fifo)) {
+                    ot_fifo32_pop(&c->bits_fifo);
+                }
                 xtrace_ot_edn_dinfo(c->appid, "SW generation w/ packets",
                                     c->rem_packet_count);
                 ot_edn_update_genbits_ready(s);

@@ -1175,8 +1175,13 @@ static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
     (void)bits;
     (void)fips;
     s->entropy_requested = false;
+    /*
+     * In RTL (alert_handler_ping_timer.sv), reseed_timer_d is reloaded with
+     * {wait_cyc_mask_i, {ReseedLfsrExtraBits{1'b1}}} = 19'h7ffff (524,287 cycles)
+     * at the 24 MHz I/O Div4 clock (~21.845 ms).
+     */
     timer_mod(&s->reseed_timer,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 10000ULL);
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 21845291ULL);
 }
 
 static void ot_alert_request_entropy(OtAlertState *s)
