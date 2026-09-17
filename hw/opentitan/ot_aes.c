@@ -1224,11 +1224,13 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
 
     switch (reg) {
     case R_ALERT_TEST:
-        if (val32 & ALERT_RECOV_CTRL_UPDATE_ERR_MASK) {
-            r->status |= R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
-        }
-        if (val32 & ALERT_FATAL_FAULT_MASK) {
-            r->status |= R_STATUS_ALERT_FATAL_FAULT_MASK;
+        val32 &= ALERT_RECOV_CTRL_UPDATE_ERR_MASK | ALERT_FATAL_FAULT_MASK;
+        for (unsigned ix = 0; ix < PARAM_NUM_ALERTS; ix++) {
+            if (val32 & (1u << ix)) {
+                ibex_irq_set(&s->alerts[ix], 0);
+                ibex_irq_set(&s->alerts[ix], 1);
+                ibex_irq_set(&s->alerts[ix], 0);
+            }
         }
         ot_aes_update_alert(s);
         break;
