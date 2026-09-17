@@ -32,6 +32,7 @@
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
+#include "hw/opentitan/ot_adc_ctrl.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_clock_ctrl.h"
 #include "hw/opentitan/ot_common.h"
@@ -579,6 +580,23 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         "", TYPE_OT_SENSOR_EG, NULL);
                 if (sensor) {
                     ot_sensor_eg_trigger_recov_event(sensor, 0u);
+                    if (!s->in_low_power) {
+                        return;
+                    }
+                    active_wkup =
+                        s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
+                }
+            }
+            if (!active_wkup &&
+                (s->slow_regs.wakeup_en & (1u << OT_PWRMGR_WAKEUP_ADC_CTRL))) {
+                OtAdcCtrlState *adc =
+                    (OtAdcCtrlState *)object_resolve_path_type(
+                        "", TYPE_OT_ADC_CTRL, NULL);
+                if (adc) {
+                    ot_adc_ctrl_trigger_wakeup(adc);
+                    if (!s->in_low_power) {
+                        return;
+                    }
                     active_wkup =
                         s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
                 }
