@@ -798,6 +798,7 @@ typedef struct {
     uint32_t *info; /* info buffer (all partitions/banks) */
     unsigned bank_count; /* count of banks */
     unsigned size; /* overall storage size in bytes (excl. header) */
+    unsigned header_size; /* size in bytes of the backend file header */
     unsigned data_size; /* data buffer size of a bank in bytes */
     unsigned info_size; /* info buffer size of a bank in bytes */
     unsigned info_part_count; /* count of info partition (per bank) */
@@ -1024,8 +1025,8 @@ static bool ot_flash_write_backend(OtFlashState *s, const void *buffer,
                                    unsigned offset, size_t size)
 {
     /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange) */
-    return blk_pwrite(s->blk, (int64_t)(intptr_t)offset, (int64_t)size, buffer,
-                      (BdrvRequestFlags)0);
+    return blk_pwrite(s->blk, (int64_t)(s->flash.header_size + offset),
+                      (int64_t)size, buffer, (BdrvRequestFlags)0) < 0;
     /* NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange) */
 }
 
@@ -1732,9 +1733,10 @@ static void ot_flash_op_prog(OtFlashState *s)
         }
         trace_ot_flash_prog_word(s->ot_id, s->op.info_part, word_address, word);
         if (ot_flash_is_backend_writable(s)) {
-            uintptr_t dest_offset = (uintptr_t)dest - (uintptr_t)storage->data;
+            uintptr_t dest_offset =
+                (uintptr_t)&dest[word_address] - (uintptr_t)storage->data;
             if (ot_flash_write_backend(s, &dest[word_address],
-                                       (unsigned)(dest_offset + word_address),
+                                       (unsigned)dest_offset,
                                        sizeof(uint32_t))) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "%s: %s: cannot update flash backend\n", __func__,
@@ -1785,9 +1787,10 @@ static void ot_flash_op_erase_page(OtFlashState *s, unsigned address)
     }
     trace_ot_flash_erase(s->ot_id, s->op.info_part, word_address, page_size);
     if (ot_flash_is_backend_writable(s)) {
-        uintptr_t dest_offset = (uintptr_t)dest - (uintptr_t)storage->data;
+        uintptr_t dest_offset =
+            (uintptr_t)&dest[word_address] - (uintptr_t)storage->data;
         if (ot_flash_write_backend(s, &dest[word_address],
-                                   (unsigned)(dest_offset + word_address),
+                                   (unsigned)dest_offset,
                                    page_size)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: cannot update flash backend\n", __func__,
@@ -1864,17 +1867,20 @@ static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
     memory_region_set_dirty(&s->mmio.mem, data_byte_address, bank_size);
 
     if (ot_flash_is_backend_writable(s)) {
+        uintptr_t data_offset =
+            (uintptr_t)&storage->data[data_address] - (uintptr_t)storage->data;
         int data_write_err =
             ot_flash_write_backend(s, &storage->data[data_address],
-                                   (unsigned)(data_address),
+                                   (unsigned)data_offset,
                                    storage->data_size);
         int info_write_err = 0u;
         if (s->op.info_part) {
-            uintptr_t offset =
-                (uintptr_t)storage->info - (uintptr_t)storage->data;
+            uintptr_t info_offset =
+                (uintptr_t)&storage->info[info_address] -
+                (uintptr_t)storage->data;
             info_write_err =
                 ot_flash_write_backend(s, &storage->info[info_address],
-                                       (unsigned)(offset + info_address),
+                                       (unsigned)info_offset,
                                        storage->info_size);
         }
 
@@ -3119,6 +3125,7 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
 
         unsigned offset = offsetof(OtFlashBackendHeader, hlength) +
                           sizeof(header->hlength) + header->hlength;
+        flash->header_size = offset;
 
         /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
         rc = blk_pread(s->blk, (int64_t)offset, flash_size, flash->storage, 0);

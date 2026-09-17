@@ -975,8 +975,9 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
          * essentially use UART break as a strapping mechanism.
          */
         val32 = (s->in_break && s->oversample_break) ? 0u : UINT16_MAX;
-        qemu_log_mask(LOG_UNIMP, "%s: VAL only shows idle%s\n", __func__,
-                      (s->oversample_break ? "/break" : ""));
+        if (!s->oversample_break) {
+            qemu_log_mask(LOG_UNIMP, "%s: VAL only shows idle\n", __func__);
+        }
         break;
     case R_OVRD:
     case R_TIMEOUT_CTRL:
