@@ -961,26 +961,62 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
      * Windows-style terminal.
      */
 
-    uint32_t outv = s->data_out;
+    uint32_t periph_out_v = s->data_out;
     /* assume invert is performed on device output data, not on pull up/down */
-    outv ^= s->invert;
+    periph_out_v ^= s->invert;
 
-    uint32_t out_en = s->data_oe;
+    uint32_t periph_out_en = s->data_oe;
 
     /* if open drain is active and output is high, disable output enable */
-    out_en &= ~(s->opendrain & outv);
+    periph_out_en &= ~(s->opendrain & periph_out_v);
 
     /* Apply PINMUX sleep retention force overrides */
-    out_en = (out_en & ~s->force_en) | (s->force_oe & s->force_en);
-    outv = (outv & ~s->force_en) | (s->force_out & s->force_en);
+    periph_out_en =
+        (periph_out_en & ~s->force_en) | (s->force_oe & s->force_en);
+    periph_out_v =
+        (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
+
+    periph_out_v &= periph_out_en;
+
+    uint32_t out_en = 0;
+    uint32_t out_v = 0;
+    if (s->pinmux) {
+        for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            if (outsel == 0u) {
+                out_en |= (1u << p);
+            } else if (outsel == 1u) {
+                out_en |= (1u << p);
+                out_v |= (1u << p);
+            } else if (outsel >= 3u && outsel < 35u) {
+                unsigned g = outsel - 3u;
+                if ((periph_out_en >> g) & 1u) {
+                    out_en |= (1u << p);
+                }
+                if ((periph_out_v >> g) & 1u) {
+                    out_v |= (1u << p);
+                }
+            } else {
+                if ((periph_out_en >> p) & 1u) {
+                    out_en |= (1u << p);
+                }
+                if ((periph_out_v >> p) & 1u) {
+                    out_v |= (1u << p);
+                }
+            }
+        }
+    } else {
+        out_en = periph_out_en;
+        out_v = periph_out_v;
+    }
 
     uint32_t active = (s->pull_en & ~s->force_en) | out_en;
-    outv &= out_en;
+    out_v &= out_en;
 
     OtGpioEgBackendState bstate = { .hi_z = ~active,
                                     .pull_v = s->pull_sel,
                                     .out_en = out_en,
-                                    .out_v = outv,
+                                    .out_v = out_v,
                                     .in_m = s->regs[R_DATA_IN] };
 
     /*
