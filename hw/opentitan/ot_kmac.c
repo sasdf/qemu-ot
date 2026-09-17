@@ -425,6 +425,7 @@ struct OtKMACState {
 
     Fifo8 input_fifo;
     QEMUTimer *bh_timer; /* timer to delay bh when triggered from vCPU */
+    QEMUTimer *edn_wait_timer; /* timer for EDN wait timeout */
     QEMUBH *bh;
 
     char *ot_id;
@@ -475,6 +476,7 @@ static void ot_kmac_bh_timer_handler(void *opaque)
 static void ot_kmac_cancel_bh(OtKMACState *s)
 {
     timer_del(s->bh_timer);
+    timer_del(s->edn_wait_timer);
     qemu_bh_cancel(s->bh);
 }
 
@@ -529,12 +531,30 @@ static void ot_kmac_report_error(OtKMACState *s, int code, uint32_t info)
 
 static void ot_kmac_process(void *opaque);
 
+static void ot_kmac_edn_wait_timer_handler(void *opaque)
+{
+    OtKMACState *s = opaque;
+    if (!s->edn_pending) {
+        return;
+    }
+
+    s->edn_pending = false;
+    s->entropy_refresh_needed = false;
+    s->entropy_seeded = true;
+    ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, 0u);
+
+    if (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING) {
+        ot_kmac_process(s);
+    }
+}
+
 static void ot_kmac_fill_entropy(void *opaque, uint32_t bits, bool fips)
 {
     OtKMACState *s = opaque;
     (void)bits;
     (void)fips;
 
+    timer_del(s->edn_wait_timer);
     s->edn_pending = false;
     s->entropy_seeded = true;
 
@@ -571,6 +591,13 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         s->entropy_refresh_needed = false;
         if (ot_edn_request_entropy(s->edn, s->edn_ep) != 0) {
             s->edn_pending = false;
+        } else if (wait_timer > 0) {
+            uint64_t cycles =
+                (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
+            uint64_t clk = s->pclk ? s->pclk : 100000000ULL;
+            uint64_t delay_ns = muldiv64(cycles, NANOSECONDS_PER_SECOND, clk);
+            timer_mod(s->edn_wait_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
         }
     }
 }
@@ -1104,6 +1131,7 @@ static void ot_kmac_process_start(OtKMACState *s)
 
 static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 {
+    timer_del(s->edn_wait_timer);
     s->error_awaiting_sw = false;
     s->entropy_configured = false;
     s->entropy_seeded = false;
@@ -2046,6 +2074,8 @@ static void ot_kmac_init(Object *obj)
     /* setup deferred processing */
     s->bh_timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL_RT, &ot_kmac_bh_timer_handler, s);
+    s->edn_wait_timer =
+        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_edn_wait_timer_handler, s);
     s->bh = qemu_bh_new(&ot_kmac_process, s);
 
     /* FIFO sizes as per OT Spec */
