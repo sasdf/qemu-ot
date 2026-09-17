@@ -51,6 +51,7 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
+#include "system/replay.h"
 #include "system/runstate.h"
 #include "trace.h"
 
@@ -322,12 +323,21 @@ static void ot_rstmgr_reset_bus(void *opaque)
     /* request the vCPU to stop */
     s->cpu->stop = true;
 
-    /* wait for the vCPU to stop */
+    /*
+     * Drop replay_mutex so the vCPU thread can acquire it in rr_cpu_thread_fn
+     * and reach rr_wait_io_event() to set cpu->stopped = true.
+     * Lock ordering: replay_mutex must always be acquired before bql.
+     */
+    replay_mutex_unlock();
     while (!s->cpu->stopped) {
         bql_unlock();
         qemu_cpu_kick(s->cpu);
+        g_usleep(100);
         bql_lock();
     }
+    bql_unlock();
+    replay_mutex_lock();
+    bql_lock();
     qemu_notify_event();
 
     if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
