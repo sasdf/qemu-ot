@@ -513,9 +513,8 @@ static bool ot_edn_is_cmd_reg_rdy(const OtEDNState *s)
     case EDN_AUTO_LOAD_INS:
     case EDN_AUTO_FIRST_ACK_WAIT:
     case EDN_AUTO_DISPATCH:
-        return true;
     case EDN_SW_PORT_MODE:
-        return s->sw_cmd_ready;
+        return true;
     default:
         return false;
     }
@@ -613,7 +612,7 @@ static bool ot_edn_update_genbits_ready(OtEDNState *s)
 
     bool accept_entropy =
         ot_edn_is_enabled(s) && (c->rem_packet_count > 0) &&
-        ot_fifo32_num_free(&c->bits_fifo) > OT_CSRNG_PACKET_WORD_COUNT;
+        ot_fifo32_num_free(&c->bits_fifo) >= OT_CSRNG_PACKET_WORD_COUNT;
 
     trace_ot_edn_update_genbits_ready(c->appid, c->rem_packet_count,
                                       ot_fifo32_num_free(&c->bits_fifo) /
@@ -1583,7 +1582,8 @@ static void ot_edn_init(Object *obj)
 
     s->ep_bh = qemu_bh_new(&ot_edn_handle_ep_request, s);
 
-    ot_fifo32_create(&c->bits_fifo, OT_CSRNG_PACKET_WORD_COUNT * 2u);
+    ot_fifo32_create(&c->bits_fifo,
+                     OT_CSRNG_PACKET_WORD_COUNT * (2u + ENDPOINT_COUNT_MAX));
     ot_fifo32_create(&c->cmd_gen_fifo, OT_CSRNG_CMD_WORD_MAX);
     ot_fifo32_create(&c->cmd_reseed_fifo, OT_CSRNG_CMD_WORD_MAX);
 

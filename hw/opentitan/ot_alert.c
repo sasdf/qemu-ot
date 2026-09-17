@@ -249,6 +249,9 @@ struct OtAlertState {
     uint8_t n_classes;
     uint32_t crashdump_latched;
     uint32_t latched_dump[9];
+    QEMUTimer reseed_timer;
+    bool edn_connected;
+    bool entropy_requested;
 };
 
 struct OtAlertClass {
@@ -1159,6 +1162,41 @@ static const MemoryRegionOps ot_alert_regs_ops = {
     .impl.max_access_size = 4u,
 };
 
+static void ot_alert_request_entropy(OtAlertState *s);
+
+static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
+{
+    OtAlertState *s = opaque;
+    (void)bits;
+    (void)fips;
+    s->entropy_requested = false;
+    timer_mod(&s->reseed_timer,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 10000ULL);
+}
+
+static void ot_alert_request_entropy(OtAlertState *s)
+{
+    if (!s->edn || s->edn_ep == UINT8_MAX) {
+        return;
+    }
+    if (!s->edn_connected) {
+        ot_edn_connect_endpoint(s->edn, s->edn_ep, &ot_alert_fill_entropy, s);
+        s->edn_connected = true;
+    }
+    if (!s->entropy_requested) {
+        s->entropy_requested = true;
+        if (ot_edn_request_entropy(s->edn, s->edn_ep)) {
+            s->entropy_requested = false;
+        }
+    }
+}
+
+static void ot_alert_reseed_timer_cb(void *opaque)
+{
+    OtAlertState *s = opaque;
+    ot_alert_request_entropy(s);
+}
+
 static void ot_alert_reset_enter(Object *obj, ResetType type)
 {
     OtAlertClass *c = OT_ALERT_GET_CLASS(obj);
@@ -1167,6 +1205,11 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
     if (c->parent_phases.enter) {
         c->parent_phases.enter(obj, type);
     }
+
+    timer_del(&s->reseed_timer);
+    s->entropy_requested = false;
+    timer_mod(&s->reseed_timer,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 100000ULL);
 
     for (unsigned ix = 0; ix < s->n_classes; ix++) {
         qemu_bh_cancel(s->schedulers[ix].esc_releaser);
@@ -1265,6 +1308,9 @@ static void ot_alert_realize(DeviceState *dev, Error **errp)
             qemu_bh_new(&ot_alert_release_esc_fn, &s->schedulers[ix]);
         s->schedulers[ix].esc_tx_release = NULL;
     }
+
+    timer_init_full(&s->reseed_timer, NULL, OT_VIRTUAL_CLOCK, SCALE_NS, 0,
+                    &ot_alert_reseed_timer_cb, s);
 
     s->reg_count = size / sizeof(OtShadowReg);
     s->regs.shadow = g_new0(OtShadowReg, s->reg_count);

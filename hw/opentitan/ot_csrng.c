@@ -348,6 +348,7 @@ struct OtCSRNGState {
     bool sw_app_granted;
     bool read_int_granted;
     bool in_scheduler;
+    bool waiting_for_entropy;
     uint32_t scheduled_cmd;
     unsigned entropy_delay;
     unsigned es_retry_count;
@@ -792,19 +793,25 @@ static OtCSRNDCmdResult ot_csrng_drng_reseed(OtCSRNGInstance *inst, bool flag0)
         trace_ot_csrng_request_entropy(slot);
         OtEntropySrcState *ess = inst->parent->entropy_src;
         OtEntropySrcClass *esc = OT_ENTROPY_SRC_GET_CLASS(ess);
+        s->regs[R_INTR_STATE] |= INTR_CS_ENTROPY_REQ_MASK;
+        ot_csrng_update_irqs(s);
         res = esc->get_entropy(ess, entropy, &fips);
 
         if (res < 0) {
             s->entropy_delay = 0;
+            s->waiting_for_entropy = false;
             trace_ot_csrng_entropy_rejected(slot, "error", res);
             return CSRNG_CMD_STALLED;
         }
 
         if (res > 0) {
             s->entropy_delay = (res > 1) ? (unsigned)res : 0;
+            s->waiting_for_entropy = true;
             trace_ot_csrng_entropy_rejected(slot, "not ready", res);
             return CSRNG_CMD_RETRY;
         }
+
+        s->waiting_for_entropy = false;
 
         /* always perform XOR which is a no-op if material_len is zero */
         for (unsigned ix = 0; ix < OT_ENTROPY_SRC_DWORD_COUNT; ix++) {
@@ -1011,6 +1018,7 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
             }
         }
         s->enabled = false;
+        s->waiting_for_entropy = false;
         s->regs[R_SW_CMD_STS] &= ~R_SW_CMD_STS_CMD_RDY_MASK;
         s->es_retry_count = 0;
 
@@ -1697,6 +1705,11 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_INTR_STATE:
+        if (s->waiting_for_entropy) {
+            ot_csrng_command_scheduler(s);
+        }
+        val32 = s->regs[reg];
+        break;
     case R_INTR_ENABLE:
     case R_REGWEN:
     case R_CTRL:
@@ -1796,8 +1809,14 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 
     switch (reg) {
     case R_INTR_STATE:
+        if (s->waiting_for_entropy) {
+            ot_csrng_command_scheduler(s);
+        }
         val32 &= INTR_MASK;
         s->regs[reg] &= ~val32; /* RW1C */
+        if (s->waiting_for_entropy) {
+            s->regs[reg] |= INTR_CS_ENTROPY_REQ_MASK;
+        }
         ot_csrng_update_irqs(s);
         break;
     case R_INTR_ENABLE:
@@ -1993,6 +2012,7 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->regs[R_INT_STATE_READ_ENABLE] = 0x7u;
     s->regs[R_MAIN_SM_STATE] = 0x4eu;
     s->enabled = false;
+    s->waiting_for_entropy = false;
     s->sw_app_granted = false;
     s->read_int_granted = false;
     s->es_retry_count = 0;
