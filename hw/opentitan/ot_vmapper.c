@@ -31,6 +31,7 @@
 #include "exec/cputlb.h"
 #include "exec/page-protection.h"
 #include "exec/target_page.h"
+#include "exec/tb-flush.h"
 #include "hw/boards.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_vmapper.h"
@@ -120,10 +121,10 @@ static gint ot_vmapper_compare(gconstpointer a, gconstpointer b,
     (void)user_data;
 
     if (ra->start == rb->start) {
-        if (ra->end == rb->end) {
-            return (gint)ra->prio - (gint)rb->prio;
+        if (ra->prio == rb->prio) {
+            return (ra->end < rb->end) ? -1 : 1;
         }
-        return (ra->end < rb->end) ? -1 : 1;
+        return (gint)ra->prio - (gint)rb->prio;
     }
     return (ra->start < rb->start) ? -1 : 1;
 }
@@ -313,8 +314,9 @@ static void ot_vmapper_show_range_tree(const OtVMapperState *s, bool insn)
 /* class singleton */
 static OtVMapperClass *ot_vmapper_class;
 
-static int ot_vmapper_get_phy_addr(OtVMapperState *s, hwaddr *physical,
-                                   int *ret_prot, vaddr addr, int access_type)
+static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
+                                   hwaddr *physical, int *ret_prot, vaddr addr,
+                                   int access_type)
 {
     bool insn = access_type == MMU_INST_FETCH;
 
@@ -344,6 +346,11 @@ static int ot_vmapper_get_phy_addr(OtVMapperState *s, hwaddr *physical,
     if G_UNLIKELY (insn && !range->execute) {
         return TRANSLATE_PMP_FAIL;
     }
+
+    vaddr addr_page = addr & TARGET_PAGE_MASK;
+    env->tlb_subpage = (range->start > addr_page) ||
+                       (range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
+                       (((range->start ^ range->dest) & ~TARGET_PAGE_MASK) != 0);
 
     hwaddr offset = addr - (hwaddr)range->start;
     *physical = range->dest + offset;
@@ -378,7 +385,8 @@ static int ot_riscv_get_physical_address(
 
     OtVMapperState *s = ot_vmapper_class->instances[cpu->cpu_index];
 
-    return ot_vmapper_get_phy_addr(s, physical, ret_prot, addr, access_type);
+    return ot_vmapper_get_phy_addr(s, env, physical, ret_prot, addr,
+                                   access_type);
 }
 
 static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
@@ -406,7 +414,7 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
          */
 
         /* are two consecutive ranges overlapping? */
-        if (VMAP_RANGE(next)->start < VMAP_RANGE(current)->end) {
+        if (VMAP_RANGE(next)->start <= VMAP_RANGE(current)->end) {
             /*
              * next item starts before current ends: do split, two cases:
              *   +-----------------+       +---------------+
@@ -427,11 +435,13 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
                  */
                 if (VMAP_RANGE(current)->prio < VMAP_RANGE(next)->prio) {
                     /*
-                     * case (a1): next is fully masked by current, as next as
-                     * a less priority than current, skip next entirely
+                     * case (a1): next is fully masked by current, as next has
+                     * a lower priority than current, skip next entirely
                      */
-                    current = g_list_remove_link(current, next);
+                    rglist = g_list_remove_link(rglist, next);
+                    g_free(next->data);
                     g_list_free_1(next);
+                    continue;
                 } else {
                     /*
                      * case (a2): central part of current is masked by next
@@ -439,16 +449,18 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
                      * 2. insert the new region after next
                      * 3. update current's end position
                      */
-                    OtRegionRange *right = g_new0(OtRegionRange, 1);
-                    right->start = VMAP_RANGE(next)->end + 1u;
-                    right->end = VMAP_RANGE(current)->end;
-                    right->dest = VMAP_RANGE(current)->dest + right->start -
-                                  VMAP_RANGE(current)->start;
-                    right->prio = VMAP_RANGE(current)->prio;
-                    right->execute = VMAP_RANGE(current)->execute;
-                    right->active = true;
-                    /* assignation is useless, but GCC won't let it go */
-                    next = g_list_insert(next, right, 1u);
+                    if (VMAP_RANGE(next)->end < VMAP_RANGE(current)->end) {
+                        OtRegionRange *right = g_new0(OtRegionRange, 1);
+                        right->start = VMAP_RANGE(next)->end + 1u;
+                        right->end = VMAP_RANGE(current)->end;
+                        right->dest = VMAP_RANGE(current)->dest + right->start -
+                                      VMAP_RANGE(current)->start;
+                        right->prio = VMAP_RANGE(current)->prio;
+                        right->execute = VMAP_RANGE(current)->execute;
+                        right->active = true;
+                        /* assignation is useless, but GCC won't let it go */
+                        next = g_list_insert(next, right, 1u);
+                    }
                     /* trim current on next */
                     VMAP_RANGE(current)->end = VMAP_RANGE(next)->start - 1u;
                 }
@@ -463,9 +475,10 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
                  */
                 if (VMAP_RANGE(current)->prio < VMAP_RANGE(next)->prio) {
                     /* case (b1): next is partially masked by current, trim it*/
-                    VMAP_RANGE(next)->dest +=
-                        VMAP_RANGE(current)->end - VMAP_RANGE(next)->start;
-                    VMAP_RANGE(next)->start = VMAP_RANGE(current)->end + 1u;
+                    uint32_t shift =
+                        VMAP_RANGE(current)->end - VMAP_RANGE(next)->start + 1u;
+                    VMAP_RANGE(next)->dest += shift;
+                    VMAP_RANGE(next)->start += shift;
                 } else {
                     /* case (b2): current is partially masked by next, trim it*/
                     VMAP_RANGE(current)->end = VMAP_RANGE(next)->start - 1u;
@@ -485,184 +498,75 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
 
 static GList *ot_vmapper_range_split_noexec(OtVMapperState *s, GList *rglist)
 {
-    (void)s;
-
-    /*
-     * split the list into two sub-lists
-     * - first list contains the "(no)exec" ranges; they can be identified
-     *   thanks to their higher priority
-     * - second list contains the remap ranges
-     * the input list must be sorted, highest priority first, and all overlaps
-     * must have been discretized.
-     */
-    GList *current;
     GList *noexec = NULL;
-    GList *noexec_last = NULL;
-    GList *trans = NULL;
-    current = rglist;
-    while (current) {
-        if (VMAP_RANGE(current)->prio >= VMAP_TRANS_PRIORITY_BASE) {
-            /* first range that is not a noexec one */
-            if (current->prev) {
-                /* there is at list one range in the noexec list */
-                noexec = rglist;
-                noexec_last = current->prev;
-                /* end the noexec list */
-                noexec_last->next = NULL;
-            }
-            /* first range of the remap list is the current node */
-            trans = current;
-            trans->prev = NULL;
-            break;
+
+    for (unsigned ix = 0; ix < (unsigned)s->noexec_count; ix++) {
+        const OtRegionRange *crg = &s->iranges[s->trans_count + ix];
+        if (!crg->active) {
+            continue;
         }
-        current = current->next;
+        OtRegionRange *range = g_new0(OtRegionRange, 1);
+        memcpy(range, crg, sizeof(OtRegionRange));
+        noexec = g_list_prepend(noexec, range);
     }
 
     if (!noexec) {
-        /* there are no defined noexec range, end work here */
         return rglist;
     }
 
+    noexec = g_list_sort_with_data(noexec, &ot_vmapper_compare, NULL);
+
     /*
-     * for each translating range, check whether it translates into one or more
-     * noexec range.
+     * For each virtual range in rglist, check whether its destination address
+     * range [dst_start .. dst_end] overlaps one or more physical noexec ranges.
      */
-    current = trans;
+    GList *current = rglist;
     while (current) {
         uint32_t dst_start = VMAP_RANGE(current)->dest;
         uint32_t dst_end =
             dst_start + (VMAP_RANGE(current)->end - VMAP_RANGE(current)->start);
         GList *curnx = noexec;
         while (curnx) {
-            if (VMAP_RANGE(curnx)->start > dst_end) {
-                /*
-                 * ranges are sorted, no other noexec range may match, move to
-                 * next translation range
-                 *   +-----------------+
-                 *   |       dst       |
-                 *   +-----------------+  +---------+
-                 *                        |  curnx  |
-                 *                        +---------+
-                 */
+            uint32_t nx_start = VMAP_RANGE(curnx)->start;
+            uint32_t nx_end = VMAP_RANGE(curnx)->end;
+
+            if (nx_start > dst_end) {
                 break;
             }
-            if (VMAP_RANGE(curnx)->end < dst_start) {
-                /*
-                 * noexec range ends before translation range starts, skip
-                 * noexec and move to the next one
-                 *                 +-----------------+
-                 *                 |       dst       |
-                 *   +---------+   +-----------------+
-                 *   |  curnx  |
-                 *   +---------+
-                 */
+            if (nx_end < dst_start) {
                 curnx = curnx->next;
                 continue;
             }
 
-            if (VMAP_RANGE(curnx)->start > dst_start) {
-                /*
-                 * noexec range starts within translation range, two cases:
-                 *   +-----------------+        +-----------------+
-                 *   |       dst       |        |       dst       |
-                 *   +---+---------+---+        +---+-------------+-----+
-                 *       |  curnx  |     (a1)       |       curnx       | (a2)
-                 *       +---------+                +-------------------+
-                 */
-
-                uint32_t left_size;
-                OtRegionRange *right;
-
-                /*
-                 * create a left region that matches the left side of the
-                 * translation region which does not care about the noexec
-                 * region; then replace the current region with the remaining
-                 * right side of the translation region
-                 */
-                left_size = VMAP_RANGE(curnx)->start - dst_start + 1u;
-                right = g_new0(OtRegionRange, 1);
-                memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
-                right->start = VMAP_RANGE(current)->start + left_size;
-                right->dest = VMAP_RANGE(current)->dest + left_size;
-                VMAP_RANGE(current)->end =
-                    VMAP_RANGE(current)->end + left_size - 1u;
-                dst_start += left_size;
-                current = g_list_insert(current, right, 1u);
-                current = current->next; /* i.e. right */
-                /*
-                 * the a1/a2 cases are now simplified as:
-                 *   +-------------+        +-------------+
-                 *   |    dst'     |        |    dst'     |
-                 *   +---------+---+        +-------------+-----+
-                 *   |  curnx  |     (a1')  |       curnx       | (a2)
-                 *   +---------+            +-------------------+
-                 */
-
-                if (VMAP_RANGE(curnx)->end >= dst_end) {
-                    /*
-                     * case (a2'): curnx extends up to or beyond the current
-                     * translation range. Apply the execution state of the
-                     * noexec range to the current translation range, and move
-                     * to the next one
-                     */
-                    VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
-                    break;
-                }
-                /*
-                 * case (a1'): create a new region with the right side of the
-                 * translation region which does not care about the current
-                 * no exec region, and apply the execution state of the noexec
-                 * region to the left side of the translation region
-                 */
-                left_size =
-                    VMAP_RANGE(curnx)->end - VMAP_RANGE(curnx)->start + 1u;
-                right = g_new0(OtRegionRange, 1);
-                memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
-                right->start = VMAP_RANGE(current)->start + left_size;
-                right->dest = VMAP_RANGE(current)->dest + left_size;
-                VMAP_RANGE(current)->end =
-                    VMAP_RANGE(current)->end + left_size - 1u;
-                VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
-                dst_start += left_size;
-                current = g_list_insert(current, right, 1u);
-                current = current->next; /* i.e. right */
-            } else {
-                /*
-                 * noexec range starts before translation range, two cases:
-                 *          +------------+              +-----------+
-                 *          |     dst    |              |    dst    |
-                 *   +------+--+---------+        +-----+-----------------+
-                 *   |  curnx  |           (b1)   |          curnx        | (b2)
-                 *   +---------+                  +-----------------------+
-                 */
-                if (VMAP_RANGE(curnx)->end >= dst_end) {
-                    /*
-                     * case (b2): curnx overlaps the whole translation range
-                     * destination: apply the execution state of the noexec
-                     * range to the translation range, and move to the next
-                     * translation range.
-                     */
-                    VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
-                    break;
-                }
-
-                /*
-                 * case (b1): curnx partially overlaps the current translation
-                 * range. Split the latter into two ranges: apply the execution
-                 * state of the noexec range to the left translation range,
-                 * leave the right transalation range state unmodified.
-                 */
-                uint32_t left_size = VMAP_RANGE(curnx)->end - dst_start + 1u;
+            if (nx_start > dst_start) {
+                uint32_t left_size = nx_start - dst_start;
                 OtRegionRange *right = g_new0(OtRegionRange, 1);
                 memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
                 right->start = VMAP_RANGE(current)->start + left_size;
                 right->dest = VMAP_RANGE(current)->dest + left_size;
                 VMAP_RANGE(current)->end =
                     VMAP_RANGE(current)->start + left_size - 1u;
-                VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
                 current = g_list_insert(current, right, 1u);
-                current = current->next; /* i.e. right */
+                current = current->next;
+                dst_start = VMAP_RANGE(current)->dest;
             }
+
+            if (nx_end >= dst_end) {
+                VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
+                break;
+            }
+
+            uint32_t overlap_size = nx_end - dst_start + 1u;
+            OtRegionRange *right = g_new0(OtRegionRange, 1);
+            memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
+            right->start = VMAP_RANGE(current)->start + overlap_size;
+            right->dest = VMAP_RANGE(current)->dest + overlap_size;
+            VMAP_RANGE(current)->end =
+                VMAP_RANGE(current)->start + overlap_size - 1u;
+            VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
+            current = g_list_insert(current, right, 1u);
+            current = current->next;
+            dst_start = VMAP_RANGE(current)->dest;
 
             curnx = curnx->next;
         }
@@ -670,14 +574,9 @@ static GList *ot_vmapper_range_split_noexec(OtVMapperState *s, GList *rglist)
         current = current->next;
     }
 
-    /* restore the whole range list */
-    g_assert(noexec_last);
+    g_list_free_full(noexec, &g_free);
 
-    /* reconnect the noexec list with the translation list */
-    noexec_last->next = trans;
-    trans->prev = noexec_last;
-
-    return noexec;
+    return rglist;
 }
 
 static GList *
@@ -818,10 +717,9 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
 {
     GList *rglist = NULL;
     OtRegionRange *ranges = insn ? s->iranges : s->dranges;
-    unsigned range_count = s->trans_count + (insn ? s->noexec_count : 0);
 
-    /* create sortable range items and add them to a new list */
-    for (unsigned ix = 0; ix < range_count; ix++) {
+    /* create sortable range items from active translation slots */
+    for (unsigned ix = 0; ix < s->trans_count; ix++) {
         const OtRegionRange *crg = &ranges[ix];
 
         /* ignore disabled range entries */
@@ -839,8 +737,7 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
     if (rglist) {
         VMAP_SHOW_RANGE_LIST(s, insn, rglist, "initial");
 
-        /* sort the list, in start address order (end address if start are
-         * equal) */
+        /* sort the list, in start address order */
         rglist = g_list_sort_with_data(rglist, &ot_vmapper_compare, NULL);
 
         VMAP_SHOW_RANGE_LIST(s, insn, rglist, "sorted");
@@ -848,34 +745,27 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
         rglist = ot_vmapper_range_discretize(s, rglist);
 
         VMAP_SHOW_RANGE_LIST(s, insn, rglist, "discretized");
-
-        /* now rglist contains a list of unique range permissions */
-
-        /*
-         * split ranges that span across execution disabled HW regions and
-         * disable ranges that redirect execution disabled HW regions
-         */
-        if (insn) {
-            rglist = ot_vmapper_range_split_noexec(s, rglist);
-
-            VMAP_SHOW_RANGE_LIST(s, insn, rglist, "split_nx");
-        }
-
-        /* fill all empty gaps with denied ranges */
-        rglist = ot_vmapper_fill_empty_gaps(s, rglist, insn);
-
-        VMAP_SHOW_RANGE_LIST(s, insn, rglist, "extended");
-
-        /* combine adjacent items sharing the same properties */
-        rglist = ot_vmapper_fuse(s, rglist);
-
-        VMAP_SHOW_RANGE_LIST(s, insn, rglist, "fused");
-    } else {
-        /* create a one item list with no access for the whole address range */
-        rglist = ot_vmapper_fill_empty_gaps(s, rglist, insn);
-
-        VMAP_SHOW_RANGE_LIST(s, insn, rglist, "default");
     }
+
+    /* fill all empty gaps with 1:1 mapped ranges */
+    rglist = ot_vmapper_fill_empty_gaps(s, rglist, insn);
+
+    VMAP_SHOW_RANGE_LIST(s, insn, rglist, "extended");
+
+    /*
+     * split ranges that span across execution disabled HW regions and
+     * disable ranges that redirect to execution disabled HW regions
+     */
+    if (insn) {
+        rglist = ot_vmapper_range_split_noexec(s, rglist);
+
+        VMAP_SHOW_RANGE_LIST(s, insn, rglist, "split_nx");
+    }
+
+    /* combine adjacent items sharing the same properties */
+    rglist = ot_vmapper_fuse(s, rglist);
+
+    VMAP_SHOW_RANGE_LIST(s, insn, rglist, "fused");
 
     /* rglist is freed on return */
     ot_vmapper_rebuild_tree(s, insn, rglist);
@@ -946,7 +836,13 @@ static void ot_vmapper_translate(OtVMapperState *s, bool insn, unsigned slot,
     ot_vmapper_update(s, insn);
     s->show = false;
 
-    tlb_flush_all_cpus_synced(s->cpu);
+    if (qemu_cpu_is_self(s->cpu)) {
+        tlb_flush(s->cpu);
+        tb_flush__exclusive_or_serial();
+    } else {
+        tlb_flush_all_cpus_synced(s->cpu);
+        queue_tb_flush(s->cpu);
+    }
 }
 
 static unsigned
@@ -1029,7 +925,13 @@ static void ot_vmapper_disable_exec(OtVMapperState *s, const MemoryRegion *mr,
     ot_vmapper_update(s, true);
     s->show = false;
 
-    tlb_flush_all_cpus_synced(s->cpu);
+    if (qemu_cpu_is_self(s->cpu)) {
+        tlb_flush(s->cpu);
+        tb_flush__exclusive_or_serial();
+    } else {
+        tlb_flush_all_cpus_synced(s->cpu);
+        queue_tb_flush(s->cpu);
+    }
 }
 
 static CPUState *ot_vmapper_retrieve_cpu(OtVMapperState *s)
