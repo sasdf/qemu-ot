@@ -1543,6 +1543,7 @@ static void ot_spi_device_flash_exec_sw_command(OtSPIDeviceState *s, uint8_t rx)
     case SPI_FLASH_ERROR:
         trace_ot_spi_device_flash_byte_unexpected(s->ot_id, rx);
         BUS_CHANGE_STATE(s, DISCARD);
+        s->bus.failed_transaction = true;
         break;
     case SPI_FLASH_COLLECT:
     case SPI_FLASH_BUFFER:
@@ -1580,6 +1581,8 @@ static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
             trace_ot_spi_device_flash_unknown_command(s->ot_id, rx);
             FLASH_CHANGE_STATE(s, ERROR);
             BUS_CHANGE_STATE(s, DISCARD);
+            s->bus.failed_transaction = true;
+            tx = (ot_pinmux_eg_get_dio_sleep_val(6u) == 1) ? 0xffu : 0x00u;
         }
         break;
     case SPI_FLASH_COLLECT:
@@ -1600,8 +1603,11 @@ static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
         break;
     case SPI_FLASH_DONE:
         FLASH_CHANGE_STATE(s, ERROR);
-        break;
+        /* fallthrough */
     case SPI_FLASH_ERROR:
+        BUS_CHANGE_STATE(s, DISCARD);
+        s->bus.failed_transaction = true;
+        tx = (ot_pinmux_eg_get_dio_sleep_val(6u) == 1) ? 0xffu : 0x00u;
         break;
     default:
         error_setg(&error_fatal, "unexpected state %s[%d]\n",
@@ -2613,8 +2619,7 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 static void ot_spi_device_chr_send_discard(OtSPIDeviceState *s, unsigned count)
 {
     int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
-    uint8_t val = (sleep_val == 0) ? 0x00u :
-                  (sleep_val == 1) ? 0xffu : SPI_DEFAULT_TX_RX_VALUE;
+    uint8_t val = (sleep_val == 1) ? 0xffu : 0x00u;
     const uint8_t buf[1u] = { val };
 
     while (count--) {

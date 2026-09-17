@@ -3430,17 +3430,18 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
     }
 
     /*
-     * Secret and attestation seed info pages are not erased during factory
-     * personalization if unprovisioned, whereas certificate and general info
-     * pages are erased to all 1s. Mark all pages as provisioned by default
-     * except unprovisioned secret/seed pages:
+     * Unprovisioned secret, attestation seed, and certificate info pages
+     * raise RD_ERR when read with scrambling and ECC enabled before being
+     * erased or programmed:
      *   Bank 0 Info 0 Pages 1..4 (CreatorSecret, OwnerSecret, WaferAuthSecret,
      *                             AttestationKeySeeds) -> indices 1..4
+     *   Bank 0 Info 0 Page 9 (FactoryCerts) -> index 9
      *   Bank 1 Info 0 Pages 2..3 (OwnerSlot0, OwnerSlot1) -> indices 15..16
+     *   Bank 1 Info 0 Page 9 (DiceCerts) -> index 22
      */
     const uint32_t unprovisioned_default_mask =
-        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) |
-        (1u << 15) | (1u << 16);
+        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 9) |
+        (1u << 15) | (1u << 16) | (1u << 22);
     unsigned total_info_pages =
         (flash->bank_count * flash->info_size) / BYTES_PER_PAGE;
     flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
