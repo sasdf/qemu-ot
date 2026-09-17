@@ -1081,6 +1081,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    qemu_bh_cancel(s->fsm_tick_bh);
     timer_del(s->cdc_sync);
     uint32_t wake_info = s->regs[R_WAKE_INFO];
     memset(s->regs, 0, REGS_SIZE);

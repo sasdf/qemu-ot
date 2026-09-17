@@ -2782,6 +2782,11 @@ static void ot_otp_engine_reset_enter(Object *obj, ResetType type)
     ibex_irq_set(&s->pwc_otp_rsp, 0);
 
     for (unsigned part_ix = 0; part_ix < s->part_count; part_ix++) {
+        s->part_ctrls[part_ix].digest = 0;
+        s->part_ctrls[part_ix].locked = false;
+        s->part_ctrls[part_ix].failed = false;
+        s->part_ctrls[part_ix].read_lock = false;
+        s->part_ctrls[part_ix].write_lock = false;
         /* @todo initialize with actual default partition data once known */
         if (s->part_descs[part_ix].buffered) {
             s->part_ctrls[part_ix].state.b = OT_OTP_BUF_IDLE;
@@ -2791,7 +2796,6 @@ static void ot_otp_engine_reset_enter(Object *obj, ResetType type)
         }
         unsigned part_size = ot_otp_engine_part_data_byte_size(s, part_ix);
         memset(s->part_ctrls[part_ix].buffer.data, 0, part_size);
-        s->part_ctrls[part_ix].digest = 0;
         if (s->part_descs[part_ix].iskeymgr_creator ||
             s->part_descs[part_ix].iskeymgr_owner) {
             s->part_ctrls[part_ix].read_lock = true;
