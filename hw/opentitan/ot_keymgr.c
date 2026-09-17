@@ -1886,16 +1886,16 @@ static void ot_keymgr_lc_signal(void *opaque, int irq, int level)
     trace_ot_keymgr_lc_signal(s->ot_id, level);
 
     bool enablement_changed = enable_keymgr ^ s->enabled;
-    if (!enablement_changed) {
-        return;
-    }
-
     s->enabled = enable_keymgr;
 
     if (s->enabled) {
         s->regs[R_CFG_REGWEN] |= R_CFG_REGWEN_EN_MASK;
     } else {
         s->regs[R_CFG_REGWEN] &= ~R_CFG_REGWEN_EN_MASK;
+    }
+
+    if (!enablement_changed) {
+        return;
     }
 
     ot_keymgr_schedule_fsm(s);
@@ -2397,7 +2397,7 @@ static void ot_keymgr_reset_enter(Object *obj, ResetType type)
 
     /* reset registers */
     memset(s->regs, 0u, sizeof(s->regs));
-    s->regs[R_CFG_REGWEN] = 0x1u;
+    s->regs[R_CFG_REGWEN] = 0x0u;
     ot_shadow_reg_init(&s->control, 0x10u);
     s->regs[R_RESEED_INTERVAL_REGWEN] = 0x1u;
     ot_shadow_reg_init(&s->reseed_interval, 0x100u);

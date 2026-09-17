@@ -639,7 +639,13 @@ static bool ot_otp_engine_is_readable(const OtOTPEngineState *s,
     const OtOTPPartController *pctrl = &s->part_ctrls[part_ix];
 
     if (pdesc->secret) {
-        /* secret partitions are only readable if digest is not yet set. */
+        /*
+         * secret partitions are only readable if digest is not yet set and
+         * HW read lock (e.g. CREATOR_SEED_SW_RW_EN) is not asserted.
+         */
+        if (pdesc->read_lock && pctrl->read_lock) {
+            return false;
+        }
         return pctrl->digest == 0u;
     }
 
@@ -702,6 +708,8 @@ static void ot_otp_engine_lci_change_state_line(OtOTPEngineState *s,
     s->lci->state = state;
 }
 
+static void ot_otp_engine_lc_broadcast_bh(void *opaque);
+
 static void ot_otp_engine_lc_broadcast_recv(void *opaque, int n, int level)
 {
     OtOTPEngineState *s = opaque;
@@ -721,8 +729,7 @@ static void ot_otp_engine_lc_broadcast_recv(void *opaque, int n, int level)
         bcast->level &= ~bit;
     }
 
-    /* use a BH to decouple IRQ signaling from actual handling */
-    qemu_bh_schedule(s->lc_broadcast.bh);
+    ot_otp_engine_lc_broadcast_bh(s);
 }
 
 static void ot_otp_engine_lc_broadcast_bh(void *opaque)
