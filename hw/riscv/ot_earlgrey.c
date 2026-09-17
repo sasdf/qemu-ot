@@ -1500,10 +1500,12 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
                           OT_OTP_LC_ESCALATE_EN),
             OT_EG_SOC_S2D(1, FLASH_CTRL, OT_LC_BROADCAST,
                           OT_FLASH_LC_ESCALATE_EN),
-            OT_EG_SOC_S2D(2, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0)
+            OT_EG_SOC_S2D(2, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0),
+            OT_EG_SOC_S2D(3, SRAM_RET_CTRL, OT_SRAM_CTRL_LC_ESCALATE_EN, 0),
+            OT_EG_SOC_S2D(4, SRAM_MAIN_CTRL, OT_SRAM_CTRL_LC_ESCALATE_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 3u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 5u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_SEED_HW_RD] = {

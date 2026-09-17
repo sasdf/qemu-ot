@@ -193,6 +193,20 @@ static void ot_sram_ctrl_mem_switch_to_ram(OtSramCtrlState *s)
     trace_ot_sram_ctrl_switch_mem(s->ot_id, "ram");
 }
 
+static void ot_sram_ctrl_mem_switch_to_init(OtSramCtrlState *s)
+{
+    if (s->noinit) {
+        return;
+    }
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->mem->sram, false);
+    memory_region_set_enabled(&s->mem->init, true);
+    s->mem->alias.alias = &s->mem->init;
+    memory_region_transaction_commit();
+
+    trace_ot_sram_ctrl_switch_mem(s->ot_id, "init");
+}
+
 static bool ot_sram_ctrl_mem_is_fully_initialized(const OtSramCtrlState *s)
 {
     for (unsigned ix = 0; ix < s->init_slot_count; ix++) {
@@ -242,7 +256,7 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
 
         s->init_slot_bm = g_new0(uint64_t, s->init_slot_count);
 
-        if (!s->noswitch) {
+        if (!s->noswitch && !(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
             /* switch memory to SRAM */
             trace_ot_sram_ctrl_initialization_complete(s->ot_id, "ctrl");
             ot_sram_ctrl_mem_switch_to_ram(s);
@@ -402,6 +416,21 @@ static void ot_sram_ctrl_lc_signal(void *opaque, int irq, int level)
     trace_ot_sram_ctrl_lc_signal(s->ot_id, level);
 
     s->lc_hw_debug_ifetch = (bool)level;
+}
+
+static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
+{
+    OtSramCtrlState *s = opaque;
+
+    g_assert(irq == 0);
+
+    if (level) {
+        s->regs[R_STATUS] |= R_STATUS_ESCALATED_MASK;
+        s->regs[R_STATUS] &= ~(R_STATUS_SCR_KEY_VALID_MASK |
+                               R_STATUS_SCR_KEY_SEED_VALID_MASK);
+        s->scr_key = 0u;
+        ot_sram_ctrl_mem_switch_to_init(s);
+    }
 }
 
 static void ot_sram_ctrl_update_exec(OtSramCtrlState *s)
@@ -587,6 +616,13 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
     (void)size;
     (void)attrs;
 
+    if (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: attempt to read from escalated SRAM @ 0x%06x\n",
+                      __func__, s->ot_id, (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
+
     uint32_t pc = ibex_get_current_pc();
 
     unsigned cell = addr >> 2u;
@@ -644,6 +680,13 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
 {
     OtSramCtrlState *s = opaque;
     (void)attrs;
+
+    if (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: attempt to write to escalated SRAM @ 0x%06x\n",
+                      __func__, s->ot_id, (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sram_ctrl_mem_io_write(s->ot_id, (uint32_t)addr, size,
@@ -801,6 +844,10 @@ static void ot_sram_ctrl_reset_exit(Object *obj, ResetType type)
     s->otp_ifetch = (s->otp_ctrl == NULL);
     s->csr_ifetch = (s->regs[R_EXEC] == OT_MULTIBITBOOL4_TRUE);
 
+    if (s->initialized && !s->noswitch && !s->noinit) {
+        ot_sram_ctrl_mem_switch_to_ram(s);
+    }
+
     ot_sram_ctrl_update_exec(s);
 }
 
@@ -917,6 +964,8 @@ static void ot_sram_ctrl_init(Object *obj)
 
     qdev_init_gpio_in_named(DEVICE(obj), &ot_sram_ctrl_lc_signal,
                             OT_SRAM_CTRL_HW_DEBUG_EN, 1);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_sram_ctrl_lc_escalate,
+                            OT_SRAM_CTRL_LC_ESCALATE_EN, 1);
 
     s->mem = g_new0(OtSramCtrlMem, 1u);
     s->init_timer =
