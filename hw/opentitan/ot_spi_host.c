@@ -384,7 +384,7 @@ struct OtSPIHostState {
     uint8_t bb_last_tx_bit;
     unsigned bb_completed_txns;
 
-    /* 32-bit shift-register loopback when no SSI slave is attached or loopback prop set */
+    /* 32-bit shift-register loopback when loopback property is set */
     uint8_t loopback_fifo[4];
     unsigned loopback_len;
     bool loopback;
@@ -1072,9 +1072,7 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
                         "%s: %s: Host transfer while Passthrough is active\n",
                         __func__, s->ot_id);
                 }
-            } else if (!s->loopback && !QTAILQ_EMPTY(&BUS(s->ssi)->children)) {
-                rx = (uint8_t)ssi_transfer(s->ssi, tx);
-            } else {
+            } else if (s->loopback) {
                 if (s->loopback_len < 4u) {
                     rx = 0xffu;
                     s->loopback_fifo[s->loopback_len++] = tx;
@@ -1083,6 +1081,8 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
                     memmove(&s->loopback_fifo[0], &s->loopback_fifo[1], 3u);
                     s->loopback_fifo[3] = tx;
                 }
+            } else {
+                rx = (uint8_t)ssi_transfer(s->ssi, tx);
             }
         }
 
