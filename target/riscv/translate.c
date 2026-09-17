@@ -30,6 +30,7 @@
 #include "semihosting/semihost.h"
 
 #include "internals.h"
+#include "pmp.h"
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -119,6 +120,7 @@ typedef struct DisasContext {
     bool fcfi_lp_expected;
     /* zicfiss extension, if shadow stack was enabled during TB gen */
     bool bcfi_enabled;
+    vaddr pmp_exec_end;
 } DisasContext;
 
 #define DISAS_SSTEP       DISAS_TARGET_0
@@ -1338,6 +1340,12 @@ static void riscv_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->zero = tcg_constant_tl(0);
     ctx->virt_inst_excp = false;
     ctx->decoders = cpu->decoders;
+#ifndef CONFIG_USER_ONLY
+    ctx->pmp_exec_end = pmp_get_page_exec_end(env, ctx->base.pc_first);
+#else
+    ctx->pmp_exec_end = (ctx->base.pc_first & TARGET_PAGE_MASK) +
+                        TARGET_PAGE_SIZE - 1;
+#endif
 }
 
 static void riscv_tr_tb_start(DisasContextBase *db, CPUState *cpu)
@@ -1361,9 +1369,23 @@ static void riscv_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     CPURISCVState *env = cpu_env(cpu);
+    vaddr insn_end;
 
     decode_opc(env, ctx);
+    insn_end = ctx->base.pc_next + ctx->cur_insn_len - 1;
     ctx->base.pc_next += ctx->cur_insn_len;
+
+#ifndef CONFIG_USER_ONLY
+    if (unlikely(insn_end > ctx->pmp_exec_end &&
+                 translator_is_same_page(&ctx->base, insn_end))) {
+        tcg_ctx->emit_before_op = QTAILQ_NEXT(ctx->base.insn_start, link);
+        gen_helper_raise_exception(tcg_env,
+                      tcg_constant_i32(RISCV_EXCP_INST_ACCESS_FAULT));
+        tcg_ctx->emit_before_op = NULL;
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return;
+    }
+#endif
 
     if (unlikely(ctx->cs->singlestep_enabled)) {
         ctx->base.is_jmp = DISAS_SSTEP;
@@ -1386,18 +1408,20 @@ static void riscv_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         ctx->base.is_jmp = DISAS_NORETURN;
     }
 
-    /* Only the first insn within a TB is allowed to cross a page boundary. */
+    /* Only the first insn within a TB is allowed to cross a page or PMP boundary. */
     if (ctx->base.is_jmp == DISAS_NEXT) {
-        if (ctx->itrigger || !translator_is_same_page(&ctx->base, ctx->base.pc_next)) {
+        if (ctx->itrigger ||
+            !translator_is_same_page(&ctx->base, ctx->base.pc_next) ||
+            ctx->base.pc_next > ctx->pmp_exec_end) {
             ctx->base.is_jmp = DISAS_TOO_MANY;
         } else {
-            unsigned page_ofs = ctx->base.pc_next & ~TARGET_PAGE_MASK;
+            vaddr end = ctx->pmp_exec_end;
 
-            if (page_ofs > TARGET_PAGE_SIZE - MAX_INSN_LEN) {
+            if (ctx->base.pc_next > end - MAX_INSN_LEN + 1) {
                 uint16_t next_insn = cpu_lduw_code(env, ctx->base.pc_next);
                 int len = insn_len(next_insn);
 
-                if (!translator_is_same_page(&ctx->base, ctx->base.pc_next + len - 1)) {
+                if (ctx->base.pc_next + len - 1 > end) {
                     ctx->base.is_jmp = DISAS_TOO_MANY;
                 }
             }

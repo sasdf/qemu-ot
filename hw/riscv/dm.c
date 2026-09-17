@@ -335,6 +335,7 @@ struct RISCVDMState {
     uint64_t nonexistent_bm; /* Selected harts that are not existent */
     uint64_t unavailable_bm; /* Selected harts that are not available */
     uint64_t haltreq_bm; /* Selected harts that have a pending halt request */
+    uint64_t resethaltreq_bm; /* Selected harts with reset-halt request */
     uint64_t reset_bm; /* Selected harts that have an ongoing reset request */
     uint64_t to_go_bm; /* Harts that have been flagged for debug exec */
     uint32_t address; /* DM register addr: only bADDRESS_BITS..b0 are used */
@@ -344,6 +345,7 @@ struct RISCVDMState {
     MemTxAttrs mta_sba; /* MemTxAttrs to access system bus devices */
     bool cmd_busy; /* A command is being executed */
     bool dtm_ok; /* DTM is available */
+    bool in_ndmreset; /* System reset triggered by DMCONTROL.ndmreset */
 
     /* config */
     RISCVDTMState *dtm;
@@ -1315,18 +1317,65 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
         if (value & R_DMCONTROL_ACKHAVERESET_MASK) {
             unsigned hix = 0;
             while (hix < dm->hart_count) {
-                dm->harts->have_reset = false;
+                dm->harts[hix].have_reset = false;
                 hix++;
             }
         }
     }
 
+    if (!hasel && (hartsel < dm->hart_count)) {
+        uint64_t hartbit = 1u << hartsel;
+        if (value & R_DMCONTROL_SETRESETHALTREQ_MASK) {
+            dm->resethaltreq_bm |= hartbit;
+        }
+        if (value & R_DMCONTROL_CLRRESETHALTREQ_MASK) {
+            dm->resethaltreq_bm &= ~hartbit;
+        }
+        if (value & R_DMCONTROL_HALTREQ_MASK) {
+            dm->haltreq_bm |= hartbit;
+        } else {
+            dm->haltreq_bm &= ~hartbit;
+        }
+    }
 
     RISCVDMCmdErr ret = CMD_ERR_NONE;
+    bool prev_ndmreset =
+        (bool)(dm->regs[A_DMCONTROL] & R_DMCONTROL_NDMRESET_MASK);
+    bool cur_ndmreset = (bool)(value & R_DMCONTROL_NDMRESET_MASK);
 
-    if (unlikely(value & R_DMCONTROL_NDMRESET_MASK)) {
-        /* full system reset (but the Debug Module) */
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    if (cur_ndmreset) {
+        dm->in_ndmreset = true;
+        for (unsigned ix = 0; ix < dm->hart_count; ix++) {
+            RISCVDMHartState *hart = &dm->harts[ix];
+            CPUState *cs = CPU(hart->cpu);
+            cs->disabled = true;
+            cpu_pause(cs);
+            dm->unavailable_bm |= 1u << ix;
+            hart->halted = false;
+            hart->resumed = false;
+            hart->have_reset = true;
+        }
+    } else if (prev_ndmreset) {
+        dm->in_ndmreset = true;
+        qemu_system_reset(SHUTDOWN_CAUSE_GUEST_RESET);
+        dm->in_ndmreset = false;
+        for (unsigned ix = 0; ix < dm->hart_count; ix++) {
+            RISCVDMHartState *hart = &dm->harts[ix];
+            uint64_t hartbit = 1u << ix;
+            hart->have_reset = true;
+            hart->halted = false;
+            hart->resumed = false;
+            if ((dm->haltreq_bm | dm->resethaltreq_bm) & hartbit) {
+                CPUState *cs = CPU(hart->cpu);
+                riscv_cpu_store_debug_cause(
+                    cs, (dm->resethaltreq_bm & hartbit) ?
+                            DCSR_CAUSE_RESETHALTREQ :
+                            DCSR_CAUSE_HALTREQ);
+                cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
+                riscv_dm_set_cs(dm, true);
+                riscv_dm_ensure_running(dm);
+            }
+        }
     } else if (dm->hart) {
         if (!hasel && (hartsel < dm->hart_count)) {
             uint64_t hartbit = 1u << hartsel;
@@ -1335,8 +1384,6 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
                     trace_riscv_dm_unavailable_hart_control(dm->soc, hartsel,
                                                             "halt");
                     ret = CMD_ERR_HALT_RESUME;
-                    /* flag the haltreq as pending while unavailable */
-                    dm->haltreq_bm |= hartbit;
                 } else {
                     riscv_dm_halt_hart(dm, hartsel);
                 }
@@ -1558,7 +1605,7 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
              * latch haltreqs for unresponsive cores and halt any hart that is
              * polled as newly available/responsive on a `dmstatus` read.
              */
-            if (dm->haltreq_bm & mask) {
+            if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
                 riscv_dm_halt_hart(dm, hix);
             }
         }
@@ -2570,6 +2617,10 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
 
+    if (dm->in_ndmreset) {
+        return;
+    }
+
     trace_riscv_dm_reset(dm->soc, "enter");
 
     if (c->parent_phases.enter) {
@@ -2597,6 +2648,7 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
     dm->nonexistent_bm = 0;
     dm->unavailable_bm = 0;
     dm->haltreq_bm = 0;
+    dm->resethaltreq_bm = 0;
     dm->reset_bm = 0;
     dm->address = 0;
     dm->to_go_bm = 0;
@@ -2616,6 +2668,17 @@ static void riscv_dm_reset_exit(Object *obj, ResetType type)
 {
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
+
+    if (dm->in_ndmreset) {
+        for (unsigned ix = 0; ix < dm->hart_count; ix++) {
+            RISCVDMHartState *hart = &dm->harts[ix];
+            hart->have_reset = true;
+            hart->halted = false;
+            hart->resumed = false;
+            dm->unavailable_bm |= 1u << ix;
+        }
+        return;
+    }
 
     if (c->parent_phases.exit) {
         c->parent_phases.exit(obj, type);

@@ -45,6 +45,7 @@
 #include "hw/loader.h"
 #include "hw/misc/pulp_rv_dm.h"
 #include "hw/opentitan/ot_alert.h"
+#include "hw/opentitan/ot_common.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -71,6 +72,9 @@
 /* MMIO Regs */
 REG32(ALERT_TEST, 0x0u)
     FIELD(ALERT_TEST, FATAL_FAULT, 0u, 1u)
+REG32(LATE_DEBUG_ENABLE_REGWEN, 0x4u)
+    FIELD(LATE_DEBUG_ENABLE_REGWEN, REGWEN, 0u, 1u)
+REG32(LATE_DEBUG_ENABLE, 0x8u)
 
 /* MMIO Mem (Actions) */
 REG32(HALTED, RISCV_DM_HALTED_OFFSET)
@@ -136,6 +140,8 @@ struct PulpRVDMState {
     IbexIRQ alert;
 
     uint32_t dmflag_regs[PULP_RV_DM_DMFLAG_SIZE / sizeof(uint32_t)];
+    uint32_t late_debug_enable_regwen;
+    uint32_t late_debug_enable;
 
     unsigned hart_count;
     uint64_t idle_bm;
@@ -241,13 +247,28 @@ static void pulp_rv_dm_load_rom(PulpRVDMState *s)
 /* NOLINTNEXTLINE */
 static uint64_t pulp_rv_dm_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
-    (void)opaque;
+    PulpRVDMState *s = opaque;
+    uint32_t val32 = 0u;
     (void)size;
-    /* the unique register is W/O */
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%" HWADDR_PRIx "\n",
-                  __func__, addr);
 
-    return 0u;
+    switch (R32_OFF(addr)) {
+    case R_ALERT_TEST:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        break;
+    case R_LATE_DEBUG_ENABLE_REGWEN:
+        val32 = s->late_debug_enable_regwen;
+        break;
+    case R_LATE_DEBUG_ENABLE:
+        val32 = s->late_debug_enable;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        break;
+    }
+
+    return val32;
 };
 
 static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -261,6 +282,18 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
         ibex_irq_set(&s->alert, (int)(bool)val32);
+        break;
+    case R_LATE_DEBUG_ENABLE_REGWEN:
+        s->late_debug_enable_regwen &=
+            val32 & R_LATE_DEBUG_ENABLE_REGWEN_REGWEN_MASK;
+        break;
+    case R_LATE_DEBUG_ENABLE:
+        if (s->late_debug_enable_regwen) {
+            s->late_debug_enable = val32;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: LATE_DEBUG_ENABLE is locked\n", __func__);
+        }
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
@@ -482,6 +515,8 @@ static void pulp_rv_dm_reset(DeviceState *dev)
 
     memset(memory_region_get_ram_ptr(&s->prog), 0, PULP_RV_DM_PROG_SIZE);
     memset(s->dmflag_regs, 0, sizeof(s->dmflag_regs));
+    s->late_debug_enable_regwen = 1u;
+    s->late_debug_enable = OT_MULTIBITBOOL32_FALSE;
 
     s->idle_bm = 0;
 }

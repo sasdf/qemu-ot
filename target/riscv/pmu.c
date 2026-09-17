@@ -236,11 +236,12 @@ uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
         if (env->cpu_freq_hz) {
             int64_t warp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                               icount_to_ns(raw);
-            if (warp_ns > 0) {
-                return (uint64_t)raw +
-                       muldiv64(warp_ns, env->cpu_freq_hz,
-                                NANOSECONDS_PER_SECOND);
-            }
+            int64_t warp_cycles = (warp_ns >= 0) ?
+                (int64_t)muldiv64(warp_ns, env->cpu_freq_hz,
+                                  NANOSECONDS_PER_SECOND) :
+                -(int64_t)muldiv64(-warp_ns, env->cpu_freq_hz,
+                                   NANOSECONDS_PER_SECOND);
+            return (uint64_t)(raw + warp_cycles);
         }
         return (uint64_t)raw;
     }
@@ -249,6 +250,26 @@ uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
                         env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
     }
     return cpu_get_host_ticks();
+}
+
+void riscv_pmu_update_clock_freq(CPURISCVState *env, uint64_t freq_hz)
+{
+    uint64_t old_cyc = riscv_pmu_get_cpu_cycles(env);
+    env->cpu_freq_hz = freq_hz;
+    icount_set_clock_freq(freq_hz);
+    uint64_t new_cyc = riscv_pmu_get_cpu_cycles(env);
+    int64_t diff = (int64_t)(new_cyc - old_cyc);
+    if (diff != 0) {
+        for (int i = 0; i < RV_MAX_MHPMCOUNTERS; i++) {
+            if (riscv_pmu_ctr_monitor_cycles(env, i)) {
+                uint64_t prev = env->pmu_ctrs[i].mhpmcounter_prev |
+                    ((uint64_t)env->pmu_ctrs[i].mhpmcounterh_prev << 32);
+                prev += diff;
+                env->pmu_ctrs[i].mhpmcounter_prev = (target_ulong)prev;
+                env->pmu_ctrs[i].mhpmcounterh_prev = (target_ulong)(prev >> 32);
+            }
+        }
+    }
 }
 
 static void riscv_pmu_cycle_update_priv(CPURISCVState *env,

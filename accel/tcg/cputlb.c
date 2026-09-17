@@ -1554,13 +1554,6 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, vaddr addr,
         return -1;
     }
 
-    if (full->lg_page_size < TARGET_PAGE_BITS) {
-        if (hostp) {
-            *hostp = NULL;
-        }
-        return -1;
-    }
-
     if (hostp) {
         *hostp = p;
     }

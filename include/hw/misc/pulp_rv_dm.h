@@ -54,7 +54,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PulpRVDMState, PULP_RV_DM)
 
 /* Memory regions */
 #define PULP_RV_DM_REGS_BASE 0x0u
-#define PULP_RV_DM_REGS_SIZE sizeof(uint32_t)
+#define PULP_RV_DM_REGS_SIZE 0x10u
 #define PULP_RV_DM_MEM_BASE  0x100u
 #define PULP_RV_DM_MEM_SIZE  0x700u
 #define PULP_RV_DM_ROM_BASE  0x800u
