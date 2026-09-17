@@ -2662,6 +2662,7 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
         RISCVCPU *cpu = hart->cpu;
         memset(hart, 0, sizeof(RISCVDMHartState));
         hart->cpu = cpu;
+        hart->have_reset = true;
     }
 }
 
