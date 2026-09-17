@@ -1659,9 +1659,9 @@ static void ot_otp_engine_request_entropy(void *opaque)
      * can only be performed once the reset sequence is over.
      */
     if (!s->keygen->edn_sched) {
+        s->keygen->edn_sched = true;
         int rc = ot_edn_request_entropy(s->edn, s->edn_ep);
         g_assert(rc == 0);
-        s->keygen->edn_sched = true;
     }
 }
 

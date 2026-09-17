@@ -252,6 +252,7 @@ struct OtEDNState {
     OtEDNEndPoint endpoints[ENDPOINT_COUNT_MAX];
     OtEndpointQueue ep_requests;
     bool sw_cmd_ready; /* ready to receive command in SW port mode */
+    bool in_ep_request;
 };
 
 struct OtEDNClass {
@@ -312,6 +313,7 @@ static const char *STATE_NAMES[] = {
 
 static void ot_edn_fill_bits(void *opaque, const uint32_t *bits, bool fips);
 static void ot_edn_csrng_ack_irq(void *opaque, int n, int level);
+static void ot_edn_handle_ep_request(void *opaque);
 
 /* -------------------------------------------------------------------------- */
 /* Public API */
@@ -355,9 +357,14 @@ int ot_edn_request_entropy(OtEDNState *s, unsigned ep_id)
     QSIMPLEQ_INSERT_TAIL(&s->ep_requests, ep, request);
 
     trace_ot_edn_schedule(s->rng.appid, "external entropy request");
-    qemu_bh_schedule(s->ep_bh);
-    if (current_cpu) {
-        cpu_exit(current_cpu);
+    if (!s->in_ep_request) {
+        ot_edn_handle_ep_request(s);
+    }
+    if (!QSIMPLEQ_EMPTY(&s->ep_requests)) {
+        qemu_bh_schedule(s->ep_bh);
+        if (current_cpu) {
+            cpu_exit(current_cpu);
+        }
     }
 
     return 0;
@@ -691,15 +698,7 @@ static void ot_edn_send_boot_req(OtEDNState *s, unsigned reg)
     }
 
     c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
-    c->hw_cmd_status = ot_edn_push_csrng_request(s, false, 1u);
-    if (c->hw_cmd_status) {
-        return;
-    }
 
-    /*
-     * CSRNG request should be completed asynchronously, changing the state here
-     * should occur before ot_edn_csrng_ack_irq is called.
-     */
     switch (command) {
     case OT_CSRNG_CMD_INSTANTIATE:
         c->no_fips = false;
@@ -711,6 +710,8 @@ static void ot_edn_send_boot_req(OtEDNState *s, unsigned reg)
     default:
         g_assert_not_reached();
     }
+
+    c->hw_cmd_status = ot_edn_push_csrng_request(s, false, 1u);
 }
 
 static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
@@ -755,15 +756,11 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
     }
 
     ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
+    c->no_fips = false;
+    ot_edn_change_state(s, EDN_AUTO_ACK_WAIT);
 
     c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
     c->hw_cmd_status = ot_edn_push_csrng_request(s, true, length);
-    if (c->hw_cmd_status) {
-        return;
-    }
-    c->no_fips = false;
-
-    ot_edn_change_state(s, EDN_AUTO_ACK_WAIT);
 }
 
 static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
@@ -818,17 +815,14 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         s->endpoints[epix].gen_count = 0;
     }
 
-    c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
-    c->hw_cmd_status = ot_edn_push_csrng_request(s, true, length);
-    if (c->hw_cmd_status) {
-        return;
-    }
-
     if (s->max_reqs_cnt) {
         s->max_reqs_cnt -= 1u;
     }
 
     ot_edn_change_state(s, EDN_AUTO_ACK_WAIT);
+
+    c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
+    c->hw_cmd_status = ot_edn_push_csrng_request(s, true, length);
 }
 
 static void ot_edn_send_boot_uninstanciate_cmd(OtEDNState *s)
@@ -845,12 +839,8 @@ static void ot_edn_send_boot_uninstanciate_cmd(OtEDNState *s)
         FIELD_DP32(0, OT_CSNRG_CMD, ACMD, OT_CSRNG_CMD_UNINSTANTIATE);
 
     c->hw_cmd_type = (uint8_t)OT_CSRNG_CMD_UNINSTANTIATE;
-    c->hw_cmd_status = ot_edn_push_csrng_request(s, false, 1u);
-    if (c->hw_cmd_status) {
-        return;
-    }
-
     ot_edn_change_state(s, EDN_BOOT_UNI_ACK_WAIT);
+    c->hw_cmd_status = ot_edn_push_csrng_request(s, false, 1u);
 }
 
 static void ot_edn_handle_disable(OtEDNState *s)
@@ -1035,18 +1025,6 @@ static void ot_edn_handle_sw_cmd_req(OtEDNState *s, uint32_t value)
 
     c->sw_ack = false;
 
-    trace_ot_edn_push_csrng_command(c->appid, "sw", value);
-    OtCSRNGCmdStatus res = c->csrng->push_command(c->device, c->appid, value);
-    if (res != CSRNG_STATUS_SUCCESS) {
-        xtrace_ot_edn_error(c->appid, "CSRNG rejected command");
-        s->sw_cmd_ready = false;
-        s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK;
-        ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
-        ot_edn_complete_sw_req(s, res);
-        ot_edn_update_alerts(s);
-        return;
-    }
-
     if (s->state == EDN_SW_PORT_MODE) {
         if (s->sw_cmd_ready) {
             /*
@@ -1080,6 +1058,18 @@ static void ot_edn_handle_sw_cmd_req(OtEDNState *s, uint32_t value)
     if (s->state == EDN_AUTO_LOAD_INS) {
         ot_edn_change_state(s, EDN_AUTO_FIRST_ACK_WAIT);
     }
+
+    trace_ot_edn_push_csrng_command(c->appid, "sw", value);
+    OtCSRNGCmdStatus res = c->csrng->push_command(c->device, c->appid, value);
+    if (res != CSRNG_STATUS_SUCCESS) {
+        xtrace_ot_edn_error(c->appid, "CSRNG rejected command");
+        s->sw_cmd_ready = false;
+        s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK;
+        ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
+        ot_edn_complete_sw_req(s, res);
+        ot_edn_update_alerts(s);
+        return;
+    }
 }
 
 static void ot_edn_auto_dispatch(OtEDNState *s)
@@ -1101,8 +1091,8 @@ static void ot_edn_auto_dispatch(OtEDNState *s)
     if (s->state == EDN_AUTO_DISPATCH) {
         if (s->max_reqs_cnt == 0) {
             ot_edn_change_state(s, EDN_AUTO_CAPT_RESEED_CNT);
-            ot_edn_send_auto_reseed_cmd(s);
             s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
+            ot_edn_send_auto_reseed_cmd(s);
         } else {
             ot_edn_change_state(s, EDN_AUTO_CAPT_GEN_CNT);
             ot_edn_send_auto_generate_cmd(s);
@@ -1163,7 +1153,12 @@ static void ot_edn_fill_bits(void *opaque, const uint32_t *bits, bool fips)
     /* serve any queued enpoints if any */
     if (!QSIMPLEQ_EMPTY(&s->ep_requests)) {
         trace_ot_edn_schedule(c->appid, "queued entropy request");
-        qemu_bh_schedule(s->ep_bh);
+        if (!s->in_ep_request) {
+            ot_edn_handle_ep_request(s);
+        }
+        if (!QSIMPLEQ_EMPTY(&s->ep_requests)) {
+            qemu_bh_schedule(s->ep_bh);
+        }
     }
 }
 
@@ -1172,6 +1167,11 @@ static void ot_edn_handle_ep_request(void *opaque)
     /* called from ep_bh */
     OtEDNState *s = opaque;
     OtEDNCSRNG *c = &s->rng;
+
+    if (s->in_ep_request) {
+        return;
+    }
+    s->in_ep_request = true;
 
     while (!QSIMPLEQ_EMPTY(&s->ep_requests)) {
         OtEDNEndPoint *ep = QSIMPLEQ_FIRST(&s->ep_requests);
@@ -1188,6 +1188,10 @@ static void ot_edn_handle_ep_request(void *opaque)
         uint32_t bits;
         bool available; /* entropy is available in EP unpacker output */
         if (ot_fifo32_is_empty(&ep->fifo)) {
+            if (ot_fifo32_num_used(&c->bits_fifo) <
+                OT_CSRNG_PACKET_WORD_COUNT) {
+                ot_edn_update_genbits_ready(s);
+            }
             /* if the local packer is empty ... */
             if (ot_fifo32_num_used(&c->bits_fifo) >=
                 OT_CSRNG_PACKET_WORD_COUNT) {
@@ -1236,6 +1240,8 @@ static void ot_edn_handle_ep_request(void *opaque)
                                    ep->gen_count, ep->total_count);
         (*ep->fn)(ep->opaque, bits, ep->fips);
     }
+
+    s->in_ep_request = false;
 }
 
 static void ot_edn_csrng_ack_irq(void *opaque, int n, int level)

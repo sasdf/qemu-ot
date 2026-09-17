@@ -1050,9 +1050,9 @@ static void ot_aes_reseed(OtAESState *s)
     }
     if (!edn->scheduled) {
         trace_ot_aes_request_entropy(s->ot_id);
-        if (!ot_edn_request_entropy(edn->device, edn->ep)) {
-            edn->scheduled = true;
-        } else {
+        edn->scheduled = true;
+        if (ot_edn_request_entropy(edn->device, edn->ep)) {
+            edn->scheduled = false;
             xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
         }
     }

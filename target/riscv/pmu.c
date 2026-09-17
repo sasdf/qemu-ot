@@ -231,12 +231,22 @@ static void riscv_pmu_icount_update_priv(CPURISCVState *env,
 
 uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
 {
+    if (icount_enabled()) {
+        int64_t raw = icount_get_raw();
+        if (env->cpu_freq_hz) {
+            int64_t warp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                              icount_to_ns(raw);
+            if (warp_ns > 0) {
+                return (uint64_t)raw +
+                       muldiv64(warp_ns, env->cpu_freq_hz,
+                                NANOSECONDS_PER_SECOND);
+            }
+        }
+        return (uint64_t)raw;
+    }
     if (env->cpu_freq_hz) {
         return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                         env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
-    }
-    if (icount_enabled()) {
-        return icount_get();
     }
     return cpu_get_host_ticks();
 }
