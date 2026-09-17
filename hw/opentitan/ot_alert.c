@@ -487,6 +487,13 @@ ot_alert_reg_intr_state_write(OtAlertState *s, unsigned reg, uint32_t value)
     }
 }
 
+static void
+ot_alert_reg_intr_test_write(OtAlertState *s, unsigned reg, uint32_t value)
+{
+    value &= s->access_table[reg].mask;
+    DVAL(s->regs.intr->state) |= value;
+}
+
 static void ot_alert_set_class_timer(OtAlertState *s, unsigned nclass,
                                      uint32_t timeout)
 {
@@ -916,7 +923,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
 
     table[R_INTR_STATE] = R_ACC_IRQ(direct_read, intr_state_write);
     table[R_INTR_ENABLE] = R_ACC_IRQ(direct_read, direct_write);
-    table[R_INTR_TEST] = R_ACC(write_only, direct_write);
+    table[R_INTR_TEST] = R_ACC_IRQ(write_only, intr_test_write);
     table[R_PING_TIMER_REGWEN] = R_ACC(direct_read, direct_write);
     table[R_PING_TIMEOUT_CYC_SHADOWED] = R_ACC(shadow_read, ping_write);
     table[R_PING_TIMER_EN_SHADOWED] = R_ACC(shadow_read, ping_write);

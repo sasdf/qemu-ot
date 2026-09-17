@@ -972,8 +972,9 @@ static const OtFlashHwInfoPageRule OT_FLASH_HW_INFO_PAGE_RULES[] = {
 
 static void ot_flash_update_irqs(OtFlashState *s)
 {
-    uint32_t level = s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE];
-    trace_ot_flash_irqs(s->ot_id, s->regs[R_INTR_STATE], s->regs[R_INTR_ENABLE],
+    uint32_t state = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+    uint32_t level = state & s->regs[R_INTR_ENABLE];
+    trace_ot_flash_irqs(s->ot_id, state, s->regs[R_INTR_ENABLE],
                         level);
     for (unsigned ix = 0u; ix < PARAM_NUM_IRQS; ix++) {
         ibex_irq_set(&s->irqs[ix], (int)((level >> ix) & 0x1u));
@@ -2210,6 +2211,8 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_INTR_STATE:
+        val32 = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+        break;
     case R_INTR_ENABLE:
     case R_DIS:
     case R_EXEC:
@@ -2413,11 +2416,16 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[R_INTR_ENABLE] = val32;
         ot_flash_update_irqs(s);
         break;
-    case R_INTR_TEST:
+    case R_INTR_TEST: {
+        uint32_t status_mask = INTR_PROG_EMPTY_MASK | INTR_PROG_LVL_MASK |
+                               INTR_RD_FULL_MASK | INTR_RD_LVL_MASK;
+        uint32_t rw1c_mask = INTR_CORR_ERR_MASK | INTR_OP_DONE_MASK;
         val32 &= INTR_MASK;
-        s->regs[R_INTR_STATE] |= val32;
+        s->regs[R_INTR_TEST] = val32 & status_mask;
+        s->regs[R_INTR_STATE] |= val32 & rw1c_mask;
         ot_flash_update_irqs(s);
         break;
+    }
     case R_ALERT_TEST:
         val32 &= ALERT_MASK;
         s->regs[reg] = val32;

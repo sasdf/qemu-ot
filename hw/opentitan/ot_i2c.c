@@ -382,10 +382,11 @@ static uint8_t ot_i2c_address_abyte(uint8_t address, bool read)
 
 static void ot_i2c_update_irqs(OtI2CState *s)
 {
-    uint32_t state_masked = s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE];
+    uint32_t state = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+    uint32_t state_masked = state & s->regs[R_INTR_ENABLE];
 
-    if (s->regs[R_INTR_STATE] || s->regs[R_INTR_ENABLE]) {
-        trace_ot_i2c_update_irqs(s->ot_id, s->regs[R_INTR_STATE],
+    if (state || s->regs[R_INTR_ENABLE]) {
+        trace_ot_i2c_update_irqs(s->ot_id, state,
                                  s->regs[R_INTR_ENABLE], state_masked);
     }
 
@@ -723,6 +724,8 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_INTR_STATE:
+        val32 = s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
+        break;
     case R_INTR_ENABLE:
     case R_CTRL:
     case R_HOST_FIFO_CONFIG:
@@ -977,7 +980,8 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_INTR_TEST:
         val32 &= INTR_MASK;
-        s->regs[R_INTR_STATE] |= val32;
+        s->regs[R_INTR_TEST] = val32 & ~INTR_RW1C_MASK;
+        s->regs[R_INTR_STATE] |= val32 & INTR_RW1C_MASK;
         ot_i2c_update_irqs(s);
         break;
     case R_ALERT_TEST:

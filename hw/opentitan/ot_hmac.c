@@ -254,6 +254,7 @@ typedef enum OtHMACKeyLength {
 struct OtHMACRegisters {
     uint32_t intr_state;
     uint32_t intr_enable;
+    uint32_t intr_test;
     uint32_t alert_test;
     uint32_t cfg;
     uint32_t cmd;
@@ -404,8 +405,9 @@ static inline bool ot_hmac_key_length_supported(OtHMACDigestSize digest_size,
 
 static void ot_hmac_update_irqs(OtHMACState *s)
 {
-    uint32_t levels = s->regs->intr_state & s->regs->intr_enable;
-    trace_ot_hmac_irqs(s->ot_id, s->regs->intr_state, s->regs->intr_enable,
+    uint32_t state = s->regs->intr_state | s->regs->intr_test;
+    uint32_t levels = state & s->regs->intr_enable;
+    trace_ot_hmac_irqs(s->ot_id, state, s->regs->intr_enable,
                        levels);
     for (unsigned ix = 0; ix < PARAM_NUM_IRQS; ix++) {
         ibex_irq_set(&s->irqs[ix], (int)((levels >> ix) & 0x1u));
@@ -650,12 +652,14 @@ static void ot_hmac_process_fifo(OtHMACState *s)
 
     if (stop && ot_hmac_get_curlen(s) == 0) {
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
         s->regs->cmd = 0;
     }
 
     if (s->regs->cmd & R_CMD_HASH_PROCESS_MASK) {
         ot_hmac_compute_digest(s);
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
         s->regs->cmd = 0;
     }
 
@@ -693,7 +697,7 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
     case R_INTR_STATE:
-        val32 = s->regs->intr_state;
+        val32 = s->regs->intr_state | s->regs->intr_test;
         break;
     case R_INTR_ENABLE:
         val32 = s->regs->intr_enable;
@@ -833,7 +837,7 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs->intr_state &= ~(val32 & INTR_MASK);
+        s->regs->intr_state &= ~(val32 & (INTR_HMAC_DONE_MASK | INTR_HMAC_ERR_MASK));
         ot_hmac_update_irqs(s);
         break;
     case R_INTR_ENABLE:
@@ -841,7 +845,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         ot_hmac_update_irqs(s);
         break;
     case R_INTR_TEST:
-        s->regs->intr_state |= val32 & INTR_MASK;
+        s->regs->intr_test = val32 & INTR_FIFO_EMPTY_MASK;
+        s->regs->intr_state |= val32 & (INTR_HMAC_DONE_MASK | INTR_HMAC_ERR_MASK);
         ot_hmac_update_irqs(s);
         break;
     case R_ALERT_TEST:
