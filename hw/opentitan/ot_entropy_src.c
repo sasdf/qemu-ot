@@ -640,9 +640,18 @@ static int ot_entropy_src_get_entropy(
     }
 
     if (ot_fifo32_num_used(&ess->final_fifo) < ES_WORD_COUNT) {
+        ot_entropy_src_update_filler(ess);
+        int64_t wait_ns;
+        if (timer_pending(ess->scheduler)) {
+            wait_ns = ((int64_t)timer_expire_time_ns(ess->scheduler)) -
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            wait_ns = MAX(wait_ns, OT_ENTROPY_SRC_WAIT_DELAY_NS);
+        } else {
+            wait_ns = OT_ENTROPY_SRC_WAIT_DELAY_NS;
+        }
         trace_ot_entropy_src_no_entropy(ess->ot_id,
                                         ot_fifo32_num_used(&ess->final_fifo));
-        return OT_ENTROPY_SRC_WAIT_DELAY_NS;
+        return (int)wait_ns;
     }
 
     uint32_t *randu32 = (uint32_t *)random;
@@ -909,14 +918,14 @@ static bool ot_entropy_src_can_consume_entropy(const OtEntropySrcState *s)
 static void ot_entropy_src_update_filler(OtEntropySrcState *s)
 {
     /* fill granule is OT_ENTROPY_SRC_FILL_WORD_COUNT bits */
-    bool input =
-        ot_fifo32_num_free(&s->input_fifo) >= OT_ENTROPY_SRC_FILL_WORD_COUNT;
-    bool output = ot_fifo32_num_free(&s->final_fifo) >= ES_WORD_COUNT;
-    if (ot_entropy_src_is_fw_ov_entropy_insert(s)) {
-        output = ot_entropy_src_is_fw_ov_mode(s) &&
-                 (s->obs_fifo_en || ot_fifo32_is_empty(&s->observe_fifo)) &&
-                 !ot_fifo32_is_full(&s->observe_fifo);
-    }
+    bool input = !ot_fifo32_is_empty(&s->input_fifo) ||
+                 (ot_fifo32_num_free(&s->input_fifo) >=
+                  OT_ENTROPY_SRC_FILL_WORD_COUNT);
+    bool obs_output = ot_entropy_src_is_fw_ov_mode(s) &&
+                      (s->obs_fifo_en || ot_fifo32_is_empty(&s->observe_fifo));
+    bool hw_output = !ot_entropy_src_is_fw_ov_entropy_insert(s) &&
+                     (ot_fifo32_num_free(&s->final_fifo) >= ES_WORD_COUNT);
+    bool output = obs_output || hw_output;
     bool process = ot_entropy_src_can_consume_entropy(s);
 
     bool accept_entropy = input && output && process;
@@ -1028,9 +1037,11 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
     ot_entropy_src_change_state(s, ENTROPY_SRC_SHA3_DONE);
     ot_entropy_src_change_state(s, ENTROPY_SRC_SHA3_MSG_DONE);
 
-    for (unsigned ix = 0; ix < OT_ENTROPY_SRC_WORD_COUNT; ix++) {
-        g_assert(!ot_fifo32_is_full(&s->final_fifo));
-        ot_fifo32_push(&s->final_fifo, hash[ix]);
+    if (ot_entropy_src_is_final_fifo_slot_available(s)) {
+        for (unsigned ix = 0; ix < OT_ENTROPY_SRC_WORD_COUNT; ix++) {
+            g_assert(!ot_fifo32_is_full(&s->final_fifo));
+            ot_fifo32_push(&s->final_fifo, hash[ix]);
+        }
     }
     s->packet_count += 1u;
 
@@ -1055,9 +1066,13 @@ ot_entropy_src_push_bypass_entropy(OtEntropySrcState *s, uint32_t word)
     }
 
     /* bypass conditioner full/ready, empty it into the final FIFO */
-    while (!ot_fifo32_is_empty(&s->bypass_fifo)) {
-        g_assert(!ot_fifo32_is_full(&s->final_fifo));
-        ot_fifo32_push(&s->final_fifo, ot_fifo32_pop(&s->bypass_fifo));
+    if (ot_entropy_src_is_final_fifo_slot_available(s)) {
+        while (!ot_fifo32_is_empty(&s->bypass_fifo)) {
+            g_assert(!ot_fifo32_is_full(&s->final_fifo));
+            ot_fifo32_push(&s->final_fifo, ot_fifo32_pop(&s->bypass_fifo));
+        }
+    } else {
+        ot_fifo32_reset(&s->bypass_fifo);
     }
     s->packet_count += 1u;
 
@@ -1089,7 +1104,9 @@ static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
 
 static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
 {
-    bool fill_obs_fifo = ot_entropy_src_is_fw_ov_mode(s);
+    bool fill_obs_fifo = ot_entropy_src_is_fw_ov_mode(s) &&
+                         (s->obs_fifo_en ||
+                          ot_fifo32_is_empty(&s->observe_fifo));
     bool hw_path = !ot_entropy_src_is_fw_ov_entropy_insert(s);
     bool bypass = ot_entropy_src_is_bypass_mode(s);
 
@@ -1128,11 +1145,6 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
                                           ot_fifo32_num_used(
                                               &s->observe_fifo),
                                           threshold);
-            if (ot_fifo32_is_full(&s->observe_fifo)) {
-                /* can only be enabled back once the FIFO is emptied */
-                trace_ot_entropy_src_info(s->ot_id, "observe FIFO is full");
-                s->obs_fifo_en = false;
-            }
             if (threshold != 0 &&
                 ot_fifo32_num_used(&s->observe_fifo) >= threshold) {
                 s->regs_lo[R_INTR_STATE] |= INTR_ES_OBSERVE_FIFO_READY_MASK;
@@ -1190,31 +1202,37 @@ static uint32_t ot_entropy_src_get_entropy_data(OtEntropySrcState *s)
 
 static bool ot_entropy_src_fill_noise(OtEntropySrcState *s)
 {
-    unsigned count = ot_fifo32_num_free(&s->input_fifo);
-    if (count < OT_ENTROPY_SRC_FILL_WORD_COUNT) {
-        /* no room left, should be resheduled */
-        return false;
-    }
-
-    uint32_t buffer[OT_ENTROPY_SRC_FILL_WORD_COUNT];
-    /* synchronous read */
-    OtNoiseSrcIfClass *nsc = OT_NOISE_SRC_IF_GET_CLASS(s->noise_src);
-    OtNoiseSrcIf *nsi = OT_NOISE_SRC_IF(s->noise_src);
-    nsc->get_noise(nsi, (uint8_t *)buffer, sizeof(buffer));
-
-    /* push the whole entropy buffer into the input FIFO */
-    unsigned pos = 0;
-    while (!ot_fifo32_is_full(&s->input_fifo) && pos < ARRAY_SIZE(buffer)) {
-        ot_fifo32_push(&s->input_fifo, buffer[pos++]);
-    }
-
-    trace_ot_entropy_src_fill_noise(s->ot_id, count,
-                                    ot_fifo32_num_used(&s->input_fifo));
-
-    for (unsigned ix = 0;
-         ix < ES_WORD_COUNT && !ot_fifo32_is_empty(&s->input_fifo); ix++) {
-        if (!ot_entropy_src_consume_entropy(s, ot_fifo32_pop(&s->input_fifo))) {
+    while (!ot_fifo32_is_empty(&s->input_fifo)) {
+        if (!ot_entropy_src_consume_entropy(s,
+                                            ot_fifo32_peek(&s->input_fifo))) {
             break;
+        }
+        (void)ot_fifo32_pop(&s->input_fifo);
+    }
+
+    unsigned count = ot_fifo32_num_free(&s->input_fifo);
+    if (count >= OT_ENTROPY_SRC_FILL_WORD_COUNT) {
+        uint32_t buffer[OT_ENTROPY_SRC_FILL_WORD_COUNT];
+        /* synchronous read */
+        OtNoiseSrcIfClass *nsc = OT_NOISE_SRC_IF_GET_CLASS(s->noise_src);
+        OtNoiseSrcIf *nsi = OT_NOISE_SRC_IF(s->noise_src);
+        nsc->get_noise(nsi, (uint8_t *)buffer, sizeof(buffer));
+
+        /* push the whole entropy buffer into the input FIFO */
+        unsigned pos = 0;
+        while (!ot_fifo32_is_full(&s->input_fifo) && pos < ARRAY_SIZE(buffer)) {
+            ot_fifo32_push(&s->input_fifo, buffer[pos++]);
+        }
+
+        trace_ot_entropy_src_fill_noise(s->ot_id, count,
+                                        ot_fifo32_num_used(&s->input_fifo));
+
+        while (!ot_fifo32_is_empty(&s->input_fifo)) {
+            if (!ot_entropy_src_consume_entropy(
+                    s, ot_fifo32_peek(&s->input_fifo))) {
+                break;
+            }
+            (void)ot_fifo32_pop(&s->input_fifo);
         }
     }
 

@@ -133,7 +133,7 @@ static const char REGB_NAMES[REGSB_COUNT][6U] = {
 };
 #undef REG_NAME_ENTRY
 
-#define OT_AST_EG_NOISE_4BIT_RATE 50000u /* 50 kHz */
+#define OT_AST_EG_NOISE_4BIT_RATE 200000u /* 200 kHz (24 MHz / 120 clocks) */
 
 typedef struct {
     char *name;
