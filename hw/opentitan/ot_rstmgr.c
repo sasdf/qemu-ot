@@ -174,6 +174,7 @@ struct OtRstMgrState {
 
     uint32_t *regs;
     uint32_t cpu_info_dump[8];
+    uint32_t alert_info_dump[9];
     bool por; /* Power-On Reset property */
 
     char *ot_id;
@@ -295,6 +296,16 @@ static void ot_rstmgr_sw_reset_timer_cb(void *opaque)
     ibex_irq_raise(&s->sw_reset);
 }
 
+static int ot_rstmgr_alert_walker(DeviceState *dev, void *opaque)
+{
+    OtAlertState **alert_dev = opaque;
+    if (object_dynamic_cast(OBJECT(dev), TYPE_OT_ALERT)) {
+        *alert_dev = OT_ALERT(dev);
+        return -1;
+    }
+    return 0;
+}
+
 static void ot_rstmgr_reset_bus(void *opaque)
 {
     OtRstMgrState *s = opaque;
@@ -312,6 +323,16 @@ static void ot_rstmgr_reset_bus(void *opaque)
 
     if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
         ibex_get_crash_dump(s->cpu, s->cpu_info_dump);
+    }
+
+    if (s->regs[R_ALERT_INFO_CTRL] & R_ALERT_INFO_CTRL_EN_MASK) {
+        OtAlertState *alert_dev = NULL;
+        qbus_walk_children(s->parent_obj.parent_obj.parent_bus,
+                           &ot_rstmgr_alert_walker, NULL, NULL, NULL,
+                           &alert_dev);
+        if (alert_dev) {
+            ot_alert_get_crash_dump(alert_dev, s->alert_info_dump);
+        }
     }
 
     ibex_irq_raise(&s->soc_reset);
@@ -422,8 +443,6 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_RESET_INFO:
     case R_ALERT_REGWEN:
     case R_ALERT_INFO_CTRL:
-    case R_ALERT_INFO_ATTR:
-    case R_ALERT_INFO:
     case R_CPU_REGWEN:
     case R_CPU_INFO_CTRL:
     case R_SW_RST_REGWEN_0:
@@ -444,6 +463,13 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_SW_RST_CTRL_N_7:
     case R_ERR_CODE:
         val32 = s->regs[reg];
+        break;
+    case R_ALERT_INFO_ATTR:
+        val32 = 9u;
+        break;
+    case R_ALERT_INFO:
+        val32 = s->alert_info_dump[FIELD_EX32(s->regs[R_ALERT_INFO_CTRL],
+                                              ALERT_INFO_CTRL, INDEX) % 9u];
         break;
     case R_CPU_INFO_ATTR:
         val32 = 8u;
@@ -624,6 +650,7 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
 
     if (s->por) {
         memset(s->cpu_info_dump, 0, sizeof(s->cpu_info_dump));
+        memset(s->alert_info_dump, 0, sizeof(s->alert_info_dump));
         s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK;
         s->por = false;
         ot_rstmgr_last_reset_low_power = false;

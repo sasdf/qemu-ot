@@ -247,6 +247,8 @@ struct OtAlertState {
     uint8_t edn_ep;
     uint8_t n_low_power_groups;
     uint8_t n_classes;
+    uint32_t crashdump_latched;
+    uint32_t latched_dump[9];
 };
 
 struct OtAlertClass {
@@ -323,6 +325,8 @@ ot_alert_get_class_state(const OtAlertState *s, unsigned nclass)
     return DVAL(aclass->state);
 }
 
+static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9]);
+
 static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
                                      OtAlertAClassState state)
 {
@@ -333,6 +337,19 @@ static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
     g_assert(state >= 0 && state < STATE_COUNT);
 
     DVAL(s->regs.classes[nclass].state) = state;
+
+    if (state >= STATE_PHASE0 && state <= STATE_PHASE3) {
+        unsigned phase = state - STATE_PHASE0;
+        uint32_t trig_phase =
+            ot_shadow_reg_peek(&s->regs.classes[nclass].crashdump_trigger_shadowed) &
+            CLASS_CRASHDUMP_TRIGGER_SHADOWED_MASK;
+        if (phase == trig_phase) {
+            if (s->crashdump_latched == 0) {
+                ot_alert_build_crashdump(s, s->latched_dump);
+            }
+            s->crashdump_latched |= (1u << nclass);
+        }
+    }
 }
 
 static void ot_alert_update_irqs(OtAlertState *s)
@@ -421,6 +438,72 @@ static uint32_t ot_alert_reg_esc_count_read(OtAlertState *s, unsigned reg)
     return cnt;
 }
 
+static void ot_alert_set_dump_bits(uint32_t dump[9], unsigned start_bit,
+                                   unsigned width, uint64_t val)
+{
+    for (unsigned i = 0; i < width; i++) {
+        unsigned bit_pos = start_bit + i;
+        unsigned word_idx = bit_pos / 32u;
+        unsigned bit_idx = bit_pos % 32u;
+        if (val & (1ULL << i)) {
+            dump[word_idx] |= (1u << bit_idx);
+        } else {
+            dump[word_idx] &= ~(1u << bit_idx);
+        }
+    }
+}
+
+static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
+{
+    memset(dump, 0, sizeof(uint32_t) * 9u);
+
+    /* class_esc_state[0..3]: 4 x 3 bits at bit 0..11 */
+    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
+        uint32_t state = DVAL(s->regs.classes[c].state) & 0x7u;
+        ot_alert_set_dump_bits(dump, c * 3u, 3u, state);
+    }
+
+    /* class_esc_cnt[0..3]: 4 x 32 bits at bit 12..139 */
+    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
+        unsigned reg = s->reg_aclass_pos + c * REG_COUNT(OtAlertAClass) +
+                       offsetof(OtAlertAClass, esc_cnt) / sizeof(OtShadowReg);
+        uint32_t esc_cnt = ot_alert_reg_esc_count_read(s, reg);
+        ot_alert_set_dump_bits(dump, 12u + c * 32u, 32u, esc_cnt);
+    }
+
+    /* class_accum_cnt[0..3]: 4 x 16 bits at bit 140..203 */
+    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
+        uint32_t accum_cnt = DVAL(s->regs.classes[c].accum_cnt) & 0xffffu;
+        ot_alert_set_dump_bits(dump, 140u + c * 16u, 16u, accum_cnt);
+    }
+
+    /* loc_alert_cause[6:0]: 7 bits at bit 204..210 */
+    uint32_t loc_cause = 0;
+    for (unsigned i = 0; i < LOCAL_ALERT_COUNT && i < 7u; i++) {
+        if (DVAL(s->regs.loc_alerts.cause[i]) & LOC_ALERT_CAUSE_EN_MASK) {
+            loc_cause |= (1u << i);
+        }
+    }
+    ot_alert_set_dump_bits(dump, 204u, 7u, loc_cause);
+
+    /* alert_cause[0..64]: 65 bits at bit 211..275 */
+    for (unsigned i = 0; i < s->n_alerts && i < 65u; i++) {
+        uint32_t cause = (DVAL(s->regs.alerts.cause[i]) & ALERT_CAUSE_EN_MASK) ?
+                             1u :
+                             0u;
+        ot_alert_set_dump_bits(dump, 211u + i, 1u, cause);
+    }
+}
+
+void ot_alert_get_crash_dump(OtAlertState *s, uint32_t dump[9])
+{
+    if (s->crashdump_latched != 0) {
+        memcpy(dump, s->latched_dump, sizeof(uint32_t) * 9u);
+    } else {
+        ot_alert_build_crashdump(s, dump);
+    }
+}
+
 static void ot_alert_reg_direct_write(OtAlertState *s, unsigned reg,
                                       uint32_t value)
 {
@@ -503,7 +586,8 @@ static void ot_alert_set_class_timer(OtAlertState *s, unsigned nclass,
     }
     OtAlertScheduler *atimer = &s->schedulers[nclass];
     /* TODO: update running schedulers if timeout_cyc_shadowed is updated */
-    int64_t ns = (int64_t)muldiv64(timeout, NANOSECONDS_PER_SECOND, pclk);
+    uint32_t cycles = timeout ? timeout : 1u;
+    int64_t ns = (int64_t)muldiv64(cycles, NANOSECONDS_PER_SECOND, pclk);
 
     OtAlertAClassState state = ot_alert_get_class_state(s, nclass);
     trace_ot_alert_set_class_timer(s->ot_id, ACLASS(nclass), ST_NAME(state),
@@ -591,6 +675,7 @@ static void ot_alert_clear_alert(OtAlertState *s, unsigned nclass)
      * "Software can clear CLASSn_ACCUM_CNT with a write to CLASSA_CLR_SHADOWED"
      */
     DVAL(aclass->accum_cnt) = 0;
+    s->crashdump_latched &= ~(1u << nclass);
     ot_alert_set_class_state(s, nclass, STATE_IDLE);
 }
 
@@ -1089,6 +1174,8 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs.shadow, 0, sizeof(OtShadowReg) * s->reg_count);
+    s->crashdump_latched = 0;
+    memset(s->latched_dump, 0, sizeof(s->latched_dump));
 
     DVAL(s->regs.ping->timer_regwen) = R_PING_TIMER_REGWEN_EN_MASK;
     ot_shadow_reg_init(&s->regs.ping->timeout_cyc_shadowed, 256u);
