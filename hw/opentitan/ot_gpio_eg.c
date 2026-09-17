@@ -217,22 +217,28 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     if (s->pinmux) {
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
-            int mio_pad = (insel >= 2u && (insel - 2u) < 47u) ?
-                              (int)(insel - 2u) :
-                              -1;
-            unsigned host_pin = (mio_pad >= 0 && mio_pad < (int)PARAM_NUM_IO) ?
-                                    (unsigned)mio_pad :
-                                    g;
-            if ((s->data_ib >> host_pin) & 1u) {
-                routed_ib |= (1u << g);
-            }
-            if (!((s->data_bi >> host_pin) & 1u)) {
+            if (insel == 0u) {
                 routed_bi &= ~(1u << g);
-            }
-            if (((s->data_oe >> g) & 1u) && mio_pad >= 0 &&
-                ot_pinmux_eg_get_mio_outsel(s->pinmux, (unsigned)mio_pad) ==
-                    (3u + g)) {
-                eff_oe |= (1u << g);
+            } else if (insel == 1u) {
+                routed_ib |= (1u << g);
+                routed_bi &= ~(1u << g);
+            } else if (insel >= 2u && (insel - 2u) < 47u) {
+                unsigned mio_pad = insel - 2u;
+                int hp = ot_pinmux_eg_mio_to_host_pin(mio_pad);
+                if (hp >= 0 && hp < (int)PARAM_NUM_IO) {
+                    unsigned host_pin = (unsigned)hp;
+                    if ((s->data_ib >> host_pin) & 1u) {
+                        routed_ib |= (1u << g);
+                    }
+                    if (!((s->data_bi >> host_pin) & 1u)) {
+                        routed_bi &= ~(1u << g);
+                    }
+                }
+                if (((s->data_oe >> g) & 1u) &&
+                    ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad) ==
+                        (3u + g)) {
+                    eff_oe |= (1u << g);
+                }
             }
         }
     } else {
@@ -243,7 +249,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 
     uint32_t ii_mask = s->connected & ~s->data_gi;
     uint32_t bi_mask = ~s->connected & ~routed_bi & ~eff_oe;
-    uint32_t pi_mask = s->connected & s->data_gi & routed_bi & ~eff_oe;
+    uint32_t pi_mask = ~s->connected & routed_bi & ~eff_oe;
 
     uint32_t data_ii = s->data_ii & ii_mask;
     uint32_t data_ib = routed_ib & bi_mask;
@@ -980,9 +986,23 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
 
     uint32_t out_en = 0;
     uint32_t out_v = 0;
+    uint32_t pull_en = 0;
+    uint32_t pull_v = 0;
+    uint32_t periph_pull_en = s->pull_en & ~s->force_en;
+    uint32_t periph_pull_v = s->pull_sel;
     if (s->pinmux) {
         for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
             uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
+            unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
+                              (unsigned)g_pull :
+                              p;
+            if ((periph_pull_en >> gp) & 1u) {
+                pull_en |= (1u << p);
+            }
+            if ((periph_pull_v >> gp) & 1u) {
+                pull_v |= (1u << p);
+            }
             if (outsel == 0u) {
                 out_en |= (1u << p);
             } else if (outsel == 1u) {
@@ -996,25 +1016,20 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
                 if ((periph_out_v >> g) & 1u) {
                     out_v |= (1u << p);
                 }
-            } else {
-                if ((periph_out_en >> p) & 1u) {
-                    out_en |= (1u << p);
-                }
-                if ((periph_out_v >> p) & 1u) {
-                    out_v |= (1u << p);
-                }
             }
         }
     } else {
         out_en = periph_out_en;
         out_v = periph_out_v;
+        pull_en = periph_pull_en;
+        pull_v = periph_pull_v;
     }
 
-    uint32_t active = (s->pull_en & ~s->force_en) | out_en;
+    uint32_t active = pull_en | out_en;
     out_v &= out_en;
 
     OtGpioEgBackendState bstate = { .hi_z = ~active,
-                                    .pull_v = s->pull_sel,
+                                    .pull_v = pull_v,
                                     .out_en = out_en,
                                     .out_v = out_v,
                                     .in_m = s->regs[R_DATA_IN] };

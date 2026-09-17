@@ -217,20 +217,15 @@ struct OtPinmuxEgClass {
 
 static OtPinmuxEgState *ot_pinmux_eg_instance;
 
-static int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
+int ot_pinmux_eg_mio_to_host_pin(unsigned pad)
 {
-    const OtPinmuxEgStateRegs *regs = s->regs;
-    uint32_t outsel = regs->mio_outsel[pad];
-    if (outsel >= 3u && outsel < 35u) {
-        return (int)(outsel - 3u);
-    }
     switch (pad) {
     case 0u ... 8u: /* IOA0..IOA8 */
         return (int)pad;
     case 9u ... 12u: /* IOB0..IOB3 */
         return (int)(pad - 9u);
-    case 22u: /* IOC0 */
-        return 22;
+    case 13u ... 31u: /* IOB4..IOB12, IOC0..IOC9 */
+        return (int)pad;
     case 41u: /* IOR6 */
         return 6;
     case 42u: /* IOR7 */
@@ -244,14 +239,8 @@ static int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
     case 46u: /* IOR13 */
         return 13;
     default:
-        break;
+        return -1;
     }
-    for (unsigned g = 0; g < 32u; g++) {
-        if (regs->mio_periph_insel[g] == pad + 2u) {
-            return (int)g;
-        }
-    }
-    return -1;
 }
 
 static bool ot_pinmux_eg_pad_is_configured(const OtPinmuxEgState *s,
@@ -270,6 +259,32 @@ static bool ot_pinmux_eg_pad_is_configured(const OtPinmuxEgState *s,
         }
     }
     return false;
+}
+
+int ot_pinmux_eg_host_pin_to_gpio(OtPinmuxEgState *s, unsigned host_pin)
+{
+    if (!s || !s->regs) {
+        return (int)host_pin;
+    }
+    const OtPinmuxEgStateRegs *regs = s->regs;
+    for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
+        if (ot_pinmux_eg_mio_to_host_pin(pad) == (int)host_pin) {
+            uint32_t outsel = regs->mio_outsel[pad];
+            if (outsel >= 3u && outsel < 35u) {
+                return (int)(outsel - 3u);
+            }
+        }
+    }
+    for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
+        if (ot_pinmux_eg_mio_to_host_pin(pad) == (int)host_pin) {
+            for (unsigned g = 0; g < 32u; g++) {
+                if (regs->mio_periph_insel[g] == pad + 2u) {
+                    return (int)g;
+                }
+            }
+        }
+    }
+    return (int)host_pin;
 }
 
 static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
@@ -304,13 +319,30 @@ static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
                                      force_mode);
         }
         ibex_irq_set(&s->mios[pad], (int)cfg);
-        int gpio_idx = ot_pinmux_eg_mio_to_gpio(s, pad);
-        if (gpio_idx >= 0 && gpio_idx < 32) {
-            bool configured = ot_pinmux_eg_pad_is_configured(s, pad);
-            if (configured || !gpio_cfg_set[gpio_idx]) {
-                gpio_cfg[gpio_idx] = cfg;
-                if (configured) {
-                    gpio_cfg_set[gpio_idx] = true;
+        uint32_t outsel = regs->mio_outsel[pad];
+        bool mapped = false;
+        if (outsel >= 3u && outsel < 35u) {
+            unsigned g = outsel - 3u;
+            gpio_cfg[g] = cfg;
+            gpio_cfg_set[g] = true;
+            mapped = true;
+        }
+        for (unsigned g = 0; g < 32u; g++) {
+            if (regs->mio_periph_insel[g] == pad + 2u) {
+                gpio_cfg[g] = cfg;
+                gpio_cfg_set[g] = true;
+                mapped = true;
+            }
+        }
+        if (!mapped) {
+            int host_pin = ot_pinmux_eg_mio_to_host_pin(pad);
+            if (host_pin >= 0 && host_pin < 32) {
+                bool configured = ot_pinmux_eg_pad_is_configured(s, pad);
+                if (configured || !gpio_cfg_set[host_pin]) {
+                    gpio_cfg[host_pin] = cfg;
+                    if (configured) {
+                        gpio_cfg_set[host_pin] = true;
+                    }
                 }
             }
         }
@@ -362,7 +394,7 @@ uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
                           s->regs->mio_outsel[gpio_pin] :
                           0;
     for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
-        if (ot_pinmux_eg_mio_to_gpio(s, pad) == (int)gpio_pin) {
+        if (ot_pinmux_eg_mio_to_host_pin(pad) == (int)gpio_pin) {
             if (ot_pinmux_eg_pad_is_configured(s, pad)) {
                 outsel = s->regs->mio_outsel[pad];
             }
@@ -411,11 +443,6 @@ static void ot_pinmux_eg_update_gpio_inputs(OtPinmuxEgState *s)
                 unsigned g = outsel - 3u;
                 if (g != i) {
                     level = (int)((s->pad_in_level >> g) & 1u);
-                }
-            } else {
-                int mapped_gpio = ot_pinmux_eg_mio_to_gpio(s, pad);
-                if (mapped_gpio >= 0 && (unsigned)mapped_gpio != i) {
-                    level = (int)((s->pad_in_level >> pad) & 1u);
                 }
             }
         }
