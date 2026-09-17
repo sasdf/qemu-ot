@@ -1118,11 +1118,15 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
         }
     } else { /* !READB */
         if (start) {
+            bool is_restart = i2c_bus_busy(s->bus);
             uint8_t addr = extract32(fbyte, 1, 7);
-            if (i2c_bus_busy(s->bus) && s->active_target_addr != addr) {
+            if (is_restart && s->active_target_addr != addr) {
                 i2c_end_transfer(s->bus);
             }
             s->active_target_addr = addr;
+            if (is_restart) {
+                ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+            }
             /* START or RESTART I2C transaction to requested address. */
             if (i2c_start_transfer(s->bus, addr, extract32(fbyte, 0, 1)) &&
                 !nakok) {
