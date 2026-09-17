@@ -97,6 +97,7 @@ pub struct Registers {
     pub fatal_bits: Arc<AtomicU32>,
     pub ctrl: Arc<AtomicBool>,
     pub insn_count: Arc<AtomicUsize>,
+    pub resetting: Arc<AtomicBool>,
 }
 
 /// OTBN executer
@@ -189,6 +190,7 @@ impl Executer {
         loop {
             let cmd = self.channel.0.recv().unwrap();
             if let comm::Command::Reset = cmd {
+                self.registers.resetting.store(false, Ordering::Relaxed);
                 self.imem.lock().unwrap().reset();
                 self.dmem.lock().unwrap().reset();
                 self.registers
@@ -283,7 +285,14 @@ impl Executer {
         // "Each new execution of OTBN will reseed the URND PRNG."
         // Stall OTBN execution till entropy is injected
         self.syncurnd.sync_reseed();
-        match self.do_execute(dump) {
+        if self.registers.resetting.load(Ordering::Relaxed) {
+            return;
+        }
+        let trap = self.do_execute(dump);
+        if self.registers.resetting.load(Ordering::Relaxed) {
+            return;
+        }
+        match trap {
             insn_exec::InstructionTrap::Exception(cause, val) => {
                 let mut error: u32;
                 // let mut registers = self.registers.lock().unwrap();
@@ -382,6 +391,13 @@ impl Executer {
                 }
             }
 
+            if self.registers.resetting.load(Ordering::Relaxed) {
+                return insn_exec::InstructionTrap::Exception(
+                    ExceptionCause::ECallMMode,
+                    None,
+                );
+            }
+
             let fatalbits = if (local_insn_count & 0xff) == 0 {
                 self.registers.fatal_bits.load(Ordering::Relaxed)
             } else {
@@ -397,6 +413,9 @@ impl Executer {
                 ))
             };
             if let Err(trap) = result {
+                if self.registers.resetting.load(Ordering::Relaxed) {
+                    return trap;
+                }
                 if let Some(log_file) = &mut self.log_file {
                     let log_line = match trap {
                         insn_exec::InstructionTrap::Exception(cause, val) => {
@@ -429,6 +448,9 @@ impl Executer {
                 let prng: Arc<Mutex<dyn PRNG>> = self.syncurnd.urnd();
                 executor.wipe_internal(&prng);
                 self.syncurnd.sync_reseed();
+                if self.registers.resetting.load(Ordering::Relaxed) {
+                    return trap;
+                }
                 executor.wipe_internal(&prng);
 
                 let insn_exec::InstructionTrap::Exception(cause, _) = trap;
@@ -459,6 +481,9 @@ impl Executer {
     }
 
     fn wipe_memory(&mut self, doi: bool) {
+        if self.registers.resetting.load(Ordering::Relaxed) {
+            return;
+        }
         let memory = if doi { &mut self.imem } else { &mut self.dmem };
 
         memory
@@ -466,6 +491,9 @@ impl Executer {
             .unwrap()
             .wipe(&mut *self.syncurnd.urnd().lock().unwrap());
 
+        if self.registers.resetting.load(Ordering::Relaxed) {
+            return;
+        }
         // simulate a "long lasting" op
         thread::sleep(Duration::from_micros(200));
 
@@ -475,6 +503,9 @@ impl Executer {
     }
 
     fn signal_completion(&mut self) {
+        if self.registers.resetting.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(cb) = &mut self.on_complete {
             cb.signal();
         }

@@ -120,6 +120,7 @@ impl Proxy {
     pub fn start(&mut self, test_mode: bool, log_name: Option<&str>, log_asm: bool) {
         if self.core_id.is_some() {
             // already started, only reset
+            self.registers.resetting.store(true, Ordering::Relaxed);
             self.syncurnd.abort_wait();
             self.rnd.abort_wait();
             let channel = self.get_channel();
