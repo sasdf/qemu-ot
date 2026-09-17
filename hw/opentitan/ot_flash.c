@@ -46,9 +46,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitmap.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/memalign.h"
+#include "qemu/queue.h"
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
@@ -805,7 +807,16 @@ typedef struct {
     unsigned info_part_count; /* count of info partition (per bank) */
     OtFlashInfoPart info_parts[MAX_INFO_PART_COUNT];
     uint32_t info_page_provisioned_bm; /* bitmask of provisioned info pages */
+    unsigned long *word_prog_bm; /* bitmap of programmed 32-bit data words */
+    unsigned total_data_words; /* total 32-bit words in data partition */
 } OtFlashStorage;
+
+typedef struct OtFlashEccFault {
+    MemoryRegion mr;
+    OtFlashState *s;
+    hwaddr offset;
+    QLIST_ENTRY(OtFlashEccFault) node;
+} OtFlashEccFault;
 
 typedef struct {
     char magic[4u]; /* vFSH */
@@ -872,6 +883,7 @@ struct OtFlashState {
     OtFifo32 rd_fifo;
     OtFifo32 prog_fifo;
     OtFlashStorage flash;
+    QLIST_HEAD(, OtFlashEccFault) ecc_faults;
 
     /*
      * HW and SW operations share a program FIFO, but read to separate
@@ -986,9 +998,15 @@ static void ot_flash_update_irqs(OtFlashState *s)
 
 static void ot_flash_update_alerts(OtFlashState *s)
 {
-    uint32_t levels = s->regs[R_ALERT_TEST];
+    uint32_t fault_alerts = 0u;
+    if (s->regs[R_FAULT_STATUS]) {
+        fault_alerts |= ALERT_FATAL_ERR_MASK;
+    }
+    if (s->regs[R_STD_FAULT_STATUS]) {
+        fault_alerts |= ALERT_FATAL_STD_ERR_MASK;
+    }
 
-    levels |= s->latched_alerts;
+    uint32_t levels = s->regs[R_ALERT_TEST] | s->latched_alerts | fault_alerts;
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
         int level = (int)((levels >> ix) & 0x1u);
@@ -1004,7 +1022,7 @@ static void ot_flash_update_alerts(OtFlashState *s)
     if (s->regs[R_ALERT_TEST]) {
         s->regs[R_ALERT_TEST] = 0;
 
-        levels = s->latched_alerts;
+        levels = s->latched_alerts | fault_alerts;
         for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
             int level = (int)((levels >> ix) & 0x1u);
             if (level != ibex_irq_get_level(&s->alerts[ix])) {
@@ -1133,7 +1151,6 @@ static void ot_flash_set_error(OtFlashState *s, uint32_t ebit, uint32_t eaddr)
     if (ebit) {
         if (s->op.hw) {
             s->regs[R_FAULT_STATUS] |= ebit;
-            s->latched_alerts |= ALERT_FATAL_ERR_MASK;
         } else {
             s->regs[R_OP_STATUS] |= R_OP_STATUS_ERR_MASK;
             s->regs[R_INTR_STATE] |= INTR_CORR_ERR_MASK;
@@ -1390,6 +1407,114 @@ static bool ot_flash_default_region_cfg_op_enabled(const OtFlashState *s)
         return false;
     }
     return en_field == OT_MULTIBITBOOL4_TRUE;
+}
+
+static bool ot_flash_data_ecc_enabled(const OtFlashState *s, unsigned address)
+{
+    unsigned page = address / BYTES_PER_PAGE;
+    for (unsigned region = 0u; region < NUM_REGIONS; region++) {
+        unsigned r_region_cfg = R_MP_REGION_CFG_0 + region;
+        if (SHARED_FIELD_EX32(s->regs[r_region_cfg], MP_REGION_CFG_EN) !=
+            OT_MULTIBITBOOL4_TRUE) {
+            continue;
+        }
+        unsigned r_region = R_MP_REGION_0 + region;
+        unsigned region_base_page =
+            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_BASE);
+        unsigned region_size =
+            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_SIZE);
+        if (page < region_base_page ||
+            page >= (region_base_page + region_size)) {
+            continue;
+        }
+        return SHARED_FIELD_EX32(s->regs[r_region_cfg],
+                                 MP_REGION_CFG_ECC_EN) ==
+               OT_MULTIBITBOOL4_TRUE;
+    }
+    return FIELD_EX32(s->regs[R_DEFAULT_REGION], DEFAULT_REGION, ECC_EN) ==
+           OT_MULTIBITBOOL4_TRUE;
+}
+
+static bool ot_flash_is_ecc_corrupted(const OtFlashState *s, hwaddr address)
+{
+    hwaddr aligned_offset = address & ~7ULL;
+    const OtFlashEccFault *fault;
+    QLIST_FOREACH(fault, &s->ecc_faults, node) {
+        if (fault->offset == aligned_offset) {
+            return ot_flash_data_ecc_enabled(s, (unsigned)address);
+        }
+    }
+    return false;
+}
+
+static MemTxResult ot_flash_ecc_fault_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    OtFlashEccFault *fault = opaque;
+    OtFlashState *s = fault->s;
+    hwaddr flash_offset = fault->offset + addr;
+    (void)attrs;
+
+    if (!ot_flash_data_ecc_enabled(s, (unsigned)flash_offset)) {
+        uint64_t val = 0;
+        memcpy(&val, (const uint8_t *)s->flash.data + flash_offset, size);
+        *data = val;
+        return MEMTX_OK;
+    }
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "%s: %s: uncorrectable ECC fault reading flash data at 0x%"
+                  HWADDR_PRIx "\n",
+                  __func__, s->ot_id, flash_offset);
+
+    s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_PHY_RELBL_ERR_MASK;
+    s->regs[R_ERR_ADDR] =
+        FIELD_DP32(0, ERR_ADDR, ERR_ADDR, (uint32_t)flash_offset);
+    ot_flash_update_alerts(s);
+
+    *data = UINT64_MAX;
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps ot_flash_ecc_fault_ops = {
+    .read_with_attrs = &ot_flash_ecc_fault_read_with_attrs,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+};
+
+static void ot_flash_add_ecc_fault(OtFlashState *s, hwaddr address)
+{
+    hwaddr aligned_offset = address & ~7ULL;
+    OtFlashEccFault *fault;
+    QLIST_FOREACH(fault, &s->ecc_faults, node) {
+        if (fault->offset == aligned_offset) {
+            return;
+        }
+    }
+    fault = g_new0(OtFlashEccFault, 1);
+    fault->s = s;
+    fault->offset = aligned_offset;
+    memory_region_init_io(&fault->mr, OBJECT(s), &ot_flash_ecc_fault_ops,
+                          fault, TYPE_OT_FLASH ".ecc-fault", 8u);
+    memory_region_add_subregion_overlap(&s->mmio.mem, aligned_offset,
+                                        &fault->mr, 1);
+    QLIST_INSERT_HEAD(&s->ecc_faults, fault, node);
+}
+
+static void ot_flash_clear_ecc_faults_range(OtFlashState *s, hwaddr start,
+                                            hwaddr size)
+{
+    OtFlashEccFault *fault, *next;
+    QLIST_FOREACH_SAFE(fault, &s->ecc_faults, node, next) {
+        if (fault->offset >= start && fault->offset < (start + size)) {
+            memory_region_del_subregion(&s->mmio.mem, &fault->mr);
+            QLIST_REMOVE(fault, node);
+            g_free(fault);
+        }
+    }
 }
 
 static bool ot_flash_can_erase_bank(const OtFlashState *s, unsigned bank)
@@ -1653,7 +1778,17 @@ static void ot_flash_op_read(OtFlashState *s)
 
             /* For multi-word read access permission errors, return all 1s. */
             if (!s->op.failed) {
-                word = src[address];
+                if (!s->op.info_part &&
+                    ot_flash_is_ecc_corrupted(s, address * sizeof(uint32_t))) {
+                    s->regs[R_FAULT_STATUS] |=
+                        R_FAULT_STATUS_PHY_RELBL_ERR_MASK;
+                    ot_flash_set_error(s, R_ERR_CODE_RD_ERR_MASK,
+                                       address * sizeof(uint32_t));
+                    s->op.failed = true;
+                    word = 0xFFFFFFFFu;
+                } else {
+                    word = src[address];
+                }
             }
         }
 
@@ -1723,6 +1858,15 @@ static void ot_flash_op_prog(OtFlashState *s)
         g_assert(word_address <
                  ((s->op.info_part ? storage->info_size : storage->data_size) *
                   storage->bank_count));
+        uint32_t prev_word = dest[word_address];
+        if (!s->op.info_part && word_address < storage->total_data_words) {
+            if (test_bit(word_address, storage->word_prog_bm) &&
+                word != prev_word &&
+                ot_flash_data_ecc_enabled(s, address)) {
+                ot_flash_add_ecc_fault(s, address);
+            }
+            set_bit(word_address, storage->word_prog_bm);
+        }
         dest[word_address] &= word;
         if (s->op.info_part) {
             unsigned info_page_idx = address / BYTES_PER_PAGE;
@@ -1785,6 +1929,9 @@ static void ot_flash_op_erase_page(OtFlashState *s, unsigned address)
             storage->info_page_provisioned_bm |= (1u << info_page_idx);
         }
     } else {
+        bitmap_clear(storage->word_prog_bm, word_address,
+                     page_size / sizeof(uint32_t));
+        ot_flash_clear_ecc_faults_range(s, page_address, page_size);
         /*
          * for data, we must flush relevant TLB pages to ensure host reads
          * for XIP execution of mutated code in flash are correct.
@@ -1871,6 +2018,9 @@ static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
      * for XIP execution of mutated code in flash are correct.
      */
     hwaddr data_byte_address = (hwaddr)data_address * sizeof(uint32_t);
+    bitmap_clear(storage->word_prog_bm, data_address,
+                 bank_size / sizeof(uint32_t));
+    ot_flash_clear_ecc_faults_range(s, data_byte_address, bank_size);
     memory_region_set_dirty(&s->mmio.mem, data_byte_address, bank_size);
 
     if (ot_flash_is_backend_writable(s)) {
@@ -2763,6 +2913,7 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= rw0c_mask;
         val32 |= ~rw0c_mask;
         s->regs[reg] &= val32;
+        ot_flash_update_alerts(s);
         break;
     }
     case R_CTRL_REGWEN:
@@ -3222,6 +3373,26 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
     flash->data_size = data_size;
     flash->info_size = info_size;
 
+    flash->total_data_words =
+        (flash->bank_count * flash->data_size) / sizeof(uint32_t);
+    flash->word_prog_bm = bitmap_new(flash->total_data_words);
+    unsigned words_per_page = BYTES_PER_PAGE / sizeof(uint32_t);
+    unsigned total_data_pages =
+        (flash->bank_count * flash->data_size) / BYTES_PER_PAGE;
+    for (unsigned p = 0; p < total_data_pages; p++) {
+        const uint32_t *page_words = &flash->data[p * words_per_page];
+        bool page_has_data = false;
+        for (unsigned w = 0; w < words_per_page; w++) {
+            if (page_words[w] != 0xFFFFFFFFu) {
+                page_has_data = true;
+                break;
+            }
+        }
+        if (page_has_data) {
+            bitmap_set(flash->word_prog_bm, p * words_per_page, words_per_page);
+        }
+    }
+
     /*
      * Secret and attestation seed info pages are not erased during factory
      * personalization if unprovisioned, whereas certificate and general info
@@ -3234,7 +3405,6 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
     const uint32_t unprovisioned_default_mask =
         (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) |
         (1u << 15) | (1u << 16);
-    unsigned words_per_page = BYTES_PER_PAGE / sizeof(uint32_t);
     unsigned total_info_pages =
         (flash->bank_count * flash->info_size) / BYTES_PER_PAGE;
     flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
@@ -3509,6 +3679,7 @@ static void ot_flash_init(Object *obj)
     ot_fifo32_create(&s->rd_fifo, OT_FLASH_READ_FIFO_SIZE);
     ot_fifo32_create(&s->hw_rd_fifo, FLASH_SEED_WORDS);
     ot_fifo32_create(&s->prog_fifo, OT_FLASH_PROG_FIFO_SIZE);
+    QLIST_INIT(&s->ecc_faults);
 
     for (unsigned ix = 0; ix < PARAM_NUM_IRQS; ix++) {
         ibex_sysbus_init_irq(obj, &s->irqs[ix]);
