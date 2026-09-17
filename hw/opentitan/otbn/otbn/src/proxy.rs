@@ -184,11 +184,15 @@ impl Proxy {
     }
 
     /// Read one 32-bit from memory
-    fn read_memory(&mut self, doi: bool, addr: u32) -> u32 {
+    fn read_memory(&mut self, doi: bool, addr: u32, valid: &mut bool) -> u32 {
         match self.get_status() {
             otbn::Status::Idle => (),
-            otbn::Status::Locked => return 0, // Reads return zero in Locked state
+            otbn::Status::Locked => {
+                *valid = true;
+                return 0; // Reads return zero in Locked state
+            }
             _ => {
+                *valid = true;
                 self.registers
                     .fatal_bits
                     .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
@@ -200,12 +204,15 @@ impl Proxy {
             &self.imem
         } else {
             if addr as usize >= otbn::DMEM_PUB_SIZE {
+                *valid = true;
                 return 0;
             }
             &self.dmem
         };
 
-        if let Some(data) = mem.lock().unwrap().read_mem(addr) {
+        let mut mem_guard = mem.lock().unwrap();
+        *valid = mem_guard.is_valid(addr);
+        if let Some(data) = mem_guard.read_mem(addr) {
             data
         } else {
             0
@@ -502,8 +509,14 @@ pub extern "C" fn ot_otbn_proxy_read_memory(
     proxy: Option<&mut Proxy>,
     doi: bool,
     addr: u32,
+    valid: Option<&mut bool>,
 ) -> u32 {
-    proxy.unwrap().read_memory(doi, addr)
+    let mut is_valid = true;
+    let res = proxy.unwrap().read_memory(doi, addr, &mut is_valid);
+    if let Some(v) = valid {
+        *v = is_valid;
+    }
+    res
 }
 
 #[no_mangle]

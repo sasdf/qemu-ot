@@ -484,6 +484,9 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
 
     /* Priority: RNMI > Other interrupt. */
     if (env->rnmip) {
+        if (env->rnmip & (1ULL << 31)) {
+            return 31;
+        }
         return ctz64(env->rnmip); /* since non-zero */
     }
 
@@ -717,6 +720,28 @@ void riscv_cpu_set_rnmi(RISCVCPU *cpu, uint32_t irq, bool level)
     } else {
         env->rnmip &= ~(1 << irq);
         cpu_reset_interrupt(cs, CPU_INTERRUPT_RNMI);
+    }
+
+    if (release_lock) {
+        bql_unlock();
+    }
+}
+
+void riscv_cpu_set_rnmi_int(RISCVCPU *cpu, uint32_t cause, target_ulong mtval)
+{
+    CPURISCVState *env = &cpu->env;
+    CPUState *cs = CPU(cpu);
+    bool release_lock = false;
+
+    if (!bql_locked()) {
+        release_lock = true;
+        bql_lock();
+    }
+
+    if (!(env->rnmip & (1ULL << cause))) {
+        env->rnmi_int_mtval = mtval;
+        env->rnmip |= (1ULL << cause);
+        cpu_interrupt(cs, CPU_INTERRUPT_RNMI);
     }
 
     if (release_lock) {
@@ -2586,7 +2611,8 @@ void riscv_cpu_do_interrupt(CPUState *cs)
                      !get_field(env->mnstatus, MNSTATUS_NMIE) &&
                      !async;
 
-        if (async && env->rnmip && !cpu->cfg.ext_smrnmi) {
+        bool is_ibex_nmi = async && env->rnmip && !cpu->cfg.ext_smrnmi;
+        if (is_ibex_nmi) {
             /*
              * Ibex saves previous status to mstack CSRs and enters nmi_mode
              * (ibex_cs_registers.sv & ibex_controller.sv).
@@ -2596,6 +2622,13 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             env->mstack_epc = env->mepc;
             env->mstack_cause = env->mcause;
             env->nmi_mode = true;
+            if (cause < 31) {
+                tval = env->rnmi_int_mtval;
+                env->rnmip &= ~(1ULL << cause);
+                if (!env->rnmip) {
+                    cpu_reset_interrupt(cs, CPU_INTERRUPT_RNMI);
+                }
+            }
         }
 
         s = env->mstatus;
@@ -2616,7 +2649,11 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             s = set_field(s, MSTATUS_MDT, 1);
         }
         env->mstatus = s;
-        env->mcause = cause | ((target_ulong)async << (mxlen - 1));
+        if (is_ibex_nmi && cause < 31) {
+            env->mcause = 0xffffffe0ULL | (cause & 0x1fULL);
+        } else {
+            env->mcause = cause | ((target_ulong)async << (mxlen - 1));
+        }
         if (smode_double_trap) {
             env->mtval2 = env->mcause;
             env->mcause = RISCV_EXCP_DOUBLE_TRAP;
@@ -2634,8 +2671,9 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         if (nnmi_excep) {
             env->pc = env->rnmi_excpvec;
         } else {
+            target_ulong vec_cause = is_ibex_nmi ? 31 : cause;
             env->pc = (env->mtvec >> 2 << 2) +
-                      ((async && (env->mtvec & 3) == 1) ? cause * 4 : 0);
+                      ((async && (env->mtvec & 3) == 1) ? vec_cause * 4 : 0);
         }
         riscv_cpu_set_mode(env, PRV_M, virt);
         src = env->mepc;

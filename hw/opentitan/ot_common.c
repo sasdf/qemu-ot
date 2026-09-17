@@ -39,6 +39,7 @@
 #include "qapi/util.h"
 #include "qom/object.h"
 #include "hw/opentitan/ot_common.h"
+#include "hw/opentitan/ot_ibex_wrapper.h"
 #include "hw/opentitan/ot_rom_ctrl.h"
 #include "hw/opentitan/ot_rom_ctrl_img.h"
 #include "hw/riscv/ibex_common.h"
@@ -441,5 +442,50 @@ void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
         hwaddr base = sbd->mmio[0].addr;
         dev->mem_reentrancy_guard.engaged_in_io = false;
         ibex_stall_cpu_on_unclocked_mmio(cpu, base + offset);
+    }
+}
+
+static OtIbexWrapperState *ot_common_get_local_ibex_wrapper(DeviceState *s)
+{
+    BusState *bus = s->parent_bus;
+    if (!bus) {
+        return NULL;
+    }
+
+    Object *parent;
+    if (bus->parent) {
+        parent = OBJECT(bus->parent);
+    } else if (bus == sysbus_get_default()) {
+        parent = qdev_get_machine();
+    } else {
+        return NULL;
+    }
+
+    OtCommonObjectNodes nodes = {
+        .type = TYPE_OT_IBEX_WRAPPER,
+        .count = 1u,
+    };
+    QSIMPLEQ_INIT(&nodes.list);
+
+    if (object_child_foreach_recursive(OBJECT(parent),
+                                       &ot_common_node_child_walker, &nodes)) {
+        g_assert(!QSIMPLEQ_EMPTY(&nodes.list));
+        OtCommonObjectNode *node = QSIMPLEQ_FIRST(&nodes.list);
+        object_unref(node->obj);
+        OtIbexWrapperState *ibex = OT_IBEX_WRAPPER(node->obj);
+        g_free(node);
+        return ibex;
+    }
+
+    return NULL;
+}
+
+void ot_common_raise_load_integrity_error(DeviceState *dev, hwaddr offset)
+{
+    OtIbexWrapperState *ibex = ot_common_get_local_ibex_wrapper(dev);
+    if (ibex) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+        hwaddr base = sbd->mmio[0].addr;
+        ot_ibex_wrapper_raise_load_integrity_error(ibex, base + offset);
     }
 }

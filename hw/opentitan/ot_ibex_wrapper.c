@@ -304,6 +304,14 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
     if (s->regs.sw_fatal_err != OT_MULTIBITBOOL4_FALSE) {
         level |= ALERT_FATAL_SW_MASK;
     }
+    if (s->regs.err_status & (ERR_STATUS_REG_INTG_MASK |
+                              ERR_STATUS_FATAL_INTG_MASK |
+                              ERR_STATUS_FATAL_CORE_MASK)) {
+        level |= ALERT_FATAL_HW_MASK;
+    }
+    if (s->regs.err_status & ERR_STATUS_RECOV_CORE_MASK) {
+        level |= ALERT_RECOV_HW_MASK;
+    }
 
     for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
@@ -922,7 +930,19 @@ static void ot_ibex_wrapper_cpu_enable_recv(void *opaque, int n, int level)
 }
 
 extern void riscv_cpu_set_rnmi(CPUState *cpu, uint32_t irq, bool level);
+extern void riscv_cpu_set_rnmi_int(CPUState *cpu, uint32_t cause,
+                                   uint64_t mtval);
 extern void riscv_cpu_set_clock_freq(CPUState *cpu, uint64_t freq_hz);
+
+void ot_ibex_wrapper_raise_load_integrity_error(OtIbexWrapperState *s,
+                                                hwaddr addr)
+{
+    s->regs.err_status |= ERR_STATUS_FATAL_INTG_MASK;
+    ot_ibex_wrapper_update_alerts(s);
+    if (s->cpu) {
+        riscv_cpu_set_rnmi_int(s->cpu, 0, addr);
+    }
+}
 
 static void ot_ibex_wrapper_update_nmi(OtIbexWrapperState *s)
 {
@@ -1203,10 +1223,10 @@ static void ot_ibex_wrapper_write_nmi_state(OtIbexWrapperState *s, unsigned reg,
 static void ot_ibex_wrapper_write_err_status(OtIbexWrapperState *s,
                                              unsigned reg, uint32_t value)
 {
-    qemu_log_mask(LOG_UNIMP, "%s: %s: %s is not supported\n", __func__,
-                  s->ot_id, REG_NAME(s, reg));
+    (void)reg;
 
     s->regs.err_status &= ~value; /* RW1C */
+    ot_ibex_wrapper_update_alerts(s);
 }
 
 static void ot_ibex_wrapper_write_dv_sim_status(OtIbexWrapperState *s,

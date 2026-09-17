@@ -409,5 +409,6 @@ void ot_common_configure_device_opts(DeviceState **devices, unsigned count);
                                    PARENT_MODULE_OBJ_NAME, true, { NULL })
 
 void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset);
+void ot_common_raise_load_integrity_error(DeviceState *dev, hwaddr offset);
 
 #endif /* HW_OPENTITAN_OT_COMMON_H */

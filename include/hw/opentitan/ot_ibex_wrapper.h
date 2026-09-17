@@ -46,4 +46,7 @@ typedef enum {
     OT_IBEX_CPU_EN_COUNT
 } OtIbexWrapperCpuEnable;
 
+void ot_ibex_wrapper_raise_load_integrity_error(OtIbexWrapperState *s,
+                                                hwaddr addr);
+
 #endif /* HW_OPENTITAN_OT_IBEX_WRAPPER_H */

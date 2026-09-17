@@ -654,8 +654,13 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
-    uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr);
+    bool valid = true;
+    uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr, &valid);
     trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value);
+    if (!valid) {
+        hwaddr offset = (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + addr;
+        ot_common_raise_load_integrity_error(DEVICE(s), offset);
+    }
     return value;
 }
 
