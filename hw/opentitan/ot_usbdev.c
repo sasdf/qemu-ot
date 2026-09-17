@@ -1554,12 +1554,9 @@ static void ot_usbdev_advance_transfer_in(OtUsbdevState *s, uint8_t epnum)
     }
 
     /*
-     * If the endpoint is not enabled, the device will silently ignore the
-     * packet, causing an error.
+     * If the endpoint is not enabled yet, wait until software enables it.
      */
     if (!ot_usbdev_is_ep_in_enabled(s, epnum)) {
-        ot_usbdev_complete_transfer_in(s, epnum, OT_USBDEV_SERVER_STATUS_ERROR,
-                                       "endpoint IN not enabled");
         return;
     }
 
@@ -1653,91 +1650,87 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
 
     OtUsbdevServer *server = &s->usb_server;
     OtUsbdevServerEpOutXfer *xfer = &server->ep[epnum].out;
-    if (!xfer->pending) {
-        return false;
-    }
+    bool progressed = false;
 
-    /*
-     * If the endpoint OUT is not enabled, the device will silently ignore the
-     * packet, causing an error.
-     */
-    if (!ot_usbdev_is_ep_out_enabled(s, epnum)) {
-        ot_usbdev_complete_transfer_out(s, epnum, OT_USBDEV_SERVER_STATUS_ERROR,
-                                        "endpoint OUT not enabled");
-        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
-        ot_usbdev_update_irqs(s);
-        return false;
-    }
-
-    /* Check for STALL */
-    if (ot_usbdev_is_ep_out_stalled(s, epnum)) {
-        ot_usbdev_complete_transfer_out(s, epnum,
-                                        OT_USBDEV_SERVER_STATUS_STALLED,
-                                        "stalled by device");
-        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
-        ot_usbdev_update_irqs(s);
-        return false;
-    }
-
-    /*
-     * Only accept the DATA packet if the endpoint is enabled, and there is
-     * buffer available and there is space in the RX FIFO. The last entry of
-     * the FIFO is reserved for SETUP packets.
-     */
-    if (!ot_usbdev_is_ep_out_rxenabled(s, epnum) ||
-        fifo8_is_empty(&s->av_out_fifo) ||
-        ot_fifo32_num_free(&s->rx_fifo) <= 1u) {
-        /* Notify the software about the error */
-        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
-        ot_usbdev_update_irqs(s);
-        /* "NAK" packet, OUT transfer will be retried */
-        return false;
-    }
-
-    /* Write data to buffer and update transfer status */
-    uint8_t buf_id = fifo8_pop(&s->av_out_fifo);
-    uint32_t size = MIN((uint32_t)xfer->max_packet_size, xfer->send_rem);
-    ot_usbdev_write_buffer(s, buf_id, xfer->send_buf, (size_t)size);
-    xfer->send_buf += size;
-    xfer->send_rem -= size;
-
-    /* Create and push an entry in the RX FIFO */
-    uint32_t rx_fifo_entry = 0u;
-    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, BUFFER, buf_id);
-    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SETUP, 0u);
-    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, EP, epnum);
-    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SIZE, size);
-    ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
-
-    s->regs[R_OUT_DATA_TOGGLE] ^=
-        FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
-
-    trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
-
-    /* Disable RX if auto-NAK on OUT is set. */
-    if (ot_usbdev_is_set_nak_out_enabled(s, epnum)) {
-        s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
-    }
-
-    ot_usbdev_update_fifos_status(s);
-    ot_usbdev_update_irqs(s);
-
-    /* Handle completion */
-    if (xfer->send_rem == 0 && !xfer->send_zlp) {
-        ot_usbdev_complete_transfer_out(s, epnum,
-                                        OT_USBDEV_SERVER_STATUS_SUCCESS,
-                                        "success");
-        return true;
-    }
-    if (xfer->send_rem == 0 && xfer->send_zlp) {
+    while (xfer->pending) {
         /*
-         * If we have sent everything and a ZLP is requested, go for a last
-         * round
+         * If the endpoint OUT is not enabled yet, wait until software enables it.
          */
-        xfer->send_zlp = false;
+        if (!ot_usbdev_is_ep_out_enabled(s, epnum)) {
+            return progressed;
+        }
+
+        /* Check for STALL */
+        if (ot_usbdev_is_ep_out_stalled(s, epnum)) {
+            ot_usbdev_complete_transfer_out(s, epnum,
+                                            OT_USBDEV_SERVER_STATUS_STALLED,
+                                            "stalled by device");
+            s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
+            ot_usbdev_update_irqs(s);
+            return progressed;
+        }
+
+        /*
+         * Only accept the DATA packet if the endpoint is enabled, and there is
+         * buffer available and there is space in the RX FIFO. The last entry of
+         * the FIFO is reserved for SETUP packets.
+         */
+        if (!ot_usbdev_is_ep_out_rxenabled(s, epnum) ||
+            fifo8_is_empty(&s->av_out_fifo) ||
+            ot_fifo32_num_free(&s->rx_fifo) <= 1u) {
+            /* Notify the software about the error */
+            s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
+            ot_usbdev_update_irqs(s);
+            /* "NAK" packet, OUT transfer will be retried */
+            return progressed;
+        }
+
+        /* Write data to buffer and update transfer status */
+        uint8_t buf_id = fifo8_pop(&s->av_out_fifo);
+        uint32_t size = MIN((uint32_t)xfer->max_packet_size, xfer->send_rem);
+        ot_usbdev_write_buffer(s, buf_id, xfer->send_buf, (size_t)size);
+        xfer->send_buf += size;
+        xfer->send_rem -= size;
+
+        /* Create and push an entry in the RX FIFO */
+        uint32_t rx_fifo_entry = 0u;
+        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, BUFFER, buf_id);
+        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SETUP, 0u);
+        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, EP, epnum);
+        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SIZE, size);
+        ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
+
+        s->regs[R_OUT_DATA_TOGGLE] ^=
+            FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
+
+        trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
+
+        /* Disable RX if auto-NAK on OUT is set. */
+        if (ot_usbdev_is_set_nak_out_enabled(s, epnum)) {
+            s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
+        }
+
+        ot_usbdev_update_fifos_status(s);
+        ot_usbdev_update_irqs(s);
+        progressed = true;
+
+        /* Handle completion */
+        if (xfer->send_rem == 0 && !xfer->send_zlp) {
+            ot_usbdev_complete_transfer_out(s, epnum,
+                                            OT_USBDEV_SERVER_STATUS_SUCCESS,
+                                            "success");
+            return true;
+        }
+        if (xfer->send_rem == 0 && xfer->send_zlp) {
+            /*
+             * If we have sent everything and a ZLP is requested, go for a last
+             * round
+             */
+            xfer->send_zlp = false;
+        }
     }
 
-    return true;
+    return progressed;
 }
 
 /*
@@ -1898,17 +1891,11 @@ static void ot_usbdev_update_ep_xfers(OtUsbdevState *s, bool dir_in,
 static void
 ot_usbdev_update_ep_enabled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
 {
-    /* Find which endpoints have been disabled */
-    uint32_t disabled_ep = s->regs[reg] & ~val32;
+    uint32_t changed_ep = (s->regs[reg] ^ val32) & USBDEV_ALL_EP_MASK;
     s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
 
     bool dir_in = reg == R_EP_IN_ENABLE;
-    /*
-     * Only update disabled endpoints: the endpoints which became enabled
-     * cannot have any pending transfers since ot_usbdev_advance_transfer_out
-     * automatically completes transfers on disabled endpoints.
-     */
-    ot_usbdev_update_ep_xfers(s, dir_in, disabled_ep);
+    ot_usbdev_update_ep_xfers(s, dir_in, changed_ep);
 }
 
 /*
@@ -1923,17 +1910,11 @@ ot_usbdev_update_ep_enabled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
 static void
 ot_usbdev_update_ep_stalled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
 {
-    /* Find which endpoints have been stalled */
-    uint32_t stalled_ep = (~s->regs[reg] & val32) & USBDEV_ALL_EP_MASK;
+    uint32_t changed_ep = (s->regs[reg] ^ val32) & USBDEV_ALL_EP_MASK;
     s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
 
     bool dir_in = reg == R_IN_STALL;
-    /*
-     * Only update stalled endpoints: the endpoints which became unstalled
-     * cannot have any pending transfers since ot_usbdev_advance_transfer_out
-     * automatically completes transfers on stalled endpoints.
-     */
-    ot_usbdev_update_ep_xfers(s, dir_in, stalled_ep);
+    ot_usbdev_update_ep_xfers(s, dir_in, changed_ep);
 }
 
 /*
@@ -2028,10 +2009,8 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
             trace_ot_usbdev_pop_rx_fifo(s->ot_id, val32);
             ot_usbdev_update_fifos_status(s);
             /* Potentially all endpoints are now able to receive some data. */
-            if (ot_fifo32_num_free(&s->rx_fifo) == 1u) {
-                ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
-                                          USBDEV_ALL_EP_MASK);
-            }
+            ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
+                                      USBDEV_ALL_EP_MASK);
         }
         break;
     case R_USBDEV_INTR_TEST:
@@ -2146,10 +2125,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
             trace_ot_usbdev_push_av_out_buffer(s->ot_id, buf_id);
             ot_usbdev_update_fifos_status(s);
             /* Potentially all endpoints are now able to receive some data. */
-            if (fifo8_num_used(&s->av_out_fifo) == 1u) {
-                ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
-                                          USBDEV_ALL_EP_MASK);
-            }
+            ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
+                                      USBDEV_ALL_EP_MASK);
         }
         break;
     case R_AVSETUPBUFFER:
