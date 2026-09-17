@@ -38,6 +38,7 @@
 #include "hw/opentitan/ot_flash.h"
 #include "hw/opentitan/ot_pwrmgr.h"
 #include "hw/opentitan/ot_rstmgr.h"
+#include "hw/opentitan/ot_sensor_eg.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
@@ -571,6 +572,16 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             ibex_irq_set(&s->sleep_en, 1);
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
                 ibex_irq_set(&s->cpu_enable, (int)false);
+            }
+            if (!active_wkup && (s->slow_regs.wakeup_en & (1u << 5u))) {
+                OtSensorEgState *sensor =
+                    (OtSensorEgState *)object_resolve_path_type(
+                        "", TYPE_OT_SENSOR_EG, NULL);
+                if (sensor) {
+                    ot_sensor_eg_trigger_recov_event(sensor, 0u);
+                    active_wkup =
+                        s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
+                }
             }
         }
         if (active_wkup) {
@@ -1152,8 +1163,11 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     qemu_bh_cancel(s->fsm_tick_bh);
     timer_del(s->cdc_sync);
     uint32_t wake_info = s->regs[R_WAKE_INFO];
+    uint32_t wake_status =
+        (type != RESET_TYPE_COLD) ? s->regs[R_WAKE_STATUS] : 0u;
     memset(s->regs, 0, REGS_SIZE);
     s->regs[R_WAKE_INFO] = wake_info;
+    s->regs[R_WAKE_STATUS] = wake_status;
 
     s->regs[R_CTRL_CFG_REGWEN] = 0x1u;
     s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;

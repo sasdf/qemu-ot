@@ -250,6 +250,19 @@ static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
                  (int)(bool)(active_events || s->regs[R_RECOV_ALERT]));
 }
 
+void ot_sensor_eg_trigger_recov_event(OtSensorEgState *s, unsigned event_idx)
+{
+    if (!s || event_idx > (R_ALERT_EN_10 - R_ALERT_EN_0)) {
+        return;
+    }
+    uint32_t alert_en_mask = ot_sensor_eg_get_alert_en_mask(s);
+    uint32_t bit = (1u << event_idx) & alert_en_mask;
+    if (bit && !(bit & s->regs[R_FATAL_ALERT_EN])) {
+        s->regs[R_RECOV_ALERT] |= bit;
+        ot_sensor_eg_update_alerts(s);
+    }
+}
+
 static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtSensorEgState *s = opaque;
