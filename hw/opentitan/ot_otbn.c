@@ -282,6 +282,9 @@ static void ot_otbn_signal_on_completion(void *opaque)
     OtOTBNState *s = OT_OTBN(opaque);
 
     qemu_bh_schedule(s->proxy_completion_bh);
+    if (first_cpu) {
+        cpu_exit(first_cpu);
+    }
 }
 
 static void ot_otbn_trigger_entropy_req(void *opaque)
@@ -302,6 +305,9 @@ static void ot_otbn_trigger_entropy_req(void *opaque)
     }
 
     qemu_bh_schedule(r->proxy_entropy_req_bh);
+    if (first_cpu) {
+        cpu_exit(first_cpu);
+    }
 }
 
 static void ot_otbn_proxy_completion_bh(void *opaque)
@@ -529,6 +535,19 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
     case R_INTR_STATE:
+        if (!(s->intr_state & INTR_DONE_MASK) &&
+            ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_IDLE) {
+            for (int i = 0; i < 50; i++) {
+                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+                }
+                if (s->last_cmd == OT_OTBN_CMD_NONE ||
+                    s->rnds[OT_OTBN_URND].entropy_requested ||
+                    s->rnds[OT_OTBN_RND].entropy_requested) {
+                    break;
+                }
+                g_usleep(10);
+            }
+        }
         val32 = s->intr_state;
         break;
     case R_INTR_ENABLE:
@@ -540,8 +559,22 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_STATUS:
         val32 = ot_otbn_proxy_get_status(s->proxy);
         if (val32 != OT_OTBN_STATUS_IDLE) {
-            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+            for (int i = 0; i < 50; i++) {
+                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+                    val32 = ot_otbn_proxy_get_status(s->proxy);
+                }
+                if (s->last_cmd == OT_OTBN_CMD_NONE ||
+                    s->rnds[OT_OTBN_URND].entropy_requested ||
+                    s->rnds[OT_OTBN_RND].entropy_requested) {
+                    break;
+                }
+                g_usleep(10);
                 val32 = ot_otbn_proxy_get_status(s->proxy);
+            }
+            if (val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT &&
+                (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
+                 (s->proxy_defer && timer_pending(s->proxy_defer)))) {
+                val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
             }
         }
         break;
