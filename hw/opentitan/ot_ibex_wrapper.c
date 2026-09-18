@@ -892,7 +892,9 @@ static void ot_ibex_wrapper_update_exec(OtIbexWrapperState *s)
     if (enable) {
         cs->halted = 0;
         cs->disabled = false;
-        cpu_resume(cs);
+        if (runstate_is_running()) {
+            cpu_resume(cs);
+        }
     } else {
         cs->disabled = true;
         cpu_pause(cs);
