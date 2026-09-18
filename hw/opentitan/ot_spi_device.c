@@ -2022,6 +2022,10 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
             qemu_chr_fe_accept_input(&s->chr);
         }
+        if (timer_pending(s->flash.irq_timer)) {
+            timer_del(s->flash.irq_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         val32 = s->spi_regs[R_INTR_STATE] | s->spi_regs[R_INTR_TEST];
         break;
     case R_INTR_ENABLE:
@@ -2038,7 +2042,7 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
             qemu_chr_fe_accept_input(&s->chr);
         }
-        if (timer_pending(s->flash.irq_timer)) {
+        if (s->flash.read_buf_modified && timer_pending(s->flash.irq_timer)) {
             trace_ot_spi_device_flash_pace(s->ot_id, "clear",
                                            timer_pending(s->flash.irq_timer));
             timer_del(s->flash.irq_timer);
@@ -2130,6 +2134,10 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
         if (s->csb_poll_enabled) {
             s->csb_poll_enabled = false;
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
+            qemu_chr_fe_accept_input(&s->chr);
+        }
+        if (timer_pending(s->flash.irq_timer)) {
+            timer_del(s->flash.irq_timer);
             qemu_chr_fe_accept_input(&s->chr);
         }
         val32 = 0;
@@ -2556,9 +2564,9 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
     s->sram[addr >> 2u] = val32;
-    if (addr < SPI_SRAM_READ_SIZE * 2u) {
+    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 == 0xa5a5beefu) {
         s->flash.read_buf_modified = true;
-        if (addr == 0u && val32 == 0xa5a5beefu && !s->last_read_addr_polled) {
+        if (addr == 0u && !s->last_read_addr_polled) {
             s->csb_poll_enabled = true;
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
             s->csb_poll_count = 0u;
