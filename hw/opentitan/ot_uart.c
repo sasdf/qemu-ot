@@ -193,6 +193,8 @@ struct OtUARTState {
     QEMUTimer *rx_timer;
     Fifo8 rx_staging_fifo;
     int64_t rx_next_ns;
+    QEMUTimer *rx_pace_timer;
+    uint32_t rx_poll_count;
 };
 
 typedef struct {
@@ -876,6 +878,22 @@ static void ot_uart_clock_input(void *opaque, int irq, int level)
     ot_uart_check_baudrate(s);
 }
 
+static void ot_uart_rx_pace_timer_cb(void *opaque)
+{
+    OtUARTState *s = opaque;
+
+    if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
+        fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2) {
+        s->rx_poll_count = 1;
+        g_usleep(200);
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        timer_mod(s->rx_pace_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
+    } else {
+        s->rx_poll_count = 0;
+    }
+}
+
 static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtUARTState *s = opaque;
@@ -900,6 +918,18 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     hwaddr reg = R32_OFF(addr);
+    if (reg == R_STATUS && ot_uart_is_rx_enabled(s) &&
+        fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo)) {
+        s->rx_poll_count++;
+        if (s->rx_poll_count >= 4 && !timer_pending(s->rx_pace_timer)) {
+            timer_mod(s->rx_pace_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
+        }
+    } else if (!fifo8_is_empty(&s->rx_fifo) ||
+               !fifo8_is_empty(&s->rx_staging_fifo)) {
+        s->rx_poll_count = 0;
+    }
+
     switch (reg) {
     case R_INTR_STATE:
         /* Status-type bits reflect the live FIFO condition, not a latch. */
@@ -1091,6 +1121,7 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_WDATA:
+        s->rx_poll_count = 0;
         uart_write_tx_fifo(s, (uint8_t)(val32 & R_WDATA_WDATA_MASK));
         break;
     case R_FIFO_CTRL:
@@ -1186,7 +1217,11 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     if (s->tx_timer) {
         timer_del(s->tx_timer);
     }
+    if (s->rx_pace_timer) {
+        timer_del(s->rx_pace_timer);
+    }
     s->tx_busy = false;
+    s->rx_poll_count = 0;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 
@@ -1237,6 +1272,8 @@ static void ot_uart_realize(DeviceState *dev, Error **errp)
     s->rx_target_uart = s;
     s->tx_timer = timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_tx_timer_cb, s);
     s->rx_timer = timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_rx_timer_cb, s);
+    s->rx_pace_timer =
+        timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_rx_pace_timer_cb, s);
     if (s->ot_id[0] == 'u' && s->ot_id[1] >= '0' && s->ot_id[1] <= '3' &&
         s->ot_id[2] == '\0') {
         ot_uart_instances[s->ot_id[1] - '0'] = s;
