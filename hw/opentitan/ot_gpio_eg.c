@@ -1386,11 +1386,14 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
                               (unsigned)g_pull :
                               p;
-            if ((periph_pull_en >> gp) & 1u) {
-                pull_en |= (1u << p);
-            }
-            if ((periph_pull_v >> gp) & 1u) {
-                pull_v |= (1u << p);
+            if (g_pull >= 0 || (outsel >= 3u && outsel < 35u) ||
+                ((s->force_en >> gp) & 1u)) {
+                if ((periph_pull_en >> gp) & 1u) {
+                    pull_en |= (1u << p);
+                }
+                if ((periph_pull_v >> gp) & 1u) {
+                    pull_v |= (1u << p);
+                }
             }
             if ((s->force_en >> gp) & 1u) {
                 if ((s->force_oe >> gp) & 1u) {

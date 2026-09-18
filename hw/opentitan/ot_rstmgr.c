@@ -335,13 +335,12 @@ static void ot_rstmgr_reset_bus(void *opaque)
      * Lock ordering: replay_mutex must always be acquired before bql.
      */
     replay_mutex_unlock();
+    bql_unlock();
     while (!s->cpu->stopped) {
-        bql_unlock();
         qemu_cpu_kick(s->cpu);
         g_usleep(100);
-        bql_lock();
     }
-    bql_unlock();
+    g_usleep(1000);
     replay_mutex_lock();
     bql_lock();
     qemu_notify_event();

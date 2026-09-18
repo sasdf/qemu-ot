@@ -506,6 +506,7 @@ struct OtSPIDeviceState {
     OtSpiCsbSyncState csb_sync;
     bool csb_poll_enabled;
     bool last_read_addr_polled;
+    bool flash_ever_enabled;
     unsigned csb_poll_count;
 
     /* Properties */
@@ -1559,6 +1560,18 @@ static void ot_spi_device_flash_exec_sw_command(OtSPIDeviceState *s, uint8_t rx)
     }
 }
 
+static uint8_t ot_spi_device_get_discard_val(const OtSPIDeviceState *s)
+{
+    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
+    if (sleep_val == 0) {
+        return 0x00u;
+    }
+    if (sleep_val == 1) {
+        return 0xffu;
+    }
+    return s->flash_ever_enabled ? 0x00u : SPI_DEFAULT_TX_RX_VALUE;
+}
+
 static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
 {
     SpiDeviceFlash *f = &s->flash;
@@ -1587,7 +1600,7 @@ static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
             FLASH_CHANGE_STATE(s, ERROR);
             BUS_CHANGE_STATE(s, DISCARD);
             s->bus.failed_transaction = true;
-            tx = (ot_pinmux_eg_get_dio_sleep_val(6u) == 1) ? 0xffu : 0x00u;
+            tx = ot_spi_device_get_discard_val(s);
         }
         break;
     case SPI_FLASH_COLLECT:
@@ -1612,7 +1625,7 @@ static uint8_t ot_spi_device_flash_transfer(OtSPIDeviceState *s, uint8_t rx)
     case SPI_FLASH_ERROR:
         BUS_CHANGE_STATE(s, DISCARD);
         s->bus.failed_transaction = true;
-        tx = (ot_pinmux_eg_get_dio_sleep_val(6u) == 1) ? 0xffu : 0x00u;
+        tx = ot_spi_device_get_discard_val(s);
         break;
     default:
         error_setg(&error_fatal, "unexpected state %s[%d]\n",
@@ -2343,6 +2356,9 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
     case R_CMD_INFO_23:
         val32 &= CMD_INFO_GEN_MASK;
         s->spi_regs[reg] = val32;
+        if (val32 & CMD_INFO_VALID_MASK) {
+            s->flash_ever_enabled = true;
+        }
         break;
     case R_CMD_INFO_EN4B:
     case R_CMD_INFO_EX4B:
@@ -2641,9 +2657,7 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
 static void ot_spi_device_chr_send_discard(OtSPIDeviceState *s, unsigned count)
 {
-    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
-    uint8_t val = (sleep_val == 1) ? 0xffu : 0x00u;
-    const uint8_t buf[1u] = { val };
+    const uint8_t buf[1u] = { ot_spi_device_get_discard_val(s) };
 
     while (count--) {
         if (qemu_chr_fe_backend_connected(&s->chr)) {

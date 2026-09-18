@@ -2173,6 +2173,10 @@ static void ot_otp_engine_pwr_load(OtOTPEngineState *s)
     uintptr_t base = (uintptr_t)otp->storage;
     g_assert(!(base & (sizeof(uint64_t) - 1u)));
 
+    if (s->blk && !blk_is_available(s->blk)) {
+        return;
+    }
+
     memset(otp->storage, 0, otp_size);
 
     otp->data = (uint32_t *)(base + sizeof(struct otp_header));
