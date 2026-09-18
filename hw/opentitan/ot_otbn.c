@@ -532,31 +532,35 @@ static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
         return status;
     }
 
-    while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-    }
+    do {
+        qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+    } while (aio_bh_poll(qemu_get_aio_context()) > 0);
     status = ot_otbn_proxy_get_status(s->proxy);
 
     bool wait_for_worker =
-        (status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) ||
-        (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns >= 500000ULL);
+        (status != OT_OTBN_STATUS_IDLE) &&
+        ((status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) ||
+         ((qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns >=
+           500000ULL) &&
+          ot_otbn_proxy_get_instruction_count(s->proxy) < 5000u));
 
     if (wait_for_worker) {
-        for (int i = 0; i < 50 && s->last_cmd != OT_OTBN_CMD_NONE; i++) {
-            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-            }
-            if (s->last_cmd == OT_OTBN_CMD_NONE ||
+        for (int i = 0; i < 50; i++) {
+            do {
+                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+            } while (aio_bh_poll(qemu_get_aio_context()) > 0);
+            status = ot_otbn_proxy_get_status(s->proxy);
+            if (status == OT_OTBN_STATUS_IDLE ||
+                s->last_cmd == OT_OTBN_CMD_NONE ||
                 s->rnds[OT_OTBN_URND].entropy_requested ||
                 s->rnds[OT_OTBN_RND].entropy_requested) {
                 break;
             }
             g_usleep(10);
         }
-    } else if (status == OT_OTBN_STATUS_BUSY_EXECUTE &&
-               !s->rnds[OT_OTBN_URND].entropy_requested &&
-               !s->rnds[OT_OTBN_RND].entropy_requested) {
-        sched_yield();
-        while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-        }
+        do {
+            qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+        } while (aio_bh_poll(qemu_get_aio_context()) > 0);
     }
 
     return ot_otbn_proxy_get_status(s->proxy);

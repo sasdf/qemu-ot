@@ -44,6 +44,8 @@
 #include "qemu/osdep.h"
 #include <string.h>
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "chardev/char-fe.h"
@@ -1044,6 +1046,14 @@ ot_ibex_wrapper_read_rnd_data(OtIbexWrapperState *s, unsigned reg)
 
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
         ot_ibex_wrapper_request_entropy(s);
+        if (bql_locked()) {
+            for (int i = 0;
+                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
+                 i++) {
+                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+                aio_bh_poll(qemu_get_aio_context());
+            }
+        }
     }
 
     uint32_t value = s->regs.rnd_data;
@@ -1076,6 +1086,14 @@ ot_ibex_wrapper_read_rnd_status(OtIbexWrapperState *s, unsigned reg)
 
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
         ot_ibex_wrapper_request_entropy(s);
+        if (bql_locked()) {
+            for (int i = 0;
+                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
+                 i++) {
+                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+                aio_bh_poll(qemu_get_aio_context());
+            }
+        }
     }
 
     return s->regs.rnd_status;
