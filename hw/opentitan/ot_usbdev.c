@@ -1596,8 +1596,10 @@ static void ot_usbdev_advance_transfer_in(OtUsbdevState *s, uint8_t epnum)
     /* Mark the packet as sent and acknowledged by the host */
     configin = SHARED_FIELD_DP32(configin, CONFIGIN_RDY, 0u);
     s->regs[reg] = configin;
-    s->regs[R_IN_DATA_TOGGLE] ^=
-        FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
+    if (!(s->regs[R_IN_ISO] & (1u << epnum))) {
+        s->regs[R_IN_DATA_TOGGLE] ^=
+            FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
+    }
     s->regs[R_IN_SENT] |= 1u << epnum;
     ot_usbdev_update_irqs(s);
 
@@ -1700,8 +1702,10 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
         rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SIZE, size);
         ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
 
-        s->regs[R_OUT_DATA_TOGGLE] ^=
-            FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
+        if (epnum == 0u || !(s->regs[R_OUT_ISO] & (1u << epnum))) {
+            s->regs[R_OUT_DATA_TOGGLE] ^=
+                FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
+        }
 
         trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
 
@@ -2212,6 +2216,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_OUT_ISO:
     case R_IN_ISO:
+        s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
+        break;
     case R_WAKE_EVENTS:
     case R_FIFO_CTRL:
     case R_COUNT_OUT:
@@ -2555,6 +2561,7 @@ static void ot_usbdev_server_process_transfer_in(
                                            OT_USBDEV_SERVER_STATUS_ERROR, 0u,
                                            NULL, 0u,
                                            "transfer already pending");
+        return;
     }
 
     /* @todo check for unknown flags */
@@ -2594,6 +2601,7 @@ static void ot_usbdev_server_process_transfer_out(
                                            OT_USBDEV_SERVER_STATUS_ERROR, 0u,
                                            NULL, 0u,
                                            "transfer already pending");
+        return;
     }
 
     /* @todo check for unknown flags */
