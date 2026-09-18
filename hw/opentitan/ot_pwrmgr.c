@@ -46,6 +46,7 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
+#include "system/replay.h"
 #include "system/runstate.h"
 #include "trace.h"
 
@@ -494,6 +495,13 @@ static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
     s->slow_regs.reset_en = s->regs[R_RESET_EN];
     s->slow_regs.wakeup_en = s->regs[R_WAKEUP_EN];
     s->slow_regs.control = s->regs[R_CONTROL];
+    if ((s->in_low_power ||
+         (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) &&
+        !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+          R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+        s->regs[R_WAKE_INFO] |=
+            (s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en);
+    }
 }
 
 static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s);
@@ -745,7 +753,10 @@ static void ot_pwrmgr_wkup(void *opaque, int irq, int level)
     uint32_t wkbit = 1u << src;
     if (level) {
         s->regs[R_WAKE_STATUS] |= wkbit;
-        if (s->wake_info_recording && (s->slow_regs.wakeup_en & wkbit)) {
+        if (s->wake_info_recording &&
+            (s->in_low_power ||
+             (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) &&
+            (s->slow_regs.wakeup_en & wkbit)) {
             s->regs[R_WAKE_INFO] |= wkbit;
         }
     } else {
@@ -1259,6 +1270,13 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_WAKE_INFO:
+        if (!s->in_low_power && bql_locked()) {
+            replay_mutex_unlock();
+            bql_unlock();
+            g_usleep(5000);
+            replay_mutex_lock();
+            bql_lock();
+        }
         val32 &= WAKE_INFO_MASK(s);
         s->regs[reg] &= ~val32; /* RW1C */
         break;
