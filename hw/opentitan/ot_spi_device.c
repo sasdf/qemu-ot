@@ -508,6 +508,7 @@ struct OtSPIDeviceState {
     bool last_read_addr_polled;
     bool flash_ever_enabled;
     unsigned csb_poll_count;
+    int64_t reset_time_ns;
 
     /* Properties */
     char *ot_id;
@@ -2377,6 +2378,11 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
     case R_CMD_INFO_WRDI:
         val32 &= CMD_INFO_SPC_MASK;
         s->spi_regs[reg] = val32;
+        if (reg == R_CMD_INFO_WRDI && s->bus.state == SPI_BUS_IDLE &&
+            timer_pending(s->flash.irq_timer)) {
+            timer_del(s->flash.irq_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
         break;
     case R_LAST_READ_ADDR:
     case R_STATUS:
@@ -2929,6 +2935,13 @@ static int ot_spi_device_chr_can_receive(void *opaque)
             (s->csb_sync == CSB_RELEASED_LOW_UNSEEN ||
              s->csb_sync == CSB_IDLE_HIGH_UNSEEN)) {
             length = 0u;
+        } else if (ot_spi_device_get_mode(s) == CTRL_MODE_FLASH &&
+                   !ot_spi_device_is_tpm_enabled(s) &&
+                   !(s->spi_regs[R_CMD_INFO_WRDI] & CMD_INFO_OPCODE_MASK) &&
+                   (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->reset_time_ns) <
+                       20000000LL) {
+            ot_spi_device_flash_pace_spibus_ns(s, 1000000LL);
+            length = 0u;
         } else {
             length = fifo8_num_free(&bus->chr_fifo);
         }
@@ -3140,6 +3153,8 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
 
     ibex_irq_lower(&s->passthrough_en);
     ibex_irq_raise(&s->passthrough_cs);
+
+    s->reset_time_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
 
     ot_spi_device_update_irqs(s);
     ot_spi_device_update_alerts(s);
