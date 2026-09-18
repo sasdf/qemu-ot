@@ -462,6 +462,8 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         }
         if (level == OT_RSTMGR_RESET_LOW_POWER) {
             ot_rstmgr_last_reset_low_power = true;
+        } else {
+            ot_rstmgr_last_reset_low_power = false;
         }
         if (level == OT_RSTMGR_RESET_RV_DM) {
             ot_rstmgr_last_reset_ndm = true;

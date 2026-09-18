@@ -717,7 +717,8 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             return;
         }
         s->glitch_check_count = 0;
-        if (cpu && cpu->halted && s->slow_regs.wakeup_en == 0u) {
+        if (cpu && cpu->halted && s->slow_regs.wakeup_en == 0u &&
+            !(s->slow_regs.reset_en & 1u)) {
             OtAonTimerState *aon =
                 (OtAonTimerState *)object_resolve_path_type(
                     "", TYPE_OT_AON_TIMER, NULL);
