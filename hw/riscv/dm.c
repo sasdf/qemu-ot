@@ -295,6 +295,7 @@ typedef struct RISCVDMHartState {
     target_ulong hartid; /** Hart ID */
     bool halted; /* Hart has halted execution */
     bool resumed; /* Hart has resumed execution */
+    bool resuming; /* Hart has a pending resume request in Debug ROM */
     bool have_reset; /* Hart has reset, not yet supported */
     bool unlock_reset; /* Whether DM may reset CPU */
 #ifdef TRACE_CPU_STATES
@@ -965,6 +966,7 @@ static void riscv_dm_acknowledge(void *opaque, int irq, int level)
         hartnum = (unsigned)level;
         if ((hart = riscv_dm_get_hart_from_id(dm, hartnum))) {
             hart->halted = true;
+            hart->resuming = false;
             uint64_t hbm = 1u << hartnum;
             if (dm->unavailable_bm & hbm) {
                 qemu_log("%s: %s: an unavailable hart should not be halted\n",
@@ -1016,6 +1018,7 @@ static void riscv_dm_acknowledge(void *opaque, int irq, int level)
             }
             hart->halted = false;
             hart->resumed = true;
+            hart->resuming = false;
             uint64_t hbm = 1u << hartnum;
             if (dm->unavailable_bm & hbm) {
                 qemu_log("%s: %s: an unavailable hart should not be resumed\n",
@@ -1355,6 +1358,7 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             dm->unavailable_bm |= 1u << ix;
             hart->halted = false;
             hart->resumed = false;
+            hart->resuming = false;
         }
     } else if (prev_ndmreset) {
         dm->in_ndmreset = true;
@@ -1372,6 +1376,7 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             hart->have_reset = true;
             hart->halted = false;
             hart->resumed = false;
+            hart->resuming = false;
             if ((dm->haltreq_bm | dm->resethaltreq_bm) & hartbit) {
                 CPUState *cs = CPU(hart->cpu);
                 riscv_cpu_store_debug_cause(
@@ -1549,8 +1554,38 @@ static CmdErr riscv_dm_abstractauto_write(RISCVDMState *dm, uint32_t value)
     return CMD_ERR_NONE;
 }
 
+static void riscv_dm_sync_vcpu(RISCVDMState *dm)
+{
+    if (!bql_locked() || !runstate_is_running()) {
+        return;
+    }
+    for (int i = 0; i < 100; i++) {
+        bool pending = dm->cmd_busy;
+        for (unsigned hix = 0; !pending && hix < dm->hart_count; hix++) {
+            RISCVDMHartState *hart = &dm->harts[hix];
+            CPUState *cs = hart->cpu ? CPU(hart->cpu) : NULL;
+            if (!cs || cs->disabled || cs->stopped) {
+                continue;
+            }
+            if (hart->resuming ||
+                (!hart->halted &&
+                 (cs->interrupt_request & CPU_INTERRUPT_DEBUG))) {
+                pending = true;
+            }
+        }
+        if (!pending) {
+            break;
+        }
+        bql_unlock();
+        g_usleep(50);
+        bql_lock();
+    }
+}
+
 static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
 {
+    riscv_dm_sync_vcpu(dm);
+
     unsigned halted = 0u;
     unsigned running = 0u;
     unsigned unavail = 0u;
@@ -1587,6 +1622,7 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
          */
         if (cs->disabled) {
             hart->resumed = false;
+            hart->resuming = false;
             hart->halted = false;
             dm->unavailable_bm |= mask;
             dm->nonexistent_bm &= ~mask;
@@ -2043,6 +2079,8 @@ static CmdErr riscv_dm_hartinfo_read(RISCVDMState *dm, uint32_t *value)
 
 static CmdErr riscv_dm_abstractcs_read(RISCVDMState *dm, uint32_t *value)
 {
+    riscv_dm_sync_vcpu(dm);
+
     uint32_t val;
 
     val = FIELD_DP32(0, ABSTRACTCS, DATACOUNT, dm->cfg.data_count);
@@ -2495,6 +2533,7 @@ static void riscv_dm_halt_hart(RISCVDMState *dm, unsigned hartsel)
     dm->haltreq_bm &= ~(1u << hartsel);
     /* not sure if the real HW clear this flag on halt */
     dm->hart->resumed = false;
+    dm->hart->resuming = false;
     riscv_dm_set_cs(dm, true);
     riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
     cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
@@ -2542,6 +2581,8 @@ static void riscv_dm_resume_hart(RISCVDMState *dm, unsigned hartsel)
 
     if (riscv_dm_update_flags(dm, hartsel, true, R_FLAGS_FLAG_RESUME_MASK)) {
         xtrace_riscv_dm_error(dm->soc, "cannot resume");
+    } else {
+        dm->harts[hartsel].resuming = true;
     }
 
     cpu_exit(cs);
