@@ -42,6 +42,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_fifo32.h"
+#include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_usbdev.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
@@ -511,6 +512,7 @@ typedef struct {
     bool client_connected; /* We have a client */
     bool vbus_connected; /* The host has turned on VBUS */
     bool hello_done; /* Have received a HELLO? */
+    bool device_connected; /* Have reported CONNECT to the client? */
 } OtUsbdevServer;
 
 struct OtUsbdevState {
@@ -1146,13 +1148,22 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
                  OT_USBDEV_LINK_STATE_DISCONNECTED);
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_POWERED_MASK;
 
-        if (ot_usbdev_is_enabled(s)) {
+        if (ot_usbdev_is_enabled(s) &&
+            !(s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
             ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
             ot_usbdev_server_report_connected(s, true);
         }
     }
     /* VBUS was turned off */
     else {
+        if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+            s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_DISCONNECTED_MASK;
+            ibex_irq_set(&s->wkup, 1);
+        }
+        ot_fifo32_reset(&s->rx_fifo);
+        fifo8_reset(&s->av_setup_fifo);
+        fifo8_reset(&s->av_out_fifo);
+        ot_usbdev_update_fifos_status(s);
         /* See BFM (bus_disconnect) */
         if (ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED) {
             ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_DISCONNECTED);
@@ -1164,6 +1175,7 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
             /* If there is no host then any SOF or reset signalling stops. */
             timer_del(&s->frame_timer);
             timer_del(&s->bus_reset_timer);
+            ot_usbdev_server_report_connected(s, false);
         }
     }
 
@@ -1292,9 +1304,51 @@ static void ot_usbdev_link_reset_complete(void *opaque)
  * This function will trigger all necessary state and IRQs changes necessary to
  * perform a link reset.
  */
+static void ot_usbdev_simulate_link_suspend(OtUsbdevState *s)
+{
+    g_assert(!resettable_is_in_reset(OBJECT(s)));
+    OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
+    if (link_state == OT_USBDEV_LINK_STATE_POWERED) {
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED_SUSP);
+    } else if (link_state == OT_USBDEV_LINK_STATE_ACTIVE ||
+               link_state == OT_USBDEV_LINK_STATE_ACTIVE_NOSOF ||
+               link_state == OT_USBDEV_LINK_STATE_RESUMING) {
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_SUSPENDED);
+    }
+    timer_del(&s->frame_timer);
+    s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_SUSPEND_MASK;
+    ot_usbdev_update_irqs(s);
+}
+
+static void ot_usbdev_simulate_link_resume(OtUsbdevState *s)
+{
+    g_assert(!resettable_is_in_reset(OBJECT(s)));
+    if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+        s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
+        ibex_irq_set(&s->wkup, 1);
+    }
+    OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
+    if (link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP) {
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
+    } else if (link_state == OT_USBDEV_LINK_STATE_SUSPENDED ||
+               link_state == OT_USBDEV_LINK_STATE_RESUMING) {
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE);
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
+        int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
+        timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
+    }
+    ot_usbdev_update_irqs(s);
+}
+
 static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
 {
     g_assert(!resettable_is_in_reset(OBJECT(s)));
+    if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+        s->regs[R_WAKE_EVENTS] |=
+            R_WAKE_EVENTS_BUS_RESET_MASK | R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
+        ibex_irq_set(&s->wkup, 1);
+    }
     if (timer_pending(&s->bus_reset_timer)) {
         error_report("%s: %s: Simulating a link reset while a bus reset is "
                      "already pending!",
@@ -1752,7 +1806,7 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     bool old_enable = ot_usbdev_is_enabled(s);
     uint8_t old_addr = ot_usbdev_get_address(s);
 
-    /* @todo Handle resume_link_active eventually, this is a W/O field */
+    /* Handle resume_link_active (W/O pulse) */
     s->regs[R_USBCTRL] = val32 & USBDEV_USBCTRL_R_MASK;
 
     uint8_t new_addr = ot_usbdev_get_address(s);
@@ -1761,6 +1815,16 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     }
 
     bool enable = ot_usbdev_is_enabled(s);
+    if ((val32 & R_USBCTRL_RESUME_LINK_ACTIVE_MASK) && enable &&
+        ot_usbdev_has_vbus(s)) {
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE);
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
+        int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
+        timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
+        ot_usbdev_update_status_irqs(s);
+        ot_usbdev_update_irqs(s);
+    }
+
     if (enable == old_enable) {
         return;
     }
@@ -1768,6 +1832,10 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     trace_ot_usbdev_enable_changed(s->ot_id, enable);
 
     if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
+        if (enable && ot_usbdev_has_vbus(s) &&
+            ot_usbdev_get_link_state(s) == OT_USBDEV_LINK_STATE_DISCONNECTED) {
+            ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
+        }
         ot_usbdev_update_status_irqs(s);
         ot_usbdev_update_irqs(s);
         return;
@@ -2176,14 +2244,27 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
                 s->aon_dnpullup_en = dn_pullup;
                 s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_MODULE_ACTIVE_MASK;
             }
-            ibex_irq_set(&s->wkup, 1);
+            if (!ot_usbdev_has_vbus(s)) {
+                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_DISCONNECTED_MASK;
+                ibex_irq_set(&s->wkup, 1);
+            } else if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
+                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_NOT_IDLE_MASK |
+                                          R_WAKE_EVENTS_BUS_RESET_MASK;
+                ibex_irq_set(&s->wkup, 1);
+            }
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
             bool was_connected =
                 ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
+            bool had_bus_reset =
+                (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_BUS_RESET_MASK) != 0u;
             s->regs[R_WAKE_EVENTS] = 0u;
             bool now_enabled = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
             if (now_enabled && !was_connected) {
                 ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
+                ot_usbdev_server_report_connected(s, true);
+            } else if (now_enabled && was_connected && had_bus_reset) {
+                ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
+                ot_usbdev_server_report_connected(s, false);
                 ot_usbdev_server_report_connected(s, true);
             } else if (!now_enabled && was_connected) {
                 ot_usbdev_set_raw_link_state(s,
@@ -2218,8 +2299,19 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IN_ISO:
         s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
         break;
-    case R_WAKE_EVENTS:
     case R_FIFO_CTRL:
+        if (val32 & R_FIFO_CTRL_AVOUT_RST_MASK) {
+            fifo8_reset(&s->av_out_fifo);
+        }
+        if (val32 & R_FIFO_CTRL_AVSETUP_RST_MASK) {
+            fifo8_reset(&s->av_setup_fifo);
+        }
+        if (val32 & R_FIFO_CTRL_RX_RST_MASK) {
+            ot_fifo32_reset(&s->rx_fifo);
+        }
+        ot_usbdev_update_fifos_status(s);
+        break;
+    case R_WAKE_EVENTS:
     case R_COUNT_OUT:
     case R_COUNT_IN:
     case R_COUNT_NODATA_IN:
@@ -2302,6 +2394,7 @@ static void ot_usbdev_server_open(OtUsbdevState *s)
     server->client_connected = true;
     server->vbus_connected = false;
     server->hello_done = false;
+    server->device_connected = false;
     ot_usbdev_server_reset_recv_state(s);
 
     ot_usbdev_update_vbus(s);
@@ -2318,6 +2411,7 @@ static void ot_usbdev_server_close(OtUsbdevState *s)
     OtUsbdevServer *server = &s->usb_server;
     server->client_connected = false;
     server->vbus_connected = false;
+    server->device_connected = false;
 
     ot_usbdev_update_vbus(s);
 }
@@ -2382,8 +2476,6 @@ static void ot_usbdev_server_write_packet(
  * Report a (dis)connection event to the client.
  *
  * Send a message to the client to notify the connection status change.
- * Note that this function does not keep track of the current status and will
- * send a message if the new status is the same as the old one.
  *
  * @connected New connection status
  */
@@ -2391,10 +2483,12 @@ void ot_usbdev_server_report_connected(OtUsbdevState *s, bool connected)
 {
     trace_ot_usbdev_server_report_connected(s->ot_id, connected);
 
-    /* Nothing to do if no client is connected */
-    if (!s->usb_server.client_connected) {
+    /* Nothing to do if no client is connected or status has not changed */
+    if (!s->usb_server.client_connected ||
+        s->usb_server.device_connected == connected) {
         return;
     }
+    s->usb_server.device_connected = connected;
 
     /* @todo clarify ID to use */
     ot_usbdev_server_write_packet(s,
@@ -2755,6 +2849,12 @@ static void ot_usbdev_server_process_packet(OtUsbdevState *s)
     case OT_USBDEV_SERVER_CMD_CANCEL:
         ot_usbdev_server_process_cancel(s);
         break;
+    case OT_USBDEV_SERVER_CMD_SUSPEND:
+        ot_usbdev_simulate_link_suspend(s);
+        break;
+    case OT_USBDEV_SERVER_CMD_RESUME:
+        ot_usbdev_simulate_link_resume(s);
+        break;
     default:
         trace_ot_usbdev_server_protocol_error(
             s->ot_id, "unknown command, ignoring packet");
@@ -2870,6 +2970,12 @@ static void ot_usbdev_chr_process_cmd(OtUsbdevState *s, char *cmd,
         ot_usbdev_set_vbus_gate(s, true);
     } else if (strncmp(cmd, "vbus_off", cmd_size) == 0) {
         ot_usbdev_set_vbus_gate(s, false);
+    } else if (strncmp(cmd, "suspend", cmd_size) == 0) {
+        ot_usbdev_simulate_link_suspend(s);
+    } else if (strncmp(cmd, "resume", cmd_size) == 0) {
+        ot_usbdev_simulate_link_resume(s);
+    } else if (strncmp(cmd, "reset", cmd_size) == 0) {
+        ot_usbdev_simulate_link_reset(s);
     } else {
         qemu_log_mask(LOG_UNIMP, "%s: %s: unsupported command %s\n", __func__,
                       s->ot_id, cmd);
@@ -2965,7 +3071,15 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
 
     ot_usbdev_cancel_all_transfers(s, "device going into reset");
 
-    if (ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED &&
+    bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
+    bool keep_aon = !is_por &&
+                    (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
+    uint32_t saved_wake_events = s->regs[R_WAKE_EVENTS];
+    bool saved_dppullup = s->aon_dppullup_en;
+    bool saved_dnpullup = s->aon_dnpullup_en;
+
+    if (!keep_aon &&
+        ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED &&
         ot_usbdev_has_vbus(s)) {
         ot_usbdev_server_report_connected(s, false);
     }
@@ -2984,6 +3098,11 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
 
     /* See BFM (dut_reset) */
     memset(s->regs, 0u, sizeof(s->regs));
+    if (keep_aon) {
+        s->regs[R_WAKE_EVENTS] = saved_wake_events;
+        s->aon_dppullup_en = saved_dppullup;
+        s->aon_dnpullup_en = saved_dnpullup;
+    }
 
     ot_fifo32_reset(&s->rx_fifo);
     fifo8_reset(&s->av_setup_fifo);
