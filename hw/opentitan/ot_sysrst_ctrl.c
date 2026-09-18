@@ -26,6 +26,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
+#include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
@@ -115,6 +116,7 @@ struct OtSysrstCtrlState {
     bool ec_rst_l_hw;
     bool z3_wakeup_hw;
     QEMUTimer *ec_rst_timer;
+    QEMUTimer *combo_pace_timer;
 
     char *ot_id;
 };
@@ -250,6 +252,34 @@ static void ot_sysrst_ctrl_get_inverted(const OtSysrstCtrlState *s,
     }
 }
 
+static bool ot_sysrst_ctrl_is_combo_rst_armed(const OtSysrstCtrlState *s)
+{
+    for (unsigned k = 0; k < 4u; k++) {
+        if ((s->regs[R_COM_SEL_CTL_0 + k] & 0x1fu) &&
+            (s->regs[R_COM_OUT_CTL_0 + k] & R_COM_OUT_CTL_0_RST_REQ_MASK)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void ot_sysrst_ctrl_combo_pace_timer_cb(void *opaque)
+{
+    OtSysrstCtrlState *s = opaque;
+    if (!ot_sysrst_ctrl_is_combo_rst_armed(s)) {
+        return;
+    }
+    if (first_cpu && !first_cpu->halted) {
+        replay_mutex_unlock();
+        bql_unlock();
+        g_usleep(1000);
+        replay_mutex_lock();
+        bql_lock();
+    }
+    timer_mod_ns(s->combo_pace_timer,
+                 qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500000LL);
+}
+
 static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
 {
     bool intr_event_status = (s->regs[R_ULP_STATUS] |
@@ -267,6 +297,17 @@ static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
 
     bool wkup_level = (s->regs[R_WKUP_STATUS] & R_WKUP_STATUS_WAKEUP_STS_MASK) != 0;
     ibex_irq_set(&s->wkup_req, (int)wkup_level);
+
+    if (s->combo_pace_timer) {
+        if (ot_sysrst_ctrl_is_combo_rst_armed(s)) {
+            if (!timer_pending(s->combo_pace_timer)) {
+                timer_mod_ns(s->combo_pace_timer,
+                             qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500000LL);
+            }
+        } else {
+            timer_del(s->combo_pace_timer);
+        }
+    }
 
     ot_gpio_eg_notify_sysrst_change();
 }
@@ -558,6 +599,9 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
     if (s->ec_rst_timer) {
         timer_del(s->ec_rst_timer);
     }
+    if (s->combo_pace_timer) {
+        timer_del(s->combo_pace_timer);
+    }
 
     s->bat_disable_hw = false;
     s->ec_rst_l_hw = true;
@@ -600,6 +644,8 @@ static void ot_sysrst_ctrl_init(Object *obj)
     s->ec_rst_l_hw = true;
     s->ec_rst_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
                                    &ot_sysrst_ctrl_ec_rst_timer_cb, s);
+    s->combo_pace_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
+                                       &ot_sysrst_ctrl_combo_pace_timer_cb, s);
 
     qdev_init_gpio_in_named(DEVICE(obj), &ot_sysrst_ctrl_input_change,
                             OT_SYSRST_CTRL_INPUT, OT_SYSRST_CTRL_IN_COUNT);
