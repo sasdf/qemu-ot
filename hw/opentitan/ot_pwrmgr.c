@@ -469,6 +469,26 @@ static void ot_pwrmgr_xschedule_fsm(OtPwrMgrState *s, const char *func,
     qemu_bh_schedule(s->fsm_tick_bh);
 }
 
+static void ot_pwrmgr_update_usb_clock(OtPwrMgrState *s)
+{
+    if (!s->clock_ctrl) {
+        return;
+    }
+    for (GList *elem = s->clocks; elem; elem = elem->next) {
+        OtPwrMgrClock *clk = elem->data;
+        if (!strcmp(clk->name, "usb")) {
+            bool enable = s->in_low_power ?
+                (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_LP_MASK) :
+                (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_ACTIVE_MASK);
+            OtClockCtrlIfClass *oc = OT_CLOCK_CTRL_IF_GET_CLASS(s->clock_ctrl);
+            OtClockCtrlIf *oi = OT_CLOCK_CTRL_IF(s->clock_ctrl);
+            trace_ot_pwrmgr_clock_enable(s->ot_id, clk->name, enable);
+            oc->clock_enable(oi, clk->name, enable);
+            break;
+        }
+    }
+}
+
 static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
 {
     s->slow_regs.reset_en = s->regs[R_RESET_EN];
@@ -485,6 +505,7 @@ static void ot_pwrmgr_cdc_sync(void *opaque)
     trace_ot_pwrmgr_cdc_sync(s->ot_id);
 
     ot_pwrmgr_sync_slow_regs(s);
+    ot_pwrmgr_update_usb_clock(s);
     s->regs[R_CFG_CDC_SYNC] &= ~R_CFG_CDC_SYNC_SYNC_MASK;
     ot_pwrmgr_check_wakeup(s);
 }
@@ -1315,7 +1336,9 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
         s->regs[R_RESET_EN_REGWEN] = reset_en_regwen;
         s->regs[R_WAKE_STATUS] = wake_status;
         s->regs[R_FAULT_STATUS] = fault_status;
-        s->regs[R_CONTROL] = control;
+        s->regs[R_CONTROL] = ot_rstmgr_is_low_power_exit() ?
+                                 control :
+                                 PWRMGR_CONFIG[s->version].control_res_val;
     } else {
         s->wake_info_recording = false;
         s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;
