@@ -1439,7 +1439,10 @@ static uint8_t ot_spi_device_flash_read_data(OtSPIDeviceState *s)
         s->spi_regs[R_INTR_STATE] |= INTR_READBUF_FLIP_MASK;
         trace_ot_spi_device_flash_cross_buffer(s->ot_id, f->address,
                                                f->next_buffer_addr);
-        pace_spibus = true;
+        if ((s->spi_regs[R_INTR_ENABLE] & INTR_READBUF_FLIP_MASK) ||
+            (!s->last_read_addr_polled && !s->csb_poll_enabled)) {
+            pace_spibus = true;
+        }
         ot_spi_device_update_irqs(s);
     }
 
@@ -2560,6 +2563,10 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
             s->csb_poll_count = 0u;
         }
+        if (timer_pending(s->flash.irq_timer)) {
+            timer_del(s->flash.irq_timer);
+            qemu_chr_fe_accept_input(&s->chr);
+        }
     }
 
     return MEMTX_OK;
@@ -2679,6 +2686,9 @@ static void ot_spi_device_chr_recv_flash(OtSPIDeviceState *s,
                                          const uint8_t *buf, unsigned size)
 {
     SpiDeviceBus *bus = &s->bus;
+    uint8_t tx_buf[256];
+    unsigned tx_len = 0u;
+
     while (size) {
         uint8_t rx = *buf++ ^ bus->mode;
         if (bus->rev_rx) {
@@ -2699,11 +2709,18 @@ static void ot_spi_device_chr_recv_flash(OtSPIDeviceState *s,
         if (bus->rev_tx) {
             tx = revbit8(tx);
         }
-        if (qemu_chr_fe_backend_connected(&s->chr)) {
-            qemu_chr_fe_write(&s->chr, &tx, (int)sizeof(tx));
+        tx_buf[tx_len++] = tx;
+        if (tx_len == sizeof(tx_buf)) {
+            if (qemu_chr_fe_backend_connected(&s->chr)) {
+                qemu_chr_fe_write_all(&s->chr, tx_buf, (int)tx_len);
+            }
+            tx_len = 0u;
         }
         bus->byte_count--;
         size--;
+    }
+    if (tx_len > 0u && qemu_chr_fe_backend_connected(&s->chr)) {
+        qemu_chr_fe_write_all(&s->chr, tx_buf, (int)tx_len);
     }
 }
 
@@ -2909,7 +2926,18 @@ static int ot_spi_device_chr_can_receive(void *opaque)
         }
         break;
     case SPI_BUS_FLASH:
-        length = timer_pending(s->flash.irq_timer) ? 0 : 1u;
+        if (timer_pending(s->flash.irq_timer)) {
+            length = 0u;
+        } else if (ot_spi_device_get_mode(s) == CTRL_MODE_PASSTHROUGH) {
+            length = 1u;
+        } else if (s->spi_regs[R_READ_THRESHOLD] == 0u &&
+                   !(s->spi_regs[R_INTR_ENABLE] & INTR_READBUF_FLIP_MASK) &&
+                   (s->last_read_addr_polled || s->csb_poll_enabled ||
+                    s->flash.state != SPI_FLASH_READ)) {
+            length = bus->byte_count;
+        } else {
+            length = 1u;
+        }
         break;
     case SPI_BUS_TPM:
         length = s->tpm.can_receive;

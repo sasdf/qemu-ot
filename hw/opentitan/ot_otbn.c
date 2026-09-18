@@ -325,8 +325,13 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
              * the status register before the actual completion is signalled
              * from the OTBN working thread.
              */
-            uint32_t insncount = ot_otbn_proxy_get_instruction_count(s->proxy);
-            uint64_t delay_ns = MAX(500000ULL, (uint64_t)insncount * 64ULL);
+            uint64_t delay_ns = 100000ULL;
+            if (last_cmd == OT_OTBN_CMD_EXECUTE) {
+                uint32_t insncount =
+                    ot_otbn_proxy_get_instruction_count(s->proxy);
+                delay_ns =
+                    MIN(2000000ULL, MAX(500000ULL, (uint64_t)insncount * 10ULL));
+            }
             int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             int64_t min_end_ns = s->exec_start_ns + (int64_t)delay_ns;
             timer_del(s->proxy_defer);
