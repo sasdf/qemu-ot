@@ -738,7 +738,8 @@ void riscv_cpu_set_rnmi_int(RISCVCPU *cpu, uint32_t cause, target_ulong mtval)
         bql_lock();
     }
 
-    if (!(env->rnmip & (1ULL << cause))) {
+    if (!env->nmi_mode) {
+        env->rnmi_int_pending_count++;
         env->rnmi_int_mtval = mtval;
         env->rnmip |= (1ULL << cause);
         cpu_interrupt(cs, CPU_INTERRUPT_RNMI);
@@ -2624,9 +2625,14 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             env->nmi_mode = true;
             if (cause < 31) {
                 tval = env->rnmi_int_mtval;
-                env->rnmip &= ~(1ULL << cause);
-                if (!env->rnmip) {
-                    cpu_reset_interrupt(cs, CPU_INTERRUPT_RNMI);
+                if (env->rnmi_int_pending_count > 0) {
+                    env->rnmi_int_pending_count--;
+                }
+                if (env->rnmi_int_pending_count == 0) {
+                    env->rnmip &= ~(1ULL << cause);
+                    if (!env->rnmip) {
+                        cpu_reset_interrupt(cs, CPU_INTERRUPT_RNMI);
+                    }
                 }
             }
         }

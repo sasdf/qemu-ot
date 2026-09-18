@@ -124,6 +124,7 @@ struct OtSramCtrlState {
 
     uint64_t *init_sram_bm; /* initialization bitmap */
     uint64_t *init_slot_bm; /* initialization bitmap shortcut */
+    uint64_t *scr_invalid_bm; /* cells scrambled under previous scr_key */
     OtPrngState *prng; /* simplified PRNG, does not match OT's */
     OtOTPKey *otp_key;
     uint32_t regs[REGS_COUNT];
@@ -133,6 +134,7 @@ struct OtSramCtrlState {
     unsigned wsize; /* size of RAM in words */
     bool initialized; /* SRAM has been fully initialized at least once */
     bool initializing; /* CTRL.INIT has been requested */
+    bool scr_invalid; /* CTRL.RENEW_SCR_KEY without CTRL.INIT */
     bool otp_ifetch; /* whether OTP enable execution from this RAM */
     bool csr_ifetch; /* whether CSR enable execution from this RAM */
     bool lc_hw_debug_ifetch; /* HW_DEBUG_EN signal from the lc_ctrl */
@@ -253,6 +255,8 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
         size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
         memset(s->init_sram_bm, 0, cell_slot_count * sizeof(uint64_t));
         memset(s->init_slot_bm, 0, s->init_slot_count * sizeof(uint64_t));
+        memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
+        s->scr_invalid = false;
 
         s->init_slot_bm = g_new0(uint64_t, s->init_slot_count);
 
@@ -376,6 +380,12 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
         }
     }
     ot_sram_ctrl_apply_scr_key(s, new_key);
+    if (!s->noinit && s->scr_invalid_bm) {
+        size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
+        memset(s->scr_invalid_bm, 0xff, cell_slot_count * sizeof(uint64_t));
+        s->scr_invalid = true;
+        ot_sram_ctrl_mem_switch_to_init(s);
+    }
 
     s->regs[R_CTRL] &= ~R_CTRL_RENEW_SCR_KEY_MASK;
     s->regs[R_STATUS] |= R_STATUS_SCR_KEY_VALID_MASK;
@@ -676,6 +686,19 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
     val32 >>= addr_offset << 3u;
     *val64 = (uint64_t)val32;
 
+    if (s->scr_invalid && s->scr_invalid_bm) {
+        unsigned slot = ot_sram_ctrl_get_u64_slot(cell);
+        unsigned offset = ot_sram_ctrl_get_u64_offset(cell);
+        if (s->scr_invalid_bm[slot] & (1ull << offset)) {
+            if ((ot_sram_ctrl_scr_mask(s->scr_key, cell) & 0x7fu) != 0u) {
+                SysBusDevice *sbd = SYS_BUS_DEVICE(s);
+                hwaddr sram_off =
+                    (sbd->mmio[1].addr - sbd->mmio[0].addr) + addr;
+                ot_common_raise_load_integrity_error(DEVICE(s), sram_off);
+            }
+        }
+    }
+
     trace_ot_sram_ctrl_mem_io_reado(s->ot_id, (uint32_t)addr, size, val32, pc);
 
     return MEMTX_OK;
@@ -740,6 +763,10 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
     unsigned slot = ot_sram_ctrl_get_u64_slot(idx);
     unsigned offset = ot_sram_ctrl_get_u64_offset(idx);
 
+    if (s->scr_invalid && s->scr_invalid_bm) {
+        s->scr_invalid_bm[slot] &= ~(1ull << offset);
+    }
+
     s->init_sram_bm[slot] &= ~(1ull << offset);
 
     if (!s->init_sram_bm[slot]) {
@@ -749,7 +776,7 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
 
         if (!s->init_slot_bm[slot]) {
             if (ot_sram_ctrl_mem_is_fully_initialized(s)) {
-                if (!s->noswitch) {
+                if (!s->noswitch && !s->scr_invalid) {
                     /*
                      * perform the memory switch in a BH so that the current mr
                      * is not in use when switching
@@ -820,6 +847,11 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
     timer_del(s->init_timer);
 
     ot_sram_ctrl_apply_scr_key(s, 0u);
+    if (s->scr_invalid_bm) {
+        size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
+        memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
+    }
+    s->scr_invalid = false;
 
     memset(s->regs, 0, REGS_SIZE);
 
@@ -850,7 +882,7 @@ static void ot_sram_ctrl_reset_exit(Object *obj, ResetType type)
     s->otp_ifetch = (s->otp_ctrl == NULL);
     s->csr_ifetch = (s->regs[R_EXEC] == OT_MULTIBITBOOL4_TRUE);
 
-    if (s->initialized && !s->noswitch && !s->noinit) {
+    if (s->initialized && !s->noswitch && !s->noinit && !s->scr_invalid) {
         ot_sram_ctrl_mem_switch_to_ram(s);
     }
 
@@ -918,6 +950,7 @@ static void ot_sram_ctrl_realize(DeviceState *dev, Error **errp)
     size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
     s->init_sram_bm = g_new0(uint64_t, cell_slot_count);
     memset(s->init_sram_bm, 0xff, cell_slot_count * sizeof(uint64_t));
+    s->scr_invalid_bm = g_new0(uint64_t, cell_slot_count);
 
     s->init_slot_count = ot_sram_ctrl_get_u64_slot(cell_slot_count + 64u - 1u);
     s->init_slot_bm = g_new0(uint64_t, s->init_slot_count);

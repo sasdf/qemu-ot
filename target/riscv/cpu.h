@@ -552,6 +552,7 @@ struct CPUArchState {
     target_ulong mstack_epc;
     target_ulong mstack_cause;
     target_ulong rnmi_int_mtval;
+    uint32_t rnmi_int_pending_count;
 };
 
 /*
