@@ -133,7 +133,7 @@ REG32(TIMEOUT_CTRL, 0x30u)
 #define OT_UART_NCO_BITS             16u
 #define OT_UART_TX_FIFO_SIZE         32u
 #define OT_UART_RX_FIFO_SIZE         64u
-#define OT_UART_RX_STAGING_FIFO_SIZE 512u
+#define OT_UART_RX_STAGING_FIFO_SIZE 2048u
 #define OT_UART_IRQ_NUM              9u
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
@@ -886,8 +886,11 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2) {
         s->rx_poll_count = 1;
-        int64_t step_ns = (s->last_tx_byte == 0x04u) ? 200000 : 1000000;
-        g_usleep((s->last_tx_byte == 0x04u) ? 200 : 150);
+        bool xmodem_active = (s->last_tx_byte == 0x04u ||
+                              s->last_tx_byte == 0x06u ||
+                              s->last_tx_byte == 0x15u);
+        int64_t step_ns = xmodem_active ? 200000 : 1000000;
+        g_usleep(xmodem_active ? 200 : 150);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         timer_mod(s->rx_pace_timer,
                   qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + step_ns);
