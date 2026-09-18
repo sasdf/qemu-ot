@@ -1348,6 +1348,8 @@ static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
         s->regs[R_WAKE_EVENTS] |=
             R_WAKE_EVENTS_BUS_RESET_MASK | R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
         ibex_irq_set(&s->wkup, 1);
+        ot_usbdev_server_report_connected(s, false);
+        return;
     }
     if (timer_pending(&s->bus_reset_timer)) {
         error_report("%s: %s: Simulating a link reset while a bus reset is "
@@ -1825,14 +1827,10 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
         ot_usbdev_update_irqs(s);
     }
 
-    if (enable == old_enable) {
-        return;
-    }
-
-    trace_ot_usbdev_enable_changed(s->ot_id, enable);
-
     if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
         if (enable && ot_usbdev_has_vbus(s) &&
+            !(s->regs[R_WAKE_EVENTS] &
+              (R_WAKE_EVENTS_BUS_RESET_MASK | R_WAKE_EVENTS_DISCONNECTED_MASK)) &&
             ot_usbdev_get_link_state(s) == OT_USBDEV_LINK_STATE_DISCONNECTED) {
             ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
         }
@@ -1840,6 +1838,14 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
         ot_usbdev_update_irqs(s);
         return;
     }
+
+    if (enable == old_enable &&
+        (!enable || !ot_usbdev_has_vbus(s) ||
+         ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED)) {
+        return;
+    }
+
+    trace_ot_usbdev_enable_changed(s->ot_id, enable);
 
     /* Device has been enabled */
     if (enable) {
@@ -2255,16 +2261,14 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
             bool was_connected =
                 ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
-            bool had_bus_reset =
-                (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_BUS_RESET_MASK) != 0u;
+            bool need_reinit =
+                (s->regs[R_WAKE_EVENTS] &
+                 (R_WAKE_EVENTS_BUS_RESET_MASK |
+                  R_WAKE_EVENTS_DISCONNECTED_MASK)) != 0u;
             s->regs[R_WAKE_EVENTS] = 0u;
             bool now_enabled = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
-            if (now_enabled && !was_connected) {
+            if (now_enabled && !was_connected && !need_reinit) {
                 ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
-                ot_usbdev_server_report_connected(s, true);
-            } else if (now_enabled && was_connected && had_bus_reset) {
-                ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
-                ot_usbdev_server_report_connected(s, false);
                 ot_usbdev_server_report_connected(s, true);
             } else if (!now_enabled && was_connected) {
                 ot_usbdev_set_raw_link_state(s,
