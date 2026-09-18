@@ -2487,14 +2487,14 @@ static void ot_usbdev_server_write_packet(
         .id = id,
     };
     int res =
-        qemu_chr_fe_write(&s->usb_chr, (const uint8_t *)&hdr, sizeof(hdr));
+        qemu_chr_fe_write_all(&s->usb_chr, (const uint8_t *)&hdr, sizeof(hdr));
     if (res < sizeof(hdr)) {
         qemu_log_mask(LOG_UNIMP, "%s: %s server: unhandled partial write\n",
                       __func__, s->ot_id);
         return;
     }
     if (size0 > 0u) {
-        res = qemu_chr_fe_write(&s->usb_chr, data0, (int)size0);
+        res = qemu_chr_fe_write_all(&s->usb_chr, data0, (int)size0);
         if (res < size0) {
             qemu_log_mask(LOG_UNIMP, "%s: %s server: unhandled partial write\n",
                           __func__, s->ot_id);
@@ -2502,7 +2502,7 @@ static void ot_usbdev_server_write_packet(
         }
     }
     if (size1 > 0u) {
-        res = qemu_chr_fe_write(&s->usb_chr, data1, (int)size1);
+        res = qemu_chr_fe_write_all(&s->usb_chr, data1, (int)size1);
         if (res < size1) {
             qemu_log_mask(LOG_UNIMP, "%s: %s server: unhandled partial write\n",
                           __func__, s->ot_id);
