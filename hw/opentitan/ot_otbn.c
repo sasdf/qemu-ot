@@ -525,6 +525,43 @@ static void ot_otbn_push_key(OtKeySinkIf *ifd, const uint8_t *share0,
     }
 }
 
+static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
+{
+    uint32_t status = ot_otbn_proxy_get_status(s->proxy);
+    if (status == OT_OTBN_STATUS_IDLE && s->last_cmd == OT_OTBN_CMD_NONE) {
+        return status;
+    }
+
+    while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+    }
+    status = ot_otbn_proxy_get_status(s->proxy);
+
+    bool wait_for_worker =
+        (status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) ||
+        (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns >= 500000ULL);
+
+    if (wait_for_worker) {
+        for (int i = 0; i < 50 && s->last_cmd != OT_OTBN_CMD_NONE; i++) {
+            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+            }
+            if (s->last_cmd == OT_OTBN_CMD_NONE ||
+                s->rnds[OT_OTBN_URND].entropy_requested ||
+                s->rnds[OT_OTBN_RND].entropy_requested) {
+                break;
+            }
+            g_usleep(10);
+        }
+    } else if (status == OT_OTBN_STATUS_BUSY_EXECUTE &&
+               !s->rnds[OT_OTBN_URND].entropy_requested &&
+               !s->rnds[OT_OTBN_RND].entropy_requested) {
+        sched_yield();
+        while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+        }
+    }
+
+    return ot_otbn_proxy_get_status(s->proxy);
+}
+
 static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtOTBNState *s = opaque;
@@ -536,23 +573,8 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
     case R_INTR_STATE:
-        if (!(s->intr_state & INTR_DONE_MASK) &&
-            ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_IDLE) {
-            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-            }
-            for (int i = 0; i < 50 &&
-                 ot_otbn_proxy_get_status(s->proxy) ==
-                     OT_OTBN_STATUS_BUSY_SEC_WIPE_INT;
-                 i++) {
-                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-                }
-                if (s->last_cmd == OT_OTBN_CMD_NONE ||
-                    s->rnds[OT_OTBN_URND].entropy_requested ||
-                    s->rnds[OT_OTBN_RND].entropy_requested) {
-                    break;
-                }
-                g_usleep(10);
-            }
+        if (!(s->intr_state & INTR_DONE_MASK)) {
+            (void)ot_otbn_sync_proxy(s);
         }
         val32 = s->intr_state;
         break;
@@ -563,40 +585,10 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = (uint32_t)ot_otbn_proxy_get_ctrl(s->proxy);
         break;
     case R_STATUS:
-        val32 = ot_otbn_proxy_get_status(s->proxy);
-        if (val32 != OT_OTBN_STATUS_IDLE || s->last_cmd != OT_OTBN_CMD_NONE) {
-            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-                val32 = ot_otbn_proxy_get_status(s->proxy);
-            }
-            for (int i = 0;
-                 i < 50 && val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT; i++) {
-                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-                    val32 = ot_otbn_proxy_get_status(s->proxy);
-                }
-                if (s->last_cmd == OT_OTBN_CMD_NONE ||
-                    s->rnds[OT_OTBN_URND].entropy_requested ||
-                    s->rnds[OT_OTBN_RND].entropy_requested) {
-                    break;
-                }
-                g_usleep(10);
-                val32 = ot_otbn_proxy_get_status(s->proxy);
-            }
-            if (val32 == OT_OTBN_STATUS_BUSY_EXECUTE &&
-                !s->rnds[OT_OTBN_URND].entropy_requested &&
-                !s->rnds[OT_OTBN_RND].entropy_requested) {
-                sched_yield();
-                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
-                }
-                val32 = ot_otbn_proxy_get_status(s->proxy);
-            }
-            if (val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT &&
-                (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
-                 (s->proxy_defer && timer_pending(s->proxy_defer)))) {
-                val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
-            }
-        }
-        if (val32 == OT_OTBN_STATUS_IDLE &&
-            (s->last_cmd != OT_OTBN_CMD_NONE ||
+        val32 = ot_otbn_sync_proxy(s);
+        if ((val32 == OT_OTBN_STATUS_IDLE ||
+             val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) &&
+            (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
              (s->proxy_defer && timer_pending(s->proxy_defer)))) {
             val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
         }
