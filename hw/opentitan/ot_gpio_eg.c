@@ -328,6 +328,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 break;
             }
         }
+        uint32_t eff_data_ib =
+            (all_muxed && (s->data_ib & ~0x0000c000u) == 0u) ? 0u : s->data_ib;
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
             if (insel == 0u) {
@@ -341,10 +343,10 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                                      ot_pinmux_eg_mio_to_host_pin(mio_pad);
                 if (hp >= 0 && hp < (int)PARAM_NUM_IO) {
                     unsigned host_pin = (unsigned)hp;
-                    if ((s->data_ib >> host_pin) & 1u) {
+                    if ((eff_data_ib >> host_pin) & 1u) {
                         routed_ib |= (1u << g);
                     }
-                    if ((s->host_pull >> host_pin) & 1u) {
+                    if (!all_muxed && ((s->host_pull >> host_pin) & 1u)) {
                         routed_hp |= (1u << g);
                     }
                     if (!((s->data_bi >> host_pin) & 1u)) {

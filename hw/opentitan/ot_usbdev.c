@@ -1712,9 +1712,12 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
 
     while (xfer->pending) {
         /*
-         * If the endpoint OUT is not enabled yet, wait until software enables it.
+         * If the endpoint OUT is not enabled yet, or EP0 IN completion is
+         * still pending software acknowledgement, wait before delivering
+         * the OUT status stage.
          */
-        if (!ot_usbdev_is_ep_out_enabled(s, epnum)) {
+        if (!ot_usbdev_is_ep_out_enabled(s, epnum) ||
+            (epnum == 0u && (s->regs[R_IN_SENT] & 1u) != 0u)) {
             return progressed;
         }
 
@@ -2236,6 +2239,10 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IN_SENT:
         /* register is rw1c */
         s->regs[reg] &= ~val32;
+        ot_usbdev_update_irqs(s);
+        if (val32 & 1u) {
+            ot_usbdev_advance_transfer_out(s, 0u);
+        }
         break;
     case R_SET_NAK_OUT:
         s->regs[reg] = val32;
