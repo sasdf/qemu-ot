@@ -2020,6 +2020,10 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     memset(&s->sw_cfg, 0, sizeof(OtKMACAppCfg));
     s->current_app = NULL;
     s->pending_apps = 0;
+    for (unsigned ix = 0; ix < s->num_app; ix++) {
+        s->apps[ix].req_pending = false;
+        memset(&s->apps[ix].req, 0, sizeof(OtKMACAppReq));
+    }
     s->in_process = false;
     s->invalid_state_read = false;
     s->error_awaiting_sw = false;
