@@ -48,6 +48,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_clock_src.h"
+#include "hw/core/cpu.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "system/runstate.h"
@@ -425,6 +426,7 @@ struct OtKMACState {
 
     Fifo8 input_fifo;
     QEMUTimer *bh_timer; /* timer to delay bh when triggered from vCPU */
+    QEMUTimer *bh_timer_rt; /* RT fallback timer when vCPU is halted/reset */
     QEMUTimer *edn_wait_timer; /* timer for EDN wait timeout */
     QEMUBH *bh;
 
@@ -462,9 +464,17 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
+    bool cpu_idle = !first_cpu || first_cpu->disabled ||
+                    first_cpu->stopped || first_cpu->halted;
+    uint64_t rt_delay_ns =
+        cpu_idle ? BH_TRIGGER_DELAY_NS : (50u * 1000u * 1000u);
+
     timer_del(s->bh_timer);
+    timer_del(s->bh_timer_rt);
     timer_mod(s->bh_timer,
               qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + BH_TRIGGER_DELAY_NS);
+    timer_mod(s->bh_timer_rt,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) + rt_delay_ns);
 }
 
 static void ot_kmac_process(void *opaque);
@@ -472,12 +482,15 @@ static void ot_kmac_process(void *opaque);
 static void ot_kmac_bh_timer_handler(void *opaque)
 {
     OtKMACState *s = opaque;
+    timer_del(s->bh_timer);
+    timer_del(s->bh_timer_rt);
     ot_kmac_process(s);
 }
 
 static void ot_kmac_cancel_bh(OtKMACState *s)
 {
     timer_del(s->bh_timer);
+    timer_del(s->bh_timer_rt);
     timer_del(s->edn_wait_timer);
     qemu_bh_cancel(s->bh);
 }
@@ -2074,6 +2087,8 @@ static void ot_kmac_init(Object *obj)
     /* setup deferred processing */
     s->bh_timer =
         timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_bh_timer_handler, s);
+    s->bh_timer_rt =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL_RT, &ot_kmac_bh_timer_handler, s);
     s->edn_wait_timer =
         timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_edn_wait_timer_handler, s);
     s->bh = qemu_bh_new(&ot_kmac_process, s);
