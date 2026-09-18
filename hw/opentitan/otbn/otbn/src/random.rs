@@ -120,6 +120,10 @@ impl CSRNG for Rnd {
                     .wait_timeout(cache, Duration::from_millis(50))
                     .unwrap();
                 cache = result.0;
+                if result.1.timed_out() && !cache.available && !self.aborted.load(Ordering::Relaxed)
+                {
+                    self.fetch();
+                }
             }
         }
 
@@ -223,6 +227,9 @@ impl SyncUrnd {
                 .wait_timeout(sync, Duration::from_millis(5))
                 .unwrap();
             sync = result.0;
+            if result.1.timed_out() && !*sync && !self.aborted.load(Ordering::Relaxed) {
+                self.request_reseed();
+            }
         }
         *sync = false;
     }

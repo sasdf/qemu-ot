@@ -584,7 +584,7 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
             if (val32 == OT_OTBN_STATUS_BUSY_EXECUTE &&
                 !s->rnds[OT_OTBN_URND].entropy_requested &&
                 !s->rnds[OT_OTBN_RND].entropy_requested) {
-                g_usleep(10);
+                sched_yield();
                 while (aio_bh_poll(qemu_get_aio_context()) > 0) {
                 }
                 val32 = ot_otbn_proxy_get_status(s->proxy);
