@@ -399,7 +399,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
             IBEX_DEV_UINT_PROP("idcode", EG_RV_DM_TAP_IDCODE),
-            IBEX_DEV_BOOL_PROP("enabled", false)
+            IBEX_DEV_BOOL_PROP("enabled", false),
+            IBEX_DEV_BOOL_PROP("wait_cpu_halt", true)
         ),
     },
     [OT_EG_SOC_DEV_LC_CTRL_TAP_CTRL] = {

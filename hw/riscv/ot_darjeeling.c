@@ -521,7 +521,8 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .cfg = &ot_dj_soc_tap_ctrl_configure,
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
-            IBEX_DEV_UINT_PROP("idcode", DARJEELING_TAP_IDCODE)
+            IBEX_DEV_UINT_PROP("idcode", DARJEELING_TAP_IDCODE),
+            IBEX_DEV_BOOL_PROP("wait_cpu_halt", true)
         ),
     },
     [OT_DJ_SOC_DEV_DTM] = {
