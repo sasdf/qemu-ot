@@ -495,8 +495,7 @@ static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
     s->slow_regs.reset_en = s->regs[R_RESET_EN];
     s->slow_regs.wakeup_en = s->regs[R_WAKEUP_EN];
     s->slow_regs.control = s->regs[R_CONTROL];
-    if ((s->in_low_power ||
-         (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) &&
+    if (s->wake_info_recording &&
         !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
           R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
         s->regs[R_WAKE_INFO] |=
@@ -753,10 +752,7 @@ static void ot_pwrmgr_wkup(void *opaque, int irq, int level)
     uint32_t wkbit = 1u << src;
     if (level) {
         s->regs[R_WAKE_STATUS] |= wkbit;
-        if (s->wake_info_recording &&
-            (s->in_low_power ||
-             (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK)) &&
-            (s->slow_regs.wakeup_en & wkbit)) {
+        if (s->wake_info_recording && (s->slow_regs.wakeup_en & wkbit)) {
             s->regs[R_WAKE_INFO] |= wkbit;
         }
     } else {
