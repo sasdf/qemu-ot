@@ -36,6 +36,7 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
+#include "system/replay.h"
 
 /* clang-format off */
 REG32(INTR_STATE, 0x0u)
@@ -428,7 +429,9 @@ static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
             s->poll_count++;
             if (s->poll_count > 16u) {
                 bql_unlock();
+                replay_mutex_unlock();
                 g_usleep(50);
+                replay_mutex_lock();
                 bql_lock();
                 val32 = ot_sysrst_ctrl_get_pin_in_value(s);
             }

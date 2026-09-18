@@ -48,6 +48,7 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
+#include "system/replay.h"
 #include "system/runstate.h"
 #include "trace.h"
 
@@ -539,7 +540,9 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
             if (s->poll_count > 16u &&
                 qemu_chr_fe_backend_connected(&s->chr)) {
                 bql_unlock();
+                replay_mutex_unlock();
                 g_usleep(50);
+                replay_mutex_lock();
                 bql_lock();
                 ot_gpio_eg_update_data_in(s);
                 val32 = s->regs[reg];
@@ -1050,7 +1053,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     g_string_append(resp, "\r\n");
 
     if (qemu_chr_fe_backend_connected(&s->chr)) {
-        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)resp->str,
+        qemu_chr_fe_write(&s->chr, (const uint8_t *)resp->str,
                               (int)resp->len);
     }
     g_string_free(resp, TRUE);
@@ -1201,7 +1204,7 @@ void ot_gpio_eg_end_batch(OtGpioEgState *s)
         size_t remaining = s->batch_buf->len;
         while (remaining > 0) {
             int chunk = (int)MIN(remaining, 4096u);
-            qemu_chr_fe_write_all(&s->chr, ptr, chunk);
+            qemu_chr_fe_write(&s->chr, ptr, chunk);
             ptr += chunk;
             remaining -= (size_t)chunk;
         }
@@ -1220,7 +1223,7 @@ static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
     int len = snprintf(buf, sizeof(buf), "T:%08x\r\nY:%08x\r\n", now_us,
                        s->regs[R_DATA_IN]);
     s->backend_state.in_m = s->regs[R_DATA_IN];
-    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
+    qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
 }
 
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
@@ -1296,7 +1299,7 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 ot_gpio_eg_update_backend(s, true);
                 char ack[16u];
                 int len = snprintf(ack, sizeof(ack), "R:%08x\r\n", data_in);
-                qemu_chr_fe_write_all(&s->chr, (const uint8_t *)ack, len);
+                qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
             } else {
                 qemu_log_mask(LOG_UNIMP, "%s: unsupported command %c\n",
                               __func__, cmd);
@@ -1315,7 +1318,7 @@ static void ot_gpio_eg_init_backend(OtGpioEgState *s)
         /* query backend for current input status */
         char buf[16u];
         int len = snprintf(buf, sizeof(buf), "C:%08x\r\n", 0);
-        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
+        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
     }
 }
 
@@ -1475,7 +1478,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
         if (s->batch_mode && s->batch_buf) {
             g_string_append_len(s->batch_buf, buf, (gssize)len);
         } else {
-            qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, (int)len);
+            qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, (int)len);
         }
         /* replace CRLF so that trace is kept on a single line */
         for (size_t i = 0; i + 1 < len; i++) {
@@ -1517,7 +1520,7 @@ static void ot_gpio_eg_chr_event_hander(void *opaque, QEMUChrEvent event)
         /* query backend for current input status */
         char buf[16u];
         int len = snprintf(buf, sizeof(buf), "Q:%08x\r\n", s->data_oe);
-        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, len);
+        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
         buf[MIN((unsigned)len - 1, sizeof(buf) - 1u)] = '\0';
         trace_ot_gpio_backend_send(s->ot_id, buf);
     }

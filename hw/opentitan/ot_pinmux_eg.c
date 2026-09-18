@@ -42,6 +42,7 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
+#include "system/replay.h"
 #include "trace.h"
 
 #define PARAM_N_MIO_PERIPH_IN  57u
@@ -804,7 +805,9 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                                         10u;
                 for (unsigned i = 0; i < max_wait; i++) {
                     bql_unlock();
+                    replay_mutex_unlock();
                     g_usleep(1000);
+                    replay_mutex_lock();
                     bql_lock();
                     bool is_high = ((s->pad_in_level >> pad) & 1u) != 0;
                     if (is_high) {

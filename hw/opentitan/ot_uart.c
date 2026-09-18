@@ -465,7 +465,7 @@ static void ot_uart_receive_bytes(OtUARTState *s, OtUARTState *rx_owner,
         if (ot_uart_is_tx_enabled(s)) {
             CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
             if (qemu_chr_fe_backend_connected(tx_chr)) {
-                qemu_chr_fe_write_all(tx_chr, buf, size);
+                qemu_chr_fe_write(tx_chr, buf, size);
             }
         }
         return;
@@ -703,7 +703,7 @@ static void ot_uart_send_byte(OtUARTState *s, uint8_t ch)
     } else {
         CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
         if (qemu_chr_fe_backend_connected(tx_chr)) {
-            qemu_chr_fe_write_all(tx_chr, &ch, 1);
+            qemu_chr_fe_write(tx_chr, &ch, 1);
         }
     }
 }
