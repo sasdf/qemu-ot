@@ -16,6 +16,7 @@ use crate::{CSRNG, PRNG};
 pub struct RndCache {
     value: u256,
     available: bool,
+    pending: bool,
     fips: bool,
     repeat: bool,
 }
@@ -60,6 +61,7 @@ impl Rnd {
         let mut cache = self.cache.lock().unwrap();
         cache.value = U256::from(0u32);
         cache.available = false;
+        cache.pending = false;
         cache.fips = false;
         cache.repeat = false;
     }
@@ -71,17 +73,19 @@ impl Rnd {
         cache.repeat = cache.value == val;
         cache.value = val;
         cache.available = true;
+        cache.pending = false;
         cache.fips = fips;
         self.wait.notify_one();
     }
 
     pub fn prefetch(&self) {
         /* called from OTBN processor (CSR) */
-        let cache = self.cache.lock().unwrap();
-        if cache.available {
-            /* cache is already loaded, nothing to do */
+        let mut cache = self.cache.lock().unwrap();
+        if cache.available || cache.pending {
+            /* cache is already loaded or fetch is already in flight, nothing to do */
             return;
         }
+        cache.pending = true;
         self.fetch();
     }
 
@@ -106,22 +110,22 @@ impl CSRNG for Rnd {
     fn get_csrng_u256(&self) -> (u256, bool, bool) {
         let mut cache = self.cache.lock().unwrap();
         if !cache.available && !self.aborted.load(Ordering::Relaxed) {
-            self.fetch();
+            if !cache.pending {
+                cache.pending = true;
+                self.fetch();
+            }
             while !cache.available && !self.aborted.load(Ordering::Relaxed) {
                 let result = self
                     .wait
                     .wait_timeout(cache, Duration::from_millis(50))
                     .unwrap();
                 cache = result.0;
-                if result.1.timed_out() && !cache.available && !self.aborted.load(Ordering::Relaxed)
-                {
-                    self.fetch();
-                }
             }
         }
 
         let (val, fips, repeat) = (cache.value, cache.fips, cache.repeat);
         cache.available = false;
+        cache.pending = false;
         cache.fips = false;
         cache.repeat = false;
         (val, fips, repeat)
@@ -219,9 +223,6 @@ impl SyncUrnd {
                 .wait_timeout(sync, Duration::from_millis(5))
                 .unwrap();
             sync = result.0;
-            if result.1.timed_out() && !*sync && !self.aborted.load(Ordering::Relaxed) {
-                self.request_reseed();
-            }
         }
         *sync = false;
     }

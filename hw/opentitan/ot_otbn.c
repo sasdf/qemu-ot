@@ -375,10 +375,10 @@ static void ot_otbn_fill_entropy(void *opaque, uint32_t bits, bool fips)
 
     ot_fifo32_push(&rnd->packer, bits);
     rnd->no_fips |= !fips;
-    rnd->entropy_requested = false;
 
     if (!ot_fifo32_is_full(&rnd->packer)) {
         /* need more entropy to fill in the packer */
+        rnd->entropy_requested = false;
         ot_otbn_request_entropy(rnd);
         return;
     }
@@ -410,6 +410,7 @@ static void ot_otbn_fill_entropy(void *opaque, uint32_t bits, bool fips)
     }
     ot_fifo32_reset(&rnd->packer);
     rnd->no_fips = false;
+    rnd->entropy_requested = false;
     if (!res) {
         trace_ot_otbn_error(s->ot_id, "cannot push entropy");
     }
@@ -563,7 +564,7 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_STATUS:
         val32 = ot_otbn_proxy_get_status(s->proxy);
-        if (val32 != OT_OTBN_STATUS_IDLE) {
+        if (val32 != OT_OTBN_STATUS_IDLE || s->last_cmd != OT_OTBN_CMD_NONE) {
             while (aio_bh_poll(qemu_get_aio_context()) > 0) {
                 val32 = ot_otbn_proxy_get_status(s->proxy);
             }
@@ -580,11 +581,24 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
                 g_usleep(10);
                 val32 = ot_otbn_proxy_get_status(s->proxy);
             }
+            if (val32 == OT_OTBN_STATUS_BUSY_EXECUTE &&
+                !s->rnds[OT_OTBN_URND].entropy_requested &&
+                !s->rnds[OT_OTBN_RND].entropy_requested) {
+                g_usleep(10);
+                while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+                }
+                val32 = ot_otbn_proxy_get_status(s->proxy);
+            }
             if (val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT &&
                 (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
                  (s->proxy_defer && timer_pending(s->proxy_defer)))) {
                 val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
             }
+        }
+        if (val32 == OT_OTBN_STATUS_IDLE &&
+            (s->last_cmd != OT_OTBN_CMD_NONE ||
+             (s->proxy_defer && timer_pending(s->proxy_defer)))) {
+            val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
         }
         break;
     case R_ERR_BITS:
