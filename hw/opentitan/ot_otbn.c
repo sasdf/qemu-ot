@@ -537,7 +537,12 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_INTR_STATE:
         if (!(s->intr_state & INTR_DONE_MASK) &&
             ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_IDLE) {
-            for (int i = 0; i < 50; i++) {
+            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+            }
+            for (int i = 0; i < 50 &&
+                 ot_otbn_proxy_get_status(s->proxy) ==
+                     OT_OTBN_STATUS_BUSY_SEC_WIPE_INT;
+                 i++) {
                 while (aio_bh_poll(qemu_get_aio_context()) > 0) {
                 }
                 if (s->last_cmd == OT_OTBN_CMD_NONE ||
@@ -559,7 +564,11 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_STATUS:
         val32 = ot_otbn_proxy_get_status(s->proxy);
         if (val32 != OT_OTBN_STATUS_IDLE) {
-            for (int i = 0; i < 50; i++) {
+            while (aio_bh_poll(qemu_get_aio_context()) > 0) {
+                val32 = ot_otbn_proxy_get_status(s->proxy);
+            }
+            for (int i = 0;
+                 i < 50 && val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT; i++) {
                 while (aio_bh_poll(qemu_get_aio_context()) > 0) {
                     val32 = ot_otbn_proxy_get_status(s->proxy);
                 }
