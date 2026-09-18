@@ -406,7 +406,11 @@ struct OtKMACState {
     bool in_process;
     bool invalid_state_read;
     bool error_awaiting_sw; /* error awaiting SW acknowledgement */
-    bool entropy_configured;
+    bool cfg_entropy_ready; /* kmac_errchk.sv cfg_entropy_ready */
+    bool entropy_configured; /* kmac_entropy.sv st != StRandReset */
+    bool entropy_in_err; /* kmac_entropy.sv st == StRandErr */
+    uint8_t entropy_mode; /* kmac_entropy.sv mode_q (latched in StRandReset) */
+    uint8_t sw_seed_cnt; /* kmac_entropy.sv StSwSeedWait seed word counter */
     bool entropy_seeded;
     bool entropy_refresh_needed;
     bool edn_pending;
@@ -553,6 +557,7 @@ static void ot_kmac_edn_wait_timer_handler(void *opaque)
 
     s->edn_pending = false;
     s->entropy_refresh_needed = false;
+    s->entropy_in_err = true;
     s->entropy_seeded = true;
     ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, 0u);
 
@@ -578,12 +583,12 @@ static void ot_kmac_fill_entropy(void *opaque, uint32_t bits, bool fips)
 
 static void ot_kmac_request_entropy(OtKMACState *s)
 {
-    uint32_t cfg = ot_shadow_reg_peek(&s->cfg);
-    uint32_t entropy_mode = FIELD_EX32(cfg, CFG_SHADOWED, ENTROPY_MODE);
-
-    if (entropy_mode != 1u) { /* 1 = ENTROPY_MODE_EDN */
+    if (!s->entropy_configured || s->entropy_mode != 1u) {
+        /*
+         * RTL (kmac_entropy.sv): mode_q is latched once on leaving StRandReset.
+         * If mode_q != EntropyModeEdn (1), KMAC never transitions to StRandEdn.
+         */
         s->entropy_refresh_needed = false;
-        s->entropy_seeded = true;
         return;
     }
 
@@ -594,6 +599,7 @@ static void ot_kmac_request_entropy(OtKMACState *s)
 
     if (wait_timer > 0 && wait_timer <= 10u && prescaler == 0) {
         s->entropy_refresh_needed = false;
+        s->entropy_in_err = true;
         s->entropy_seeded = true;
         ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, wait_timer);
         return;
@@ -602,9 +608,8 @@ static void ot_kmac_request_entropy(OtKMACState *s)
     if (s->edn && s->edn_ep != UINT8_MAX && !s->edn_pending) {
         s->edn_pending = true;
         s->entropy_refresh_needed = false;
-        if (ot_edn_request_entropy(s->edn, s->edn_ep) != 0) {
-            s->edn_pending = false;
-        } else if (wait_timer > 0) {
+        (void)ot_edn_request_entropy(s->edn, s->edn_ep);
+        if (wait_timer > 0) {
             uint64_t cycles =
                 (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
             uint64_t clk = s->pclk ? s->pclk : 100000000ULL;
@@ -850,8 +855,9 @@ static void ot_kmac_process(void *opaque)
         switch (s->state) {
         case KMAC_ST_PROCESSING:
         case KMAC_ST_SQUEEZING:
-            if (!s->current_app && s->edn_pending) {
-                /* Stall until EDN delivers requested entropy */
+            if ((!s->current_app && s->edn_pending) ||
+                (s->entropy_configured && !s->entropy_seeded)) {
+                /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
             switch (cfg->mode) {
@@ -1146,10 +1152,21 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 {
     timer_del(s->edn_wait_timer);
     s->error_awaiting_sw = false;
-    s->entropy_configured = false;
-    s->entropy_seeded = false;
+    s->cfg_entropy_ready = false;
     s->entropy_refresh_needed = false;
     s->edn_pending = false;
+    if (s->entropy_in_err) {
+        /*
+         * RTL (kmac_entropy.sv:710): StRandErr transitions back to StRandReset
+         * on err_processed_i. If kmac_entropy was already in StRandReady or
+         * StSwSeedWait, err_processed_i does NOT reset st or mode_q.
+         */
+        s->entropy_in_err = false;
+        s->entropy_configured = false;
+        s->entropy_mode = 0;
+        s->entropy_seeded = false;
+        s->sw_seed_cnt = 0;
+    }
 
     if (s->current_app) {
         /*
@@ -1256,7 +1273,7 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
                 if (!ot_kmac_check_kmac_sw_prefix(s)) {
                     err_prefix = true;
                 }
-                if (!s->entropy_configured) {
+                if (!s->cfg_entropy_ready) {
                     err_entropy_ready = true;
                     break;
                 }
@@ -1534,18 +1551,25 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         case OT_SHADOW_REG_STAGED:
             break;
         case OT_SHADOW_REG_COMMITTED:
-            if ((val32 & R_CFG_SHADOWED_ENTROPY_READY_MASK) &&
-                !s->entropy_configured) {
-                s->entropy_configured = true;
-                uint32_t entropy_mode =
-                    FIELD_EX32(val32, CFG_SHADOWED, ENTROPY_MODE);
-                if (entropy_mode != 1u && entropy_mode != 2u) {
-                    ot_kmac_report_error(s, OT_KMAC_ERR_INCORRECT_ENTROPY_MODE,
-                                         entropy_mode);
-                } else if (entropy_mode == 1u) {
-                    ot_kmac_request_entropy(s);
-                } else {
-                    s->entropy_seeded = true;
+            if (val32 & R_CFG_SHADOWED_ENTROPY_READY_MASK) {
+                if (s->state == KMAC_ST_IDLE) {
+                    s->cfg_entropy_ready = true;
+                }
+                if (!s->entropy_configured) {
+                    s->entropy_configured = true;
+                    s->entropy_mode =
+                        (uint8_t)FIELD_EX32(val32, CFG_SHADOWED, ENTROPY_MODE);
+                    s->entropy_seeded = false;
+                    s->sw_seed_cnt = 0;
+                    if (s->entropy_mode != 1u && s->entropy_mode != 2u) {
+                        s->entropy_in_err = true;
+                        s->entropy_seeded = true;
+                        ot_kmac_report_error(s,
+                                             OT_KMAC_ERR_INCORRECT_ENTROPY_MODE,
+                                             s->entropy_mode);
+                    } else if (s->entropy_mode == 1u) {
+                        ot_kmac_request_entropy(s);
+                    }
                 }
             }
             break;
@@ -1603,7 +1627,17 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case R_ENTROPY_SEED:
-        s->entropy_seeded = true;
+        if (s->entropy_configured && s->entropy_mode == 2u &&
+            !s->entropy_seeded) {
+            s->sw_seed_cnt++;
+            if (s->sw_seed_cnt >= 5u) {
+                s->entropy_seeded = true;
+                if (s->state == KMAC_ST_PROCESSING ||
+                    s->state == KMAC_ST_SQUEEZING) {
+                    ot_kmac_process(s);
+                }
+            }
+        }
         break;
     case R_KEY_LEN:
         if (!ot_kmac_check_reg_write(s, reg)) {
@@ -1989,7 +2023,11 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->in_process = false;
     s->invalid_state_read = false;
     s->error_awaiting_sw = false;
+    s->cfg_entropy_ready = false;
     s->entropy_configured = false;
+    s->entropy_in_err = false;
+    s->entropy_mode = 0;
+    s->sw_seed_cnt = 0;
     s->entropy_seeded = false;
     s->entropy_refresh_needed = false;
     s->edn_pending = false;
