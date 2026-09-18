@@ -833,6 +833,12 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
     if (s->bb_cur_tx_len == 0) {
         return;
     }
+    if (s->bb_len >= ARRAY_SIZE(s->bb_half_clks)) {
+        s->bb_cur_tx_len = 0;
+        s->bb_completed_txns++;
+        s->bb_last_cmd_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        return;
+    }
     uint8_t cpol = s->bb_cpol ? 1u : 0u;
     uint8_t cpha = s->bb_cpha ? 1u : 0u;
     uint8_t last_sd0 = 0u;
@@ -1292,6 +1298,10 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
         break;
     case R_STATUS:
         val32 = ot_spi_host_get_status(s);
+        if (timer_pending(s->fsm_delay)) {
+            timer_del(s->fsm_delay);
+            ot_spi_host_schedule_fsm(s);
+        }
         break;
     case R_RXDATA: {
         /* here, size != 4 is illegal, what to do in this case? */
