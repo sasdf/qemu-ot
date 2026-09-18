@@ -1208,6 +1208,24 @@ static OtCSRNDCmdResult ot_csrng_handle_generate(OtCSRNGState *s, unsigned slot)
         xtrace_ot_csrng_show_buffer(ot_csrng_get_slot(inst), "mat", buffer,
                                     clen * sizeof(uint32_t));
         ot_csrng_drng_store_material(inst, buffer, clen);
+        bool adata_non_zero = false;
+        for (uint32_t ix = 0; ix < clen; ix++) {
+            if (buffer[ix] != 0u) {
+                adata_non_zero = true;
+                break;
+            }
+        }
+        if (adata_non_zero) {
+            /*
+             * Per NIST SP 800-90A Section 10.2.1.5.1 and csrng_ctr_drbg_cmd.sv
+             * (!prep_gen_adata_null), non-zero additional data triggers an
+             * initial CTR_DRBG_Update(adata, Key, V) prior to block generation,
+             * and the same adata is also retained in update_adata_q for the
+             * final CTR_DRBG_Update on the last generated block (glast).
+             */
+            ot_csrng_drng_update(inst);
+            ot_csrng_drng_store_material(inst, buffer, clen);
+        }
     }
 
     trace_ot_csrng_generate(ot_csrng_get_slot(inst), packet_count);
