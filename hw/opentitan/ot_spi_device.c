@@ -2939,8 +2939,8 @@ static int ot_spi_device_chr_can_receive(void *opaque)
                    !ot_spi_device_is_tpm_enabled(s) &&
                    !(s->spi_regs[R_CMD_INFO_WRDI] & CMD_INFO_OPCODE_MASK) &&
                    (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->reset_time_ns) <
-                       20000000LL) {
-            ot_spi_device_flash_pace_spibus_ns(s, 1000000LL);
+                       3000000LL) {
+            ot_spi_device_flash_pace_spibus_ns(s, 500000LL);
             length = 0u;
         } else {
             length = fifo8_num_free(&bus->chr_fifo);
@@ -3122,6 +3122,8 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    bool had_wrdi = (bool)(s->spi_regs[R_CMD_INFO_WRDI] & CMD_INFO_OPCODE_MASK);
+
     ot_spi_device_clear_modes(s);
 
     memset(s->spi_regs, 0u, SPI_REGS_SIZE);
@@ -3154,7 +3156,9 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
     ibex_irq_lower(&s->passthrough_en);
     ibex_irq_raise(&s->passthrough_cs);
 
-    s->reset_time_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    if (s->reset_time_ns == 0 || had_wrdi) {
+        s->reset_time_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    }
 
     ot_spi_device_update_irqs(s);
     ot_spi_device_update_alerts(s);
