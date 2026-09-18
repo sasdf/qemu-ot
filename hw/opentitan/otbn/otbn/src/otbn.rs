@@ -391,14 +391,13 @@ impl Executer {
                 }
             }
 
-            if self.registers.resetting.load(Ordering::Relaxed) {
-                return insn_exec::InstructionTrap::Exception(
-                    ExceptionCause::ECallMMode,
-                    None,
-                );
-            }
-
             let fatalbits = if (local_insn_count & 0xff) == 0 {
+                if self.registers.resetting.load(Ordering::Relaxed) {
+                    return insn_exec::InstructionTrap::Exception(
+                        ExceptionCause::ECallMMode,
+                        None,
+                    );
+                }
                 self.registers.fatal_bits.load(Ordering::Relaxed)
             } else {
                 0
