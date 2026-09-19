@@ -48,10 +48,8 @@
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_clock_src.h"
-#include "hw/core/cpu.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
-#include "system/runstate.h"
 #include "tomcrypt.h"
 #include "trace.h"
 
@@ -469,45 +467,17 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 #define ot_kmac_change_fsm_state(_s_, _st_) \
     ot_kmac_change_fsm_state_line(_s_, _st_, __LINE__)
 
-static bool ot_kmac_is_non_sw_app_active(const OtKMACState *s)
-{
-    if (s->current_app && s->current_app->cfg.prefix.customstr_len >= 7u &&
-        (!memcmp(s->current_app->cfg.prefix.customstr, "LC_CTRL", 7u) ||
-         !memcmp(s->current_app->cfg.prefix.customstr, "ROM_CTRL", 8u))) {
-        return true;
-    }
-    if (s->pending_apps) {
-        for (unsigned ix = 0; ix < s->num_app; ix++) {
-            if (s->apps[ix].req_pending &&
-                s->apps[ix].cfg.prefix.customstr_len >= 7u &&
-                (!memcmp(s->apps[ix].cfg.prefix.customstr, "LC_CTRL", 7u) ||
-                 !memcmp(s->apps[ix].cfg.prefix.customstr, "ROM_CTRL", 8u))) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+#define BH_RT_FALLBACK_DELAY_NS (2u * 1000u * 1000u)
 
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
-    uint32_t pc = first_cpu && first_cpu->cc->get_pc ?
-                      (uint32_t)first_cpu->cc->get_pc(first_cpu) :
-                      0u;
-    bool in_debug_rom =
-        (pc >= 0x800u && pc < 0x900u) || (pc >= 0x10800u && pc < 0x10900u);
-    bool non_sw_app = ot_kmac_is_non_sw_app_active(s);
-    bool cpu_idle = non_sw_app || !first_cpu || first_cpu->disabled ||
-                    first_cpu->stopped || first_cpu->halted || in_debug_rom;
-    uint64_t rt_delay_ns =
-        cpu_idle ? BH_TRIGGER_DELAY_NS : (50u * 1000u * 1000u);
-
     timer_del(s->bh_timer);
     timer_del(s->bh_timer_rt);
     timer_mod(s->bh_timer,
               qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + BH_TRIGGER_DELAY_NS);
     timer_mod(s->bh_timer_rt,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) + rt_delay_ns);
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) +
+                  BH_RT_FALLBACK_DELAY_NS);
 }
 
 static void ot_kmac_process(void *opaque);
@@ -625,12 +595,17 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, PRESCALER);
     uint32_t wait_timer =
         FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, WAIT_TIMER);
+    uint64_t wait_cycles =
+        (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
 
-    if (wait_timer > 0 && wait_timer <= 10u && prescaler == 0) {
-        s->entropy_refresh_needed = false;
-        s->entropy_in_err = true;
-        s->entropy_seeded = true;
-        ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, wait_timer);
+    /*
+     * In RTL (kmac_entropy.sv), seeding the 160-bit PRNG state in StRandEdn
+     * requires 5x 32-bit EDN words across prim_edn_req (prim_sync_reqack 2-FF
+     * req/ack CDC synchronizers, >= 6 cycles per word = 30 cycles minimum).
+     */
+    if (wait_timer > 0 && wait_cycles < 30ULL) {
+        s->edn_pending = true;
+        ot_kmac_edn_wait_timer_handler(s);
         return;
     }
 
@@ -639,10 +614,9 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         s->entropy_refresh_needed = false;
         (void)ot_edn_request_entropy(s->edn, s->edn_ep);
         if (wait_timer > 0) {
-            uint64_t cycles =
-                (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
             uint64_t clk = s->pclk ? s->pclk : 100000000ULL;
-            uint64_t delay_ns = muldiv64(cycles, NANOSECONDS_PER_SECOND, clk);
+            uint64_t delay_ns =
+                muldiv64(wait_cycles, NANOSECONDS_PER_SECOND, clk);
             timer_mod(s->edn_wait_timer,
                       qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
         }
@@ -2009,11 +1983,7 @@ static void ot_kmac_start_pending_app(OtKMACState *s)
         ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
 
         /* compute app request */
-        if (runstate_is_running() && current_cpu) {
-            ot_kmac_trigger_deferred_bh(s);
-        } else {
-            ot_kmac_process(s);
-        }
+        ot_kmac_trigger_deferred_bh(s);
     }
 }
 
