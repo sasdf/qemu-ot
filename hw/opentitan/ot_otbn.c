@@ -789,7 +789,20 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
         ot_otbn_proxy_read_memory(s->proxy, doi, word_addr, &valid);
     trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
                            value);
-    if (!valid) {
+    if (valid) {
+        /*
+         * In otbn.sv:737-746, mem_crc_data_in_valid checks:
+         *   ~(dmem_access_core | imem_access_core) &
+         *   ((imem_req_bus & (imem_byte_mask_bus == 4'hf)) |
+         *    (dmem_req_bus & (dmem_byte_mask_bus == 4'hf)))
+         * without gating on imem_write_bus / dmem_write_bus. Because
+         * tlul_adapter_host.sv:94 drives a_mask = 4'hf on all TL-UL Get
+         * requests and tlul_adapter_sram.sv:390,429 asserts req_o = 1 with
+         * wdata_int = 0 when we_o = 0, valid idle host reads advance
+         * u_mem_load_crc32 with wr_data = 0.
+         */
+        ot_otbn_update_checksum(s, doi, word_addr, 0u);
+    } else {
         hwaddr offset =
             (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + word_addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
