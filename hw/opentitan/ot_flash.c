@@ -1518,23 +1518,35 @@ static MemTxResult ot_flash_ecc_fault_read_with_attrs(
 static MemTxResult ot_flash_mem_write_with_attrs(
     void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
 {
-    (void)opaque;
-    (void)addr;
+    OtFlashState *s = opaque;
     (void)value;
     (void)size;
     (void)attrs;
 
     /*
      * RTL: flash_ctrl.sv u_tl_adapter_eflash instantiates tlul_adapter_sram
-     * with ErrOnWrite = 1 (tlul_adapter_sram.sv:155-156, 176):
-     * wr_vld_error = (tl_i.a_opcode != Get) -> returns TL-UL D-channel error.
+     * with ErrOnWrite = 1, EnableDataIntgGen = 0, EnableDataIntgPt = 1
+     * (tlul_adapter_sram.sv:155-156, 341-349): wr_vld_error returns TL-UL
+     * D-channel error along with d_data = 0xffffffff and
+     * data_intg = SecdedInv3932ZeroEcc (0x39), which asserts
+     * store_resp_intg_err_o in rv_core_ibex.
      */
+    ot_common_raise_load_integrity_error(
+        DEVICE(s), (s->mmio.mem.addr + addr) - s->mmio.regs.addr);
     return MEMTX_ERROR;
+}
+
+static MemTxResult ot_flash_ecc_fault_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    OtFlashEccFault *fault = opaque;
+    return ot_flash_mem_write_with_attrs(fault->s, fault->offset + addr, value,
+                                         size, attrs);
 }
 
 static const MemoryRegionOps ot_flash_ecc_fault_ops = {
     .read_with_attrs = &ot_flash_ecc_fault_read_with_attrs,
-    .write_with_attrs = &ot_flash_mem_write_with_attrs,
+    .write_with_attrs = &ot_flash_ecc_fault_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
@@ -2738,6 +2750,9 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
         uint32_t be = ot_flash_byte_mask(addr, size);
         uint32_t permit = ot_flash_core_reg_permit(reg);
         if ((permit & ~be) != 0u) {
+            if (reg == R_PROG_FIFO) {
+                ot_common_raise_load_integrity_error(DEVICE(s), addr);
+            }
             return MEMTX_ERROR;
         }
     }
@@ -3117,6 +3132,7 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: R/O FIFO window 0x%03x (%s) ErrOnWrite\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
+        ot_common_raise_load_integrity_error(DEVICE(s), addr);
         return MEMTX_ERROR;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,

@@ -572,7 +572,7 @@ ot_ibex_wrapper_log_load_string(OtIbexWrapperState *s, hwaddr addr, char **str)
         goto end;
     }
 
-    if (!memory_region_is_ram(mr)) {
+    if (!memory_region_is_ram(mr) && !memory_region_is_romd(mr)) {
         xtrace_ot_ibex_wrapper_error(s, "invalid mr section");
         goto end;
     }
@@ -623,7 +623,7 @@ static bool ot_ibex_wrapper_log_load_fields(OtIbexWrapperState *s, hwaddr addr)
         goto end;
     }
 
-    if (!memory_region_is_ram(mr)) {
+    if (!memory_region_is_ram(mr) && !memory_region_is_romd(mr)) {
         xtrace_ot_ibex_wrapper_error(s, "invalid mr section");
         goto end;
     }
