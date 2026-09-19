@@ -546,6 +546,9 @@ static void ot_aes_init_data(OtAESState *s, bool io)
         s->ctx->di_full = false;
     } else {
         trace_ot_aes_init(s->ot_id, "data_out");
+        if (r->status & R_STATUS_OUTPUT_VALID_MASK) {
+            r->status |= R_STATUS_OUTPUT_LOST_MASK;
+        }
         ot_aes_randomize(s, r->data_out, ARRAY_SIZE(r->data_out));
         bitmap_zero(r->data_out_bm, PARAM_NUM_REGS_DATA);
         r->status &= ~R_STATUS_OUTPUT_VALID_MASK;
@@ -1355,8 +1358,9 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
                           __func__, s->ot_id);
             break;
         }
-        if (ot_aes_is_idle(s) ||
-            (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
+        if (!s->fatal_fault &&
+            (ot_aes_is_idle(s) ||
+             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u)) {
             if (r->keyshare_armed) {
                 bitmap_zero(r->keyshare_bm, (int64_t)(PARAM_NUM_REGS_KEY * 2u));
                 s->ctx->key_ready = false;
@@ -1375,8 +1379,9 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IV_1:
     case R_IV_2:
     case R_IV_3:
-        if (ot_aes_is_idle(s) ||
-            (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
+        if (!s->fatal_fault &&
+            (ot_aes_is_idle(s) ||
+             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u)) {
             if (r->iv_armed) {
                 bitmap_zero(r->iv_bm, PARAM_NUM_REGS_IV);
                 s->ctx->iv_ready = false;
@@ -1395,11 +1400,18 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_DATA_IN_1:
     case R_DATA_IN_2:
     case R_DATA_IN_3:
+        if (s->fatal_fault) {
+            break;
+        }
         r->data_in[reg - R_DATA_IN_0] = val32;
-        set_bit((int64_t)(reg - R_DATA_IN_0), r->data_in_bm);
-        if (ot_aes_is_data_in_ready(r)) {
-            ibex_irq_set(&s->clock_active, (int)true);
-            ot_aes_pop(s);
+        if (s->ctx->di_full) {
+            memcpy(s->ctx->src, r->data_in, sizeof(s->ctx->src));
+        } else {
+            set_bit((int64_t)(reg - R_DATA_IN_0), r->data_in_bm);
+            if (ot_aes_is_data_in_ready(r)) {
+                ibex_irq_set(&s->clock_active, (int)true);
+                ot_aes_pop(s);
+            }
         }
         if (!ot_aes_is_manual(r)) {
             ot_aes_process_cond(s);
@@ -1411,11 +1423,15 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         val32 = ot_aes_sanitize_ctrl(val32);
         OtAESMode prev_mode = ot_aes_get_mode(s->regs);
+        r->status &= ~(R_STATUS_OUTPUT_LOST_MASK | R_STATUS_OUTPUT_VALID_MASK);
+        bitmap_zero(r->data_in_bm, PARAM_NUM_REGS_DATA);
+        bitmap_zero(r->data_out_bm, PARAM_NUM_REGS_DATA);
+        s->ctx->di_full = false;
+        s->ctx->do_full = false;
+        r->data_out_rdy = false;
         switch (ot_shadow_reg_write(&r->ctrl, val32)) {
         case OT_SHADOW_REG_STAGED:
-            r->status &= ~(R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK |
-                           R_STATUS_OUTPUT_LOST_MASK |
-                           R_STATUS_OUTPUT_VALID_MASK);
+            r->status &= ~R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
             break;
         case OT_SHADOW_REG_COMMITTED:
             /*
@@ -1423,15 +1439,10 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
              * of a new message. Hence, software needs to provide new key,
              * IV and input data afterwards."
              */
-            r->status &= ~(R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK |
-                           R_STATUS_OUTPUT_LOST_MASK |
-                           R_STATUS_OUTPUT_VALID_MASK);
+            r->status &= ~R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
             ot_aes_finalize(s, prev_mode);
             ot_aes_init_keyshare(s, false);
             ot_aes_init_iv(s, false);
-            bitmap_zero(r->data_in_bm, PARAM_NUM_REGS_DATA);
-            bitmap_zero(r->data_out_bm, PARAM_NUM_REGS_DATA);
-            r->data_out_rdy = false;
             ot_aes_load_reseed_rate(s);
             break;
         case OT_SHADOW_REG_ERROR:
@@ -1466,6 +1477,9 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         r->ctrl_aux_regwen &= val32;
         break;
     case R_TRIGGER:
+        if (s->fatal_fault) {
+            break;
+        }
         val32 &= R_TRIGGER_START_MASK | R_TRIGGER_KEY_IV_DATA_IN_CLEAR_MASK |
                  R_TRIGGER_DATA_OUT_CLEAR_MASK | R_TRIGGER_PRNG_RESEED_MASK;
         r->trigger |= val32;
