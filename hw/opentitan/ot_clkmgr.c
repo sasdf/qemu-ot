@@ -1380,11 +1380,75 @@ static const Property ot_clkmgr_properties[] = {
     DEFINE_PROP_UINT8("version", OtClkMgrState, version, UINT8_MAX),
 };
 
+static uint32_t ot_clkmgr_get_permit(OtClkMgrState *s, hwaddr reg)
+{
+    if (reg < R_MEASURE_REG_BASE) {
+        return 0x1u;
+    }
+    if (reg < (R_MEASURE_REG_BASE + (s->measure_count * 2u))) {
+        unsigned measure = (reg - R_MEASURE_REG_BASE) >> 1u;
+        unsigned offset = (reg - R_MEASURE_REG_BASE) & 1u;
+        if (offset == 0u) {
+            return 0x1u;
+        }
+        unsigned width =
+            ot_clkmgr_get_measure_width(s->measure_regs[measure].clock);
+        unsigned bytes = ((2u * width) + 7u) / 8u;
+        return (1u << bytes) - 1u;
+    }
+    unsigned reg_err = reg - (s->measure_count * 2u);
+    if (reg_err == R_RECOV_ERR_CODE) {
+        return 0x3u;
+    }
+    if (reg_err == R_FATAL_ERR_CODE) {
+        return 0x1u;
+    }
+    return 0u;
+}
+
+static MemTxResult ot_clkmgr_read_with_attrs(void *opaque, hwaddr addr,
+                                             uint64_t *data, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (ot_clkmgr_get_permit(opaque, reg) == 0u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t val32 = (uint32_t)ot_clkmgr_read(opaque, addr & ~3ULL, 4u);
+    uint32_t shift = (uint32_t)((addr & 3ULL) * 8ULL);
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_clkmgr_write_with_attrs(void *opaque, hwaddr addr,
+                                              uint64_t val64, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    (void)attrs;
+    OtClkMgrState *s = opaque;
+    hwaddr reg = R32_OFF(addr);
+    uint32_t permit = ot_clkmgr_get_permit(s, reg);
+    if (permit == 0u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t byte_offset = (uint32_t)(addr & 3ULL);
+    uint32_t reg_be = (((1u << size) - 1u) << byte_offset) & 0xfu;
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    uint32_t wdata = (uint32_t)((val64 & mask) << (byte_offset * 8u));
+    ot_clkmgr_write(opaque, addr & ~3ULL, wdata, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_clkmgr_regs_ops = {
-    .read = &ot_clkmgr_read,
-    .write = &ot_clkmgr_write,
+    .read_with_attrs = &ot_clkmgr_read_with_attrs,
+    .write_with_attrs = &ot_clkmgr_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
