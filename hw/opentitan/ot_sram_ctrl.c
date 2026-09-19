@@ -826,11 +826,47 @@ static const Property ot_sram_ctrl_properties[] = {
     DEFINE_PROP_BOOL("noswitch", OtSramCtrlState, noswitch, false),
 };
 
+static MemTxResult ot_sram_ctrl_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        *data = 0u;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t val64 = ot_sram_ctrl_regs_read(opaque, addr & ~3ULL, 4u);
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val64 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_sram_ctrl_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    /* SRAM_CTRL_REGS_PERMIT[0..8] = 4'b0001 (sram_ctrl_reg_pkg.sv:152-162) */
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((0x1u & ~byte_mask) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    ot_sram_ctrl_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_sram_ctrl_regs_ops = {
-    .read = &ot_sram_ctrl_regs_read,
-    .write = &ot_sram_ctrl_regs_write,
+    .read_with_attrs = &ot_sram_ctrl_regs_read_with_attrs,
+    .write_with_attrs = &ot_sram_ctrl_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
