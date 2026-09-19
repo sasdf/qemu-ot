@@ -355,6 +355,58 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+#define RV_DM_REGS_COUNT 3u
+
+static const uint8_t RV_DM_REGS_PERMIT[RV_DM_REGS_COUNT] = {
+    [R_ALERT_TEST] = 0x1u,
+    [R_LATE_DEBUG_ENABLE_REGWEN] = 0x1u,
+    [R_LATE_DEBUG_ENABLE] = 0xfu,
+};
+
+static MemTxResult pulp_rv_dm_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= RV_DM_REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        *data = 0u;
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint64_t val64 = pulp_rv_dm_regs_read(opaque, addr & ~3ULL, 4u);
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val64 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult pulp_rv_dm_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= RV_DM_REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((RV_DM_REGS_PERMIT[reg] & ~byte_mask) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: sub-word write error at 0x%" HWADDR_PRIx
+                      " (size=%u, mask=0x%x)\n",
+                      __func__, addr, size, byte_mask);
+        return MEMTX_ERROR;
+    }
+
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    pulp_rv_dm_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
+    return MEMTX_OK;
+}
+
 static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
@@ -583,11 +635,17 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
 };
 
 static const MemoryRegionOps pulp_rv_dm_regs_ops = {
-    .read = &pulp_rv_dm_regs_read,
-    .write = &pulp_rv_dm_regs_write,
+    .read_with_attrs = &pulp_rv_dm_regs_read_with_attrs,
+    .write_with_attrs = &pulp_rv_dm_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .impl = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
 };
 
 static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
