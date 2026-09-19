@@ -921,7 +921,8 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         ot_i2c_update_fmt_threshold(s);
         uint32_t fmt_depth = ot_i2c_get_fmt_depth(s);
         val32 = FIELD_DP32(val32, STATUS, HOSTIDLE,
-                           !i2c_bus_busy(s->bus) && fmt_depth == 0);
+                           !i2c_bus_busy(s->bus) &&
+                               (!ot_i2c_host_enabled(s) || fmt_depth == 0));
         val32 = FIELD_DP32(val32, STATUS, TARGETIDLE,
                            !s->in_target_transfer && !i2c_bus_busy(s->bus));
 
@@ -983,8 +984,18 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         val32 = FIELD_DP32(val32, TARGET_FIFO_STATUS, ACQLVL,
                            ot_fifo32_num_used(&s->target_rx_fifo));
         break;
+    case R_VAL: {
+        bool scl = true;
+        bool sda = true;
+        if (s->regs[R_OVRD] & R_OVRD_TXOVRDEN_MASK) {
+            scl = (bool)(s->regs[R_OVRD] & R_OVRD_SCLVAL_MASK);
+            sda = (bool)(s->regs[R_OVRD] & R_OVRD_SDAVAL_MASK);
+        }
+        val32 = FIELD_DP32(0u, VAL, SCL_RX, scl ? 0xffffu : 0u);
+        val32 = FIELD_DP32(val32, VAL, SDA_RX, sda ? 0xffffu : 0u);
+        break;
+    }
     case R_OVRD:
-    case R_VAL:
     case R_TIMING0:
     case R_TIMING1:
     case R_TIMING2:
