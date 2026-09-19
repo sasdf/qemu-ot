@@ -2511,6 +2511,117 @@ static void ot_spi_device_tpm_regs_write(void *opaque, hwaddr addr,
     }
 };
 
+static uint8_t ot_spi_device_spi_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_INTR_STATE:
+    case R_INTR_ENABLE:
+    case R_INTR_TEST:
+    case R_ALERT_TEST:
+    case R_CONTROL:
+    case R_STATUS:
+    case R_INTERCEPT_EN:
+        return 0x1u;
+    case R_JEDEC_CC:
+    case R_READ_THRESHOLD:
+    case R_UPLOAD_STATUS:
+    case R_UPLOAD_CMDFIFO:
+        return 0x3u;
+    case R_FLASH_STATUS:
+    case R_JEDEC_ID:
+    case R_UPLOAD_STATUS2:
+        return 0x7u;
+    default:
+        return 0xfu;
+    }
+}
+
+static uint8_t ot_spi_device_tpm_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_TPM_CAP:
+        return 0x7u;
+    case R_TPM_CFG:
+    case R_TPM_STATUS:
+    case R_TPM_ACCESS_1:
+    case R_TPM_INT_VECTOR:
+    case R_TPM_RID:
+        return 0x1u;
+    default:
+        return 0xfu;
+    }
+}
+
+static MemTxResult ot_spi_device_spi_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t word = ot_spi_device_spi_regs_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (word >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_spi_device_spi_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = ot_spi_device_spi_permit(reg);
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
+    ot_spi_device_spi_regs_write(opaque, aligned_addr, wdata, 4u);
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_spi_device_tpm_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t word = ot_spi_device_tpm_regs_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (word >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_spi_device_tpm_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = ot_spi_device_tpm_permit(reg);
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
+    ot_spi_device_tpm_regs_write(opaque, aligned_addr, wdata, 4u);
+    return MEMTX_OK;
+}
+
 static MemTxResult ot_spi_device_buf_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
@@ -3108,18 +3219,18 @@ static const Property ot_spi_device_properties[] = {
 };
 
 static const MemoryRegionOps ot_spi_device_spi_regs_ops = {
-    .read = &ot_spi_device_spi_regs_read,
-    .write = &ot_spi_device_spi_regs_write,
+    .read_with_attrs = &ot_spi_device_spi_regs_read_with_attrs,
+    .write_with_attrs = &ot_spi_device_spi_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_spi_device_tpm_regs_ops = {
-    .read = &ot_spi_device_tpm_regs_read,
-    .write = &ot_spi_device_tpm_regs_write,
+    .read_with_attrs = &ot_spi_device_tpm_regs_read_with_attrs,
+    .write_with_attrs = &ot_spi_device_tpm_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
