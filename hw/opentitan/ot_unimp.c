@@ -85,8 +85,7 @@ static inline hwaddr ot_unimp_alert_test_reg(const OtUnimpState *s)
 
 static void ot_unimp_update_irqs(OtUnimpState *s)
 {
-    uint32_t level = (s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST]) &
-                     s->regs[R_INTR_ENABLE];
+    uint32_t level = s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE];
 
     for (unsigned ix = 0; ix < s->irq_count; ix++) {
         int lvl = (int)((level >> ix) & 0x1u);
@@ -120,7 +119,6 @@ static uint64_t ot_unimp_io_read(void *opaque, hwaddr addr, unsigned size)
     if (s->irq_count) {
         switch (reg) {
         case R_INTR_STATE:
-            return s->regs[R_INTR_STATE] | s->regs[R_INTR_TEST];
         case R_INTR_ENABLE:
             return s->regs[reg];
         case R_INTR_TEST:
@@ -181,8 +179,7 @@ static void ot_unimp_io_write(void *opaque, hwaddr addr, uint64_t value,
             return;
         case R_INTR_TEST:
             val32 &= (1u << s->irq_count) - 1u;
-            s->regs[R_INTR_STATE] |= val32 & ~s->irq_ro_mask;
-            s->regs[R_INTR_TEST] = val32 & s->irq_ro_mask;
+            s->regs[R_INTR_STATE] |= val32;
             ot_unimp_update_irqs(s);
             return;
         default:
@@ -197,14 +194,7 @@ static void ot_unimp_io_write(void *opaque, hwaddr addr, uint64_t value,
     }
 
     if (!s->no_store) {
-        if ((!strcmp(s->ot_id, "pwm") && reg == (0x04u / sizeof(uint32_t))) ||
-            (!strcmp(s->ot_id, "sysrst_ctrl") &&
-             reg == (0x10u / sizeof(uint32_t)))) {
-            /* REGWEN is RW0C */
-            s->regs[reg] &= val32 & 0x1u;
-        } else {
-            s->regs[reg] = val32;
-        }
+        s->regs[reg] = val32;
     }
 
     if (s->warn_once && s->w_warned) {
@@ -251,36 +241,6 @@ static void ot_unimp_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs, 0, s->size);
-
-    if (!s->no_store && s->ot_id) {
-        if (!strcmp(s->ot_id, "pwm")) {
-            s->regs[0x04u / sizeof(uint32_t)] = 0x1u; /* REGWEN */
-            s->regs[0x08u / sizeof(uint32_t)] = 0x38008000u; /* CFG */
-            for (unsigned i = 0; i < 6u; i++) {
-                s->regs[(0x2cu / sizeof(uint32_t)) + i] =
-                    0x7fff7fffu; /* DUTY_CYCLE_0..5 */
-            }
-        } else if (!strcmp(s->ot_id, "sysrst_ctrl")) {
-            s->regs[0x10u / sizeof(uint32_t)] = 0x1u; /* REGWEN */
-            s->regs[0x14u / sizeof(uint32_t)] = 0x7d0u; /* EC_RST_CTL */
-            s->regs[0x18u / sizeof(uint32_t)] =
-                0x1f40u; /* ULP_AC_DEBOUNCE_CTL */
-            s->regs[0x1cu / sizeof(uint32_t)] =
-                0x1f40u; /* ULP_LID_DEBOUNCE_CTL */
-            s->regs[0x20u / sizeof(uint32_t)] =
-                0x1f40u; /* ULP_PWRB_DEBOUNCE_CTL */
-            s->regs[0x28u / sizeof(uint32_t)] = 0x82u; /* PIN_ALLOWED_CTL */
-            s->regs[0x2cu / sizeof(uint32_t)] = 0x82u; /* PIN_OUT_CTL */
-            s->regs[0x3cu / sizeof(uint32_t)] =
-                0x7d0u; /* KEY_INTR_DEBOUNCE_CTL */
-            s->regs[0x4cu / sizeof(uint32_t)] =
-                0x7d0u; /* AUTO_BLOCK_DEBOUNCE_CTL */
-        } else if (!strcmp(s->ot_id, "adc_ctrl")) {
-            s->regs[0x14u / sizeof(uint32_t)] = 0x64070u; /* ADC_PD_CTL */
-            s->regs[0x18u / sizeof(uint32_t)] = 0x4u; /* ADC_LP_SAMPLE_CTL */
-            s->regs[0x1cu / sizeof(uint32_t)] = 0x9bu; /* ADC_SAMPLE_CTL */
-        }
-    }
 
     for (unsigned ix = 0; ix < (unsigned)s->irq_count; ix++) {
         ibex_irq_lower(&s->irqs[ix]);
