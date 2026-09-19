@@ -342,7 +342,8 @@ static bool ot_alert_is_class_enabled(const OtAlertState *s, unsigned nclass)
 
 static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9]);
 static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
-                                bool from_timer);
+                                bool from_timer, bool class_trig);
+static void ot_alert_enter_phase0(OtAlertState *s, unsigned nclass);
 
 static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
                                      OtAlertAClassState state)
@@ -380,15 +381,24 @@ static void ot_alert_update_irqs(OtAlertState *s)
         ibex_irq_set(&s->irqs[ix], (int)irq_active);
 
         OtAlertAClassState state = ot_alert_get_class_state(s, ix);
-        if (state == STATE_IDLE && irq_active &&
+        uint32_t timeout =
+            ot_shadow_reg_peek(&s->regs.classes[ix].timeout_cyc_shadowed);
+        if (state == STATE_IDLE && irq_active && timeout != 0 &&
             ot_alert_is_class_enabled(s, ix)) {
-            ot_alert_fsm_update(s, ix, false);
-        } else if (state == STATE_TIMEOUT && !irq_active) {
-            if (timer_pending(&s->schedulers[ix].timer)) {
-                trace_ot_alert_cancel_timeout(s->ot_id, ACLASS(ix));
-                timer_del(&s->schedulers[ix].timer);
+            ot_alert_fsm_update(s, ix, false, false);
+        } else if (state == STATE_TIMEOUT) {
+            if (!irq_active) {
+                if (timer_pending(&s->schedulers[ix].timer)) {
+                    trace_ot_alert_cancel_timeout(s->ot_id, ACLASS(ix));
+                    timer_del(&s->schedulers[ix].timer);
+                }
+                ot_alert_set_class_state(s, ix, STATE_IDLE);
+            } else if (timeout == 0) {
+                if (timer_pending(&s->schedulers[ix].timer)) {
+                    timer_del(&s->schedulers[ix].timer);
+                }
+                ot_alert_enter_phase0(s, ix);
             }
-            ot_alert_set_class_state(s, ix, STATE_IDLE);
         }
     }
 }
@@ -727,17 +737,28 @@ static void ot_alert_clear_alert(OtAlertState *s, unsigned nclass)
         return;
     }
 
-    OtAlertScheduler *atimer = &s->schedulers[nclass];
-    timer_del(&atimer->timer);
-    atimer->esc_tx_release_mask = 0;
-
     /*
      * "Software can clear CLASSn_ACCUM_CNT with a write to CLASSA_CLR_SHADOWED"
      */
     DVAL(aclass->accum_cnt) = 0;
     s->crashdump_latched &= ~(1u << nclass);
+
+    /*
+     * In RTL (alert_handler_esc_timer.sv:168-184, 311-317 CheckClr_A), clr_i
+     * only transitions Phase0..Phase3 and Terminal back to IdleSt; it does NOT
+     * exit TimeoutSt while timeout_en_i (irq[nclass]) is active.
+     */
+    if (state == STATE_IDLE || state == STATE_TIMEOUT) {
+        return;
+    }
+
+    OtAlertScheduler *atimer = &s->schedulers[nclass];
+    timer_del(&atimer->timer);
+    atimer->esc_tx_release_mask = 0;
+
     ot_alert_set_class_state(s, nclass, STATE_IDLE);
     ot_alert_update_escalation_outputs(s);
+    ot_alert_update_irqs(s);
 }
 
 static void ot_alert_configure_phase_cycles(OtAlertState *s, unsigned nclass)
@@ -778,13 +799,14 @@ static void ot_alert_enter_phase0(OtAlertState *s, unsigned nclass)
 }
 
 static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
-                                bool from_timer)
+                                bool from_timer, bool class_trig)
 {
     OtAlertAClass *aclass = &s->regs.classes[nclass];
     OtAlertAClassState state = DVAL(aclass->state);
 
-    bool accu_trig = DVAL(aclass->accum_cnt) >
-                     ot_shadow_reg_peek(&aclass->accum_thresh_shadowed);
+    bool accu_trig = class_trig &&
+                     (DVAL(aclass->accum_cnt) >
+                      ot_shadow_reg_peek(&aclass->accum_thresh_shadowed));
 
     trace_ot_alert_fsm_update(s->ot_id, ACLASS(nclass), ST_NAME(state),
                               from_timer, accu_trig);
@@ -858,7 +880,7 @@ static void ot_alert_timer_expire(void *opaque)
 
     trace_ot_alert_timer_expire(s->ot_id, ACLASS(scheduler->nclass));
 
-    ot_alert_fsm_update(s, scheduler->nclass, true);
+    ot_alert_fsm_update(s, scheduler->nclass, true, false);
 }
 
 static void ot_alert_release_esc_fn(void *opaque)
@@ -909,7 +931,7 @@ static void ot_alert_signal_tx(void *opaque, int n, int level)
             DVAL(aclass->accum_cnt) += 1u;
         }
 
-        ot_alert_fsm_update(s, nclass, false);
+        ot_alert_fsm_update(s, nclass, false, true);
     }
 
     ot_alert_update_irqs(s);
@@ -968,19 +990,20 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         return;
     }
 
+    bool was_staged = s->regs.shadow[reg].staged_p;
     (*s->access_table[reg].write)(s, reg, val32);
 
     if (s->access_table[reg].wpost & BIT(PWA_UPDATE_IRQ)) {
         ot_alert_update_irqs(s);
+        ot_alert_update_escalation_outputs(s);
     }
 
     if (s->access_table[reg].wpost & BIT(PWA_CLEAR_ALERT)) {
-        if (!s->regs.shadow[reg].staged_p &&
+        if (was_staged && !s->regs.shadow[reg].staged_p &&
             (ot_shadow_reg_peek(&s->regs.shadow[reg]) &
              CLASS_CLR_SHADOWED_EN_MASK)) {
             unsigned nclass = ot_alert_get_nclass_from_reg(s, reg);
             ot_alert_clear_alert(s, nclass);
-            ot_shadow_reg_init(&s->regs.shadow[reg], 0);
         }
     }
 };
@@ -1007,7 +1030,7 @@ static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
         if (DVAL(aclass->accum_cnt) < CLASS_ACCUM_CNT_MASK) {
             DVAL(aclass->accum_cnt) += 1u;
         }
-        ot_alert_fsm_update(s, nclass, false);
+        ot_alert_fsm_update(s, nclass, false, true);
     }
 
     ot_alert_update_irqs(s);
@@ -1047,7 +1070,7 @@ static void ot_alert_reg_ping_en_write(OtAlertState *s, unsigned reg,
                                        uint32_t val)
 {
     uint32_t prev = ot_shadow_reg_peek(&s->regs.shadow[reg]);
-    ot_alert_reg_shadow_write(s, reg, val);
+    ot_alert_reg_shadow_write(s, reg, val | prev);
     s->regs.shadow[reg].committed |= prev;
     ot_alert_check_ping_timer(s);
 }
@@ -1141,8 +1164,9 @@ static void ot_alert_fill_access_table(OtAlertState *s)
             R_ACC_M(direct_read, direct_rw0c_write, CLASS_REGWEN_EN_MASK);
 
         /* CLASS_CTRL_SHADOWED */
-        table[offset++] = R_ACC_MP(shadow_read, shadow_write,
-                                   CLASS_CTRL_SHADOWED_MASK, regwen);
+        table[offset++] =
+            R_ACC_MPA(shadow_read, shadow_write, CLASS_CTRL_SHADOWED_MASK,
+                      regwen, BIT(PWA_UPDATE_IRQ));
 
         /* CLASS_CLR_REGWEN */
         unsigned clr_regwen = offset;
@@ -1162,7 +1186,9 @@ static void ot_alert_fill_access_table(OtAlertState *s)
             R_ACC_MP(shadow_read, shadow_write, UINT16_MAX, regwen);
 
         /* CLASS_TIMEOUT_CYC_SHADOWED */
-        table[offset++] = R_ACC_P(shadow_read, shadow_write, regwen);
+        table[offset++] =
+            R_ACC_MPA(shadow_read, shadow_write, UINT32_MAX, regwen,
+                      BIT(PWA_UPDATE_IRQ));
 
         /* CLASS_CRASHDUMP_TRIGGER_SHADOWED */
         table[offset++] =
