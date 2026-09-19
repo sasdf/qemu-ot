@@ -129,10 +129,12 @@ struct OtAonTimerState {
     uint64_t wkup_origin_clks;
     uint64_t wdog_origin_clks;
     uint32_t prescale_count;
+    bool wkup_intr_level;
     bool wdog_bark_level;
     bool wdog_bite;
     bool lc_escalate_en;
     bool sleep_mode;
+    bool low_power_exit;
     uint32_t pclks[OT_AON_TIMER_CLOCK_SRC_COUNT];
     const char *clock_src_names[OT_AON_TIMER_CLOCK_SRC_COUNT];
 
@@ -216,6 +218,7 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s, int64_t now)
     s->wkup_origin_ns = now;
 
     if (!ot_aon_timer_is_wkup_enabled(s)) {
+        s->wkup_intr_level = false;
         s->wkup_origin_clks = now_clks;
         return;
     }
@@ -234,6 +237,7 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s, int64_t now)
         wkup_incrs = 0u;
         s->prescale_count =
             (s->prescale_count + (uint32_t)elapsed_clks) & 0xfffu;
+        s->wkup_intr_level = false;
     } else {
         uint64_t rem = elapsed_clks - first_incr_clks;
         uint32_t period = prescaler + 1u;
@@ -247,11 +251,18 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s, int64_t now)
         uint64_t new_count = old_count + wkup_incrs;
         uint64_t threshold = ((uint64_t)s->regs[R_WKUP_THOLD_HI] << 32u) |
                              (uint64_t)s->regs[R_WKUP_THOLD_LO];
+        bool was_continuous_high =
+            s->wkup_intr_level && (first_incr_clks == 1u) &&
+            (prescaler == 0u) && (old_count >= threshold);
 
         if ((new_count - 1u) >= threshold) {
-            s->regs[R_INTR_STATE] |= INTR_WKUP_TIMER_EXPIRED_MASK;
+            if (!was_continuous_high) {
+                s->regs[R_INTR_STATE] |= INTR_WKUP_TIMER_EXPIRED_MASK;
+            }
             s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
         }
+        s->wkup_intr_level =
+            (s->prescale_count == 0u) && ((new_count - 1u) >= threshold);
 
         s->regs[R_WKUP_COUNT_HI] = (uint32_t)(new_count >> 32u);
         s->regs[R_WKUP_COUNT_LO] = (uint32_t)new_count;
@@ -326,23 +337,30 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, int64_t now)
 
     /* if not enabled, ignore threshold */
     if (!ot_aon_timer_is_wkup_enabled(s)) {
+        s->wkup_intr_level = false;
         ot_aon_timer_update_irqs(s);
         return;
     }
 
-    bool intr_set = (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK);
+    uint64_t count = ((uint64_t)s->regs[R_WKUP_COUNT_HI] << 32u) |
+                     (uint64_t)s->regs[R_WKUP_COUNT_LO];
+    uint64_t threshold = ((uint64_t)s->regs[R_WKUP_THOLD_HI] << 32u) |
+                         (uint64_t)s->regs[R_WKUP_THOLD_LO];
+    uint32_t prescaler =
+        FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
+    if (count < threshold) {
+        s->wkup_intr_level = false;
+    }
+
+    bool intr_done =
+        (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) ||
+        (s->wkup_intr_level && prescaler == 0u && count >= threshold);
     bool cause_set = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
 
-    if (!intr_set || !cause_set) {
-        uint64_t count = ((uint64_t)s->regs[R_WKUP_COUNT_HI] << 32u) |
-                         (uint64_t)s->regs[R_WKUP_COUNT_LO];
-        uint64_t threshold = ((uint64_t)s->regs[R_WKUP_THOLD_HI] << 32u) |
-                             (uint64_t)s->regs[R_WKUP_THOLD_LO];
+    if (!intr_done || !cause_set) {
         uint64_t max_clks = muldiv64(INT64_MAX, ot_aon_timer_get_clk(s),
                                      NANOSECONDS_PER_SECOND);
         uint64_t rem_incrs = (count >= threshold) ? 0u : (threshold - count);
-        uint32_t prescaler =
-            FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
         uint64_t period = (uint64_t)prescaler + 1u;
         uint64_t first_incr_clks = ot_aon_timer_first_wkup_incr_clks(s);
         if (rem_incrs <= (max_clks / period)) {
@@ -462,6 +480,8 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     uint32_t val32;
 
+    s->low_power_exit = false;
+
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     ot_aon_timer_sync_wkup(s, now);
     ot_aon_timer_sync_wdog(s, now);
@@ -509,6 +529,8 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
     OtAonTimerState *s = opaque;
     (void)size;
     uint32_t val32 = (uint32_t)value;
+
+    s->low_power_exit = false;
 
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     ot_aon_timer_sync_wkup(s, now);
@@ -616,6 +638,9 @@ void ot_aon_timer_set_sleep_mode(OtAonTimerState *s, bool sleep_mode)
     ot_aon_timer_sync_wkup(s, now);
     ot_aon_timer_sync_wdog(s, now);
 
+    if (s->sleep_mode && !sleep_mode) {
+        s->low_power_exit = true;
+    }
     s->sleep_mode = sleep_mode;
     ot_aon_timer_rearm_wkup(s, now);
     ot_aon_timer_rearm_wdog(s, now);
@@ -637,20 +662,12 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
 
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     if (type != RESET_TYPE_COLD &&
-        ((s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) ||
-         (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK) ||
-         ot_aon_timer_is_wkup_enabled(s) ||
-         (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE)) &&
+        (s->sleep_mode || s->low_power_exit) &&
         !s->wdog_bite) {
         ot_aon_timer_sync_wkup(s, now);
         ot_aon_timer_sync_wdog(s, now);
         s->sleep_mode = false;
-        if (ot_aon_timer_is_wkup_enabled(s) &&
-            !(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK)) {
-            s->regs[R_WKUP_CAUSE] = R_WKUP_CAUSE_CAUSE_MASK;
-        }
-        s->regs[R_INTR_STATE] = 0;
-        s->regs[R_WDOG_REGWEN] = 1u;
+        s->low_power_exit = false;
         ot_aon_timer_rearm_wkup(s, now);
         ot_aon_timer_rearm_wdog(s, now);
     } else {
@@ -659,10 +676,12 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
         s->prescale_count = 0u;
         s->wkup_origin_clks = 0u;
         s->wdog_origin_clks = 0u;
+        s->wkup_intr_level = false;
         s->wdog_bark_level = false;
         s->wdog_bite = false;
         s->lc_escalate_en = false;
         s->sleep_mode = false;
+        s->low_power_exit = false;
     }
 
     ot_aon_timer_update_irqs(s);
