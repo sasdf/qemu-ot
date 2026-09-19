@@ -1733,7 +1733,10 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_CTRL:
     case R_RESEED_INTERVAL:
     case R_SW_CMD_STS:
+    case R_INT_STATE_READ_ENABLE:
+    case R_INT_STATE_READ_ENABLE_REGWEN:
     case R_INT_STATE_NUM:
+    case R_FIPS_FORCE:
     case R_HW_EXC_STS:
     case R_RECOV_ALERT_STS:
     case R_ERR_CODE:
