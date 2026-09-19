@@ -1492,6 +1492,71 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static inline uint32_t ot_aes_byte_mask(hwaddr addr, unsigned size)
+{
+    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
+    return (mask << (addr & 3u)) & 0xfu;
+}
+
+static uint32_t ot_aes_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_ALERT_TEST:
+    case R_CTRL_AUX_SHADOWED:
+    case R_CTRL_AUX_REGWEN:
+    case R_TRIGGER:
+    case R_STATUS:
+        return 0x1u;
+    case R_CTRL_SHADOWED:
+        return 0x3u;
+    case R_KEY_SHARE0_0 ... R_DATA_OUT_3:
+        return 0xfu;
+    default:
+        return 0u;
+    }
+}
+
+static MemTxResult ot_aes_read_with_attrs(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        *data = 0xffffffffu;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t val32 = (uint32_t)ot_aes_read(opaque, addr & ~3ull, 4u);
+    val32 >>= (addr & 3u) * 8u;
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_aes_write_with_attrs(void *opaque, hwaddr addr,
+                                           uint64_t val64, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t be = ot_aes_byte_mask(addr, size);
+    uint32_t permit = ot_aes_reg_permit(reg);
+    if ((permit & ~be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mask =
+        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
+    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
+    ot_aes_write(opaque, addr & ~3ull, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const Property ot_aes_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtAESState, ot_id),
     DEFINE_PROP_STRING("clock-name", OtAESState, clock_name),
@@ -1508,11 +1573,13 @@ static const Property ot_aes_properties[] = {
 };
 
 static const MemoryRegionOps ot_aes_regs_ops = {
-    .read = &ot_aes_read,
-    .write = &ot_aes_write,
+    .read_with_attrs = &ot_aes_read_with_attrs,
+    .write_with_attrs = &ot_aes_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_aes_reset_enter(Object *obj, ResetType type)
