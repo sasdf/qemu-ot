@@ -882,8 +882,6 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_OWNER_SEED_SW_RW_EN,
                              FLASH_CTRL, OT_LC_BROADCAST,
                              OT_FLASH_LC_OWNER_SEED_SW_RW_EN),
-            OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_SEED_HW_RD_EN, FLASH_CTRL,
-                             OT_LC_BROADCAST, OT_FLASH_LC_SEED_HW_RD_EN),
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_ISO_PART_SW_RD_EN,
                              FLASH_CTRL, OT_LC_BROADCAST,
                              OT_FLASH_LC_ISO_PART_SW_RD_EN),
@@ -925,7 +923,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_SYSBUS_IRQ(3, PLIC, 130),
             OT_EG_SOC_GPIO_ESCALATE(0, IBEX_WRAPPER, 0),
             OT_EG_SOC_GPIO_ESCALATE(1, LC_CTRL, 0),
-            OT_EG_SOC_GPIO_ESCALATE(1, LC_CTRL, 1),
+            OT_EG_SOC_GPIO_ESCALATE(2, LC_CTRL, 1),
             OT_EG_SOC_GPIO_ESCALATE(3, PWRMGR, 0)
         ),
         .link = IBEXDEVICELINKDEFS(
