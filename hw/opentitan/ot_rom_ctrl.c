@@ -149,6 +149,7 @@ struct OtRomCtrlState {
     SysBusDevice parent_obj;
 
     MemoryRegion mem;
+    MemoryRegion digest_io;
     MemoryRegion mmio;
     IbexIRQ pwrmgr_good;
     IbexIRQ pwrmgr_done;
@@ -1150,6 +1151,59 @@ static const Property ot_rom_ctrl_properties[] = {
     DEFINE_PROP_BOOL("corrupt-digest", OtRomCtrlState, corrupt_digest, false),
 };
 
+static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,
+                                            unsigned size)
+{
+    OtRomCtrlState *s = opaque;
+    hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
+    const uint8_t *rom_ptr = (const uint8_t *)memory_region_get_ram_ptr(&s->mem);
+    uint64_t val = 0;
+
+    if ((rom_offset + size) <= s->size) {
+        val = (uint64_t)ldn_le_p(&rom_ptr[rom_offset], (int)size);
+    }
+    if (!s->first_reset) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(s);
+        hwaddr mem_off = (sbd->mmio[1].addr - sbd->mmio[0].addr) + rom_offset;
+        ot_common_raise_load_integrity_error(DEVICE(s), mem_off);
+    }
+
+    return val;
+}
+
+static void ot_rom_ctrl_digest_mem_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size)
+{
+    OtRomCtrlState *s = opaque;
+    hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
+
+    ot_rom_ctrl_mem_write(s, rom_offset, value, size);
+}
+
+static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
+                                           unsigned size, bool is_write,
+                                           MemTxAttrs attrs)
+{
+    OtRomCtrlState *s = opaque;
+    hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
+
+    if (!is_write && !s->first_reset) {
+        return (rom_offset + size) <= s->size &&
+               s->unrecoverable_error_count == 0u;
+    }
+
+    return ot_rom_ctrl_mem_accepts(s, rom_offset, size, is_write, attrs);
+}
+
+static const MemoryRegionOps ot_rom_ctrl_digest_mem_ops = {
+    .read = &ot_rom_ctrl_digest_mem_read,
+    .write = &ot_rom_ctrl_digest_mem_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
+    .valid.accepts = &ot_rom_ctrl_digest_mem_accepts,
+};
+
 static const MemoryRegionOps ot_rom_ctrl_mem_ops = {
     .write = &ot_rom_ctrl_mem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
@@ -1245,6 +1299,11 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
                                             &ot_rom_ctrl_mem_ops, s,
                                             TYPE_OT_ROM_CTRL ".mem", s->size,
                                             errp);
+    memory_region_init_io(&s->digest_io, OBJECT(dev),
+                          &ot_rom_ctrl_digest_mem_ops, s,
+                          TYPE_OT_ROM_CTRL ".digest_io", OT_ROM_DIGEST_BYTES);
+    memory_region_add_subregion_overlap(
+        &s->mem, s->size - OT_ROM_DIGEST_BYTES, &s->digest_io, 1);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mem);
 
     /*
