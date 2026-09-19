@@ -119,6 +119,9 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #define FILTER_CTL_MAX_V_SHIFT 18u
 #define FILTER_CTL_MAX_V_MASK  0x3ffu
 #define FILTER_CTL_EN_MASK     (1u << 31u)
+#define FILTER_CTL_REG_MASK    0x8ffc1ffcu
+#define ADC_PD_CTL_MASK        0xfffffff1u
+#define FSM_STATE_NP_0         12u
 
 #define CHN_VAL_VALUE_SHIFT      2u
 #define CHN_VAL_INTR_VALUE_SHIFT 18u
@@ -139,6 +142,7 @@ struct OtAdcCtrlState {
     IbexIRQ wkup;
 
     uint32_t *regs;
+    bool trigger_q;
 };
 
 struct OtAdcCtrlClass {
@@ -191,7 +195,8 @@ static uint32_t ot_adc_ctrl_eval_sample(uint32_t filter_ctl)
 
 void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
 {
-    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK)) {
+    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
+        (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
         return;
     }
 
@@ -233,6 +238,39 @@ void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
     }
 
     ot_adc_ctrl_update_irqs(s);
+}
+
+static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
+{
+    if (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK) {
+        s->trigger_q = false;
+        s->regs[R_ADC_FSM_STATE] = 0u;
+        return;
+    }
+
+    bool adc_en = (s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) != 0u;
+    bool oneshot =
+        (s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ONESHOT_MODE_MASK) != 0u;
+    bool trigger_l2h = !s->trigger_q && adc_en;
+    s->trigger_q = adc_en;
+
+    if (!adc_en) {
+        s->regs[R_ADC_FSM_STATE] = 0u;
+        return;
+    }
+
+    if (oneshot) {
+        if (trigger_l2h) {
+            if (s->regs[R_ADC_INTR_CTL] & (1u << ADC_INTR_ONESHOT_BIT)) {
+                s->regs[R_ADC_INTR_STATUS] |= (1u << ADC_INTR_ONESHOT_BIT);
+            }
+            s->regs[R_ADC_FSM_STATE] = 0u;
+            ot_adc_ctrl_update_irqs(s);
+        }
+    } else {
+        s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
+        ot_adc_ctrl_trigger_wakeup(s);
+    }
 }
 
 static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -320,16 +358,10 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_ADC_EN_CTL:
         s->regs[R_ADC_EN_CTL] = val32 & 0x3u;
-        if ((val32 & R_ADC_EN_CTL_ADC_ENABLE_MASK) &&
-            (val32 & R_ADC_EN_CTL_ONESHOT_MODE_MASK)) {
-            if (s->regs[R_ADC_INTR_CTL] & (1u << ADC_INTR_ONESHOT_BIT)) {
-                s->regs[R_ADC_INTR_STATUS] |= (1u << ADC_INTR_ONESHOT_BIT);
-            }
-            ot_adc_ctrl_update_irqs(s);
-        }
+        ot_adc_ctrl_update_fsm(s);
         break;
     case R_ADC_PD_CTL:
-        s->regs[R_ADC_PD_CTL] = val32;
+        s->regs[R_ADC_PD_CTL] = val32 & ADC_PD_CTL_MASK;
         break;
     case R_ADC_LP_SAMPLE_CTL:
         s->regs[R_ADC_LP_SAMPLE_CTL] = val32 & 0xffu;
@@ -339,13 +371,15 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_ADC_FSM_RST:
         s->regs[R_ADC_FSM_RST] = val32 & 0x1u;
-        if (val32 & 0x1u) {
-            s->regs[R_ADC_FSM_STATE] = 0u;
-        }
+        ot_adc_ctrl_update_fsm(s);
         break;
     case R_ADC_CHN0_FILTER_CTL_0 ... R_ADC_CHN0_FILTER_CTL_7:
     case R_ADC_CHN1_FILTER_CTL_0 ... R_ADC_CHN1_FILTER_CTL_7:
-        s->regs[reg] = val32;
+        s->regs[reg] = val32 & FILTER_CTL_REG_MASK;
+        if ((s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) &&
+            !(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ONESHOT_MODE_MASK)) {
+            ot_adc_ctrl_update_fsm(s);
+        }
         break;
     case R_ADC_WAKEUP_CTL:
         s->regs[R_ADC_WAKEUP_CTL] = val32 & WAKEUP_CTL_MASK;
@@ -407,6 +441,7 @@ static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs, 0, REGS_SIZE);
+    s->trigger_q = false;
     s->regs[R_ADC_PD_CTL] = 0x64070u;
     s->regs[R_ADC_LP_SAMPLE_CTL] = 0x4u;
     s->regs[R_ADC_SAMPLE_CTL] = 0x9bu;
