@@ -617,12 +617,16 @@ struct OtUsbdevState {
     bool vbus_override;
     /* VBUS gate: meaning depends on the vbus_override mode */
     bool vbus_gate;
+    /* PINMUX MioInUsbdevSense (56): 0=ConstantZero, 1=ConstantOne, -1=pad */
+    int pinmux_vbus_sense;
     /* AON wake latched pullup and event states (u_usbdev_aon_wake / u_wake_events_cdc) */
     bool aon_dppullup_en;
     bool aon_dnpullup_en;
     uint32_t aon_wake_events;
     uint32_t aon_cdc_dst_qs;
 };
+
+static OtUsbdevState *ot_usbdev_instance;
 
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
@@ -768,7 +772,7 @@ static void ot_usbdev_update_alerts(OtUsbdevState *s)
  *
  * @return true if enabled (USBCTRL.ENABLE is set).
  */
-bool ot_usbdev_is_enabled(const OtUsbdevState *s)
+static bool ot_usbdev_is_enabled(const OtUsbdevState *s)
 {
     /*
      * Note: this works even if the device is in reset because
@@ -820,12 +824,21 @@ static void ot_usbdev_get_pullups(const OtUsbdevState *s, bool *dp_pullup,
 
 static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
 {
+    bool dp_pullup;
+    bool dn_pullup;
+    ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
+    bool line_not_se0 = dp_pullup || dn_pullup;
+
     bool pinflip = (bool)FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, PINFLIP);
     uint32_t tx_dp_i = pinflip ? 0u : 1u;
     uint32_t tx_dn_i = pinflip ? 1u : 0u;
     uint32_t tx_d_i = pinflip ? 0u : 1u;
     uint32_t tx_se0_i = 0u;
-    uint32_t tx_oe_i = 0u;
+    uint32_t tx_oe_i =
+        (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, TX_OSC_TEST_MODE) &&
+         line_not_se0 && !timer_pending(&s->bus_reset_timer)) ?
+            1u :
+            0u;
 
     uint32_t usb_tx_oe_o = tx_oe_i;
     if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
@@ -848,9 +861,6 @@ static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
             rx_dn = FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O);
         }
     } else {
-        bool dp_pullup;
-        bool dn_pullup;
-        ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
         rx_dp = dp_pullup ? 1u : 0u;
         rx_dn = dn_pullup ? 1u : 0u;
     }
@@ -1123,12 +1133,21 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
 
     /*
      * In VBUS override mode, VBUS sense is directly equal to
-     * the VBUS gate. Otherwise, it is the AND between the gate
+     * the VBUS gate. Otherwise, it is driven by PINMUX MioInUsbdevSense
+     * (when set to ConstantOne/ConstantZero) or the AND between the gate
      * and the host VBUS control.
      */
-    bool vbus_sense = s->vbus_gate;
-    if (!s->vbus_override) {
-        vbus_sense = vbus_sense && s->usb_server.vbus_connected;
+    bool vbus_sense;
+    if (s->pinmux_vbus_sense == 1) {
+        vbus_sense = true;
+    } else if (s->pinmux_vbus_sense == 0 && !s->usb_server.vbus_connected &&
+               !s->vbus_override) {
+        vbus_sense = false;
+    } else {
+        vbus_sense = s->vbus_gate;
+        if (!s->vbus_override) {
+            vbus_sense = vbus_sense && s->usb_server.vbus_connected;
+        }
     }
 
     bool old_vbus_sense = (bool)FIELD_EX32(s->regs[R_USBSTAT], USBSTAT, SENSE);
@@ -1167,16 +1186,18 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
             s->aon_cdc_dst_qs = s->aon_wake_events;
             ibex_irq_set(&s->wkup, 1);
         }
-        ot_fifo32_reset(&s->rx_fifo);
-        fifo8_reset(&s->av_setup_fifo);
-        fifo8_reset(&s->av_out_fifo);
         ot_usbdev_update_fifos_status(s);
         /* See BFM (bus_disconnect) */
         if (ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED) {
             ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_DISCONNECTED);
             s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_DISCONNECTED_MASK;
-            s->regs[R_USBCTRL] =
-                FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
+            bool dp_pullup;
+            bool dn_pullup;
+            ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
+            if (!ot_usbdev_is_enabled(s) || (!dp_pullup && !dn_pullup)) {
+                s->regs[R_USBCTRL] =
+                    FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
+            }
 
             ot_usbdev_cancel_all_transfers(s, "VBUS was disconnected");
             /* If there is no host then any SOF or reset signalling stops. */
@@ -1187,6 +1208,18 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
     }
 
     ot_usbdev_update_irqs(s);
+}
+
+void ot_usbdev_set_pinmux_sense(int level)
+{
+    OtUsbdevState *s = ot_usbdev_instance;
+    if (!s) {
+        return;
+    }
+    if (s->pinmux_vbus_sense != level) {
+        s->pinmux_vbus_sense = level;
+        ot_usbdev_update_vbus(s);
+    }
 }
 
 /*
@@ -1895,10 +1928,12 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     if ((val32 & R_USBCTRL_RESUME_LINK_ACTIVE_MASK) && enable &&
         ot_usbdev_has_vbus(s) &&
         ot_usbdev_get_link_state(s) == OT_USBDEV_LINK_STATE_POWERED) {
-        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE);
+        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE_NOSOF);
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
-        int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
-        timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
+        if (s->usb_server.vbus_connected) {
+            int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
+            timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
+        }
     }
 
     ot_usbdev_update_fifos_status(s);
@@ -3276,6 +3311,7 @@ static void ot_usbdev_realize(DeviceState *dev, Error **errp)
     if (!s->vbus_override) {
         s->vbus_gate = true;
     }
+    ot_usbdev_instance = s;
 }
 
 static void ot_usbdev_init(Object *obj)
@@ -3283,6 +3319,7 @@ static void ot_usbdev_init(Object *obj)
     OtUsbdevState *s = OT_USBDEV(obj);
 
     s->pclk = 1u;
+    s->pinmux_vbus_sense = -1;
     for (unsigned idx = 0u; idx < ARRAY_SIZE(s->irqs); idx++) {
         ibex_sysbus_init_irq(obj, &s->irqs[idx]);
     }

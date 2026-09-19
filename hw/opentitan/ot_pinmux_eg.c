@@ -33,6 +33,7 @@
 #include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_gpio_eg.h"
+#include "hw/opentitan/ot_usbdev.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sysrst_ctrl.h"
@@ -560,6 +561,14 @@ void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
                  (int)((s->pad_in_level >> 14u) & 1u));
     ibex_irq_set(&s->sysrst_inputs[OT_SYSRST_CTRL_IN_FLASH_WP_L],
                  (int)((s->pad_in_level >> 15u) & 1u));
+    uint32_t usb_sel = s->regs->mio_periph_insel[56u];
+    int usb_sense = -1;
+    if (usb_sel == 0u) {
+        usb_sense = 0;
+    } else if (usb_sel == 1u) {
+        usb_sense = 1;
+    }
+    ot_usbdev_set_pinmux_sense(usb_sense);
     ot_pinmux_eg_eval_wkup_detectors(s);
 }
 
