@@ -1799,10 +1799,10 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         if (ifreq == LC_IF_DMI && s->state != ST_IDLE &&
             s->state != ST_POST_TRANS) {
             for (unsigned step = 0;
-                 step < 250u && s->state != ST_IDLE &&
+                 step < 300u && s->state != ST_IDLE &&
                  s->state != ST_POST_TRANS;
                  step++) {
-                g_usleep(120);
+                g_usleep(150);
                 qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
                 qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
                 aio_bh_poll(qemu_get_aio_context());

@@ -1617,13 +1617,9 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
                         riscv_dm_halt_hart(dm, hix);
                     }
                 }
-                if (hart->halted ||
-                    !((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
-                      ((dm->haltreq_bm | dm->resethaltreq_bm) & mask))) {
-                    trace_riscv_dm_status(dm->soc, cs->cpu_index,
-                                          "became available");
-                    dm->unavailable_bm &= ~mask;
-                }
+                trace_riscv_dm_status(dm->soc, cs->cpu_index,
+                                      "became available");
+                dm->unavailable_bm &= ~mask;
             }
             if (hart->resuming ||
                 (!hart->halted &&
@@ -1640,8 +1636,10 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
         if (!pending) {
             break;
         }
+        replay_mutex_unlock();
         bql_unlock();
         g_usleep(50);
+        replay_mutex_lock();
         bql_lock();
     }
 }
