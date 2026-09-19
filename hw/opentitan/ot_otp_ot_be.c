@@ -139,6 +139,26 @@ static const OtOtpBeCharacteristics OTP_BE_CHARACTERISTICS = {
     },
 };
 
+static uint8_t ot_otp_ot_be_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_CSR2:
+        return 0x1u;
+    case R_CSR4:
+    case R_CSR7:
+        return 0x3u;
+    case R_CSR3:
+        return 0x7u;
+    case R_CSR0:
+    case R_CSR1:
+    case R_CSR5:
+    case R_CSR6:
+        return 0xfu;
+    default:
+        return 0x0u;
+    }
+}
+
 static MemTxResult ot_otp_ot_be_read_with_attrs(void *opaque, hwaddr addr,
                                                 uint64_t *data, unsigned size,
                                                 MemTxAttrs attrs)
@@ -167,13 +187,13 @@ static MemTxResult ot_otp_ot_be_read_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
+        return MEMTX_DECODE_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otp_ot_be_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    *data = (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
     return MEMTX_OK;
 }
 
@@ -200,15 +220,30 @@ static MemTxResult ot_otp_ot_be_write_with_attrs(void *opaque, hwaddr addr,
                                                  MemTxAttrs attrs)
 {
     OtOtpOtBeState *s = opaque;
-    (void)size;
     (void)attrs;
-    uint32_t val32 = (uint32_t)value;
 
     if (!s->lc_dft_en) {
         return MEMTX_ERROR;
     }
 
     hwaddr reg = R32_OFF(addr);
+    uint8_t permit = ot_otp_ot_be_reg_permit(reg);
+    if (permit == 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint32_t byte_offset = (uint32_t)(addr & 3u);
+    uint32_t byte_mask = ((1u << size) - 1u) << byte_offset;
+    if ((permit & ~byte_mask) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: sub-word write not permitted at 0x%02x (size %u)\n",
+                      __func__, (uint32_t)addr, size);
+        return MEMTX_ERROR;
+    }
+
+    uint32_t val32 = (uint32_t)value << (byte_offset * 8u);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otp_ot_be_write((uint32_t)addr, REG_NAME(reg), val32, pc);
@@ -242,7 +277,7 @@ static MemTxResult ot_otp_ot_be_write_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
+        return MEMTX_DECODE_ERROR;
     }
 
     return MEMTX_OK;
@@ -286,8 +321,10 @@ static const MemoryRegionOps ot_otp_ot_be_ops = {
     .read_with_attrs = &ot_otp_ot_be_read_with_attrs,
     .write_with_attrs = &ot_otp_ot_be_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
 };
 
 static void ot_otp_ot_be_reset_enter(Object *obj, ResetType type)

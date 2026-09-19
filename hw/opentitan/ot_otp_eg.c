@@ -506,11 +506,46 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
     return status;
 }
 
-static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
+static uint8_t ot_otp_eg_core_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_INTR_STATE:
+    case R_INTR_ENABLE:
+    case R_INTR_TEST:
+    case R_ALERT_TEST:
+    case R_ERR_CODE_0 ... R_ERR_CODE_12:
+    case R_DIRECT_ACCESS_REGWEN:
+    case R_DIRECT_ACCESS_CMD:
+    case R_CHECK_TRIGGER_REGWEN:
+    case R_CHECK_TRIGGER:
+    case R_CHECK_REGWEN:
+    case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK:
+        return 0x1u;
+    case R_DIRECT_ACCESS_ADDRESS:
+        return 0x3u;
+    case R_STATUS:
+        return 0x7u;
+    case R_DIRECT_ACCESS_WDATA_0:
+    case R_DIRECT_ACCESS_WDATA_1:
+    case R_DIRECT_ACCESS_RDATA_0:
+    case R_DIRECT_ACCESS_RDATA_1:
+    case R_CHECK_TIMEOUT:
+    case R_INTEGRITY_CHECK_PERIOD:
+    case R_CONSISTENCY_CHECK_PERIOD:
+    case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
+        return 0xfu;
+    default:
+        return 0x0u;
+    }
+}
+
+static MemTxResult ot_otp_eg_reg_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -568,26 +603,43 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        val32 = 0;
-        break;
+        *data = 0ull;
+        return MEMTX_DECODE_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otp_io_reg_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                  pc);
 
-    return (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
-                                unsigned size)
+static MemTxResult ot_otp_eg_reg_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
 {
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
-    (void)size;
-    uint32_t val32 = (uint32_t)value;
+    (void)attrs;
 
     hwaddr reg = R32_OFF(addr);
+    uint8_t permit = ot_otp_eg_core_reg_permit(reg);
+    if (permit == 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint32_t byte_offset = (uint32_t)(addr & 3u);
+    uint32_t byte_mask = ((1u << size) - 1u) << byte_offset;
+    if ((permit & ~byte_mask) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: sub-word write not permitted at 0x%03x (size %u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_ERROR;
+    }
+
+    uint32_t val32 = (uint32_t)value << (byte_offset * 8u);
 
     uint32_t pc = ibex_get_current_pc();
 
@@ -607,7 +659,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_DIRECT_ACCESS_REGWEN),
                           REG_NAME(reg));
-            return;
+            return MEMTX_OK;
         }
         break;
     case R_CHECK_TRIGGER:
@@ -617,7 +669,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_CHECK_TRIGGER_REGWEN),
                           REG_NAME(reg));
-            return;
+            return MEMTX_OK;
         }
         break;
     case R_CHECK_TIMEOUT:
@@ -628,7 +680,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_CHECK_REGWEN),
                           REG_NAME(reg));
-            return;
+            return MEMTX_OK;
         }
         break;
     case R_STATUS:
@@ -638,7 +690,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%03x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
-        return;
+        return MEMTX_OK;
     default:
         break;
     }
@@ -711,8 +763,10 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        break;
+        return MEMTX_DECODE_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static const char *ot_otp_eg_swcfg_reg_name(unsigned swreg)
@@ -1107,11 +1161,13 @@ static void ot_otp_eg_signal_pwr_sequence(OtOTPImplIf *dev)
 }
 
 static const MemoryRegionOps ot_otp_eg_reg_ops = {
-    .read = &ot_otp_eg_reg_read,
-    .write = &ot_otp_eg_reg_write,
+    .read_with_attrs = &ot_otp_eg_reg_read_with_attrs,
+    .write_with_attrs = &ot_otp_eg_reg_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_otp_eg_swcfg_ops = {
