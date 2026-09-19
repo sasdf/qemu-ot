@@ -172,6 +172,7 @@ struct OtOTBNState {
     uint32_t intr_test;
     uint32_t alert_test;
     uint32_t errbits;
+    uint32_t fatal_alert_cause;
     uint32_t load_checksum;
 
     enum OtOTBNCommand last_cmd;
@@ -268,6 +269,7 @@ static void ot_otbn_post_execute(void *opaque)
     OtOTBNState *s = OT_OTBN(opaque);
 
     s->errbits = ot_otbn_proxy_get_err_bits(s->proxy);
+    s->fatal_alert_cause |= (s->errbits >> 16u);
     uint32_t insncount = ot_otbn_proxy_get_instruction_count(s->proxy);
     trace_ot_otbn_post_execute(s->ot_id, s->errbits, insncount);
     s->intr_state |= INTR_DONE_MASK;
@@ -318,6 +320,12 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
     s->last_cmd = OT_OTBN_CMD_NONE;
 
     trace_ot_otbn_proxy_completion_bh(s->ot_id, last_cmd);
+
+    if (ot_otbn_is_locked(s)) {
+        timer_del(s->proxy_defer);
+        ot_otbn_post_execute(s);
+        return;
+    }
 
     switch (last_cmd) {
     case OT_OTBN_CMD_EXECUTE:
@@ -601,7 +609,8 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_otbn_proxy_get_err_bits(s->proxy);
         break;
     case R_FATAL_ALERT_CAUSE:
-        val32 = s->errbits >> 16u;
+        s->fatal_alert_cause |= (ot_otbn_proxy_get_err_bits(s->proxy) >> 16u);
+        val32 = s->fatal_alert_cause;
         break;
     case R_INSN_CNT:
         val32 = ot_otbn_proxy_get_instruction_count(s->proxy);
@@ -641,10 +650,7 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otbn_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    if (ot_otbn_is_locked(s)) {
-        trace_ot_otbn_deny(s->ot_id, pc, "write denied: locked");
-        return;
-    }
+
 
     switch (reg) {
     case R_INTR_STATE:
@@ -668,18 +674,34 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_otbn_update_alert(s);
         break;
     case R_CMD:
+        if (!ot_otbn_is_idle(s)) {
+            trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
+            break;
+        }
         val32 &= R_CMD_CMD_MASK;
         ot_otbn_handle_command(s, (unsigned)val32);
         break;
     case R_CTRL:
+        if (!ot_otbn_is_idle(s)) {
+            trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
+            break;
+        }
         val32 &= R_CTRL_SW_ERRS_FATAL_MASK;
         ot_otbn_proxy_set_ctrl(s->proxy, (bool)val32);
         ot_otbn_update_alert(s);
         break;
     case R_ERR_BITS:
+        if (!ot_otbn_is_idle(s) && !ot_otbn_is_locked(s)) {
+            trace_ot_otbn_deny(s->ot_id, pc, "write denied: busy");
+            break;
+        }
         ot_otbn_proxy_set_err_bits(s->proxy, val32);
         break;
     case R_INSN_CNT:
+        if (!ot_otbn_is_idle(s) && !ot_otbn_is_locked(s)) {
+            trace_ot_otbn_deny(s->ot_id, pc, "write denied: busy");
+            break;
+        }
         ot_otbn_proxy_set_instruction_count(s->proxy, val32);
         break;
     case R_LOAD_CHECKSUM:
@@ -718,6 +740,11 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
         hwaddr offset = (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
     }
+    if (ot_otbn_is_locked(s)) {
+        s->last_cmd = OT_OTBN_CMD_NONE;
+        timer_del(s->proxy_defer);
+        ot_otbn_post_execute(s);
+    }
     return value;
 }
 
@@ -729,6 +756,11 @@ static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
                             written ? "" : " FAILED");
     if (written) {
         ot_otbn_update_checksum(s, doi, addr, value);
+    }
+    if (ot_otbn_is_locked(s)) {
+        s->last_cmd = OT_OTBN_CMD_NONE;
+        timer_del(s->proxy_defer);
+        ot_otbn_post_execute(s);
     }
 }
 
@@ -823,6 +855,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
     s->intr_test = 0;
     s->alert_test = 0;
     s->errbits = 0;
+    s->fatal_alert_cause = 0;
     s->load_checksum = 0;
 
     s->last_cmd = OT_OTBN_CMD_NONE;

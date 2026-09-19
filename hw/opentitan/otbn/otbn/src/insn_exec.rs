@@ -86,6 +86,7 @@ pub struct HartState {
     /// Track state changes (debug)
     pub updated: StateTracker,
     pub track_state: bool,
+    pub x1_read: bool,
 }
 
 impl HartState {
@@ -98,6 +99,7 @@ impl HartState {
             hwstack: Vec::with_capacity(8),
             updated: StateTracker::default(),
             track_state: false,
+            x1_read: false,
             csr_set: csrs::CSRSet::new(urnd, rnd, key),
         }
     }
@@ -126,8 +128,9 @@ impl HartState {
         if reg_index == 0 {
             Ok(0)
         } else if reg_index == 1 {
-            match self.hwstack.pop() {
-                Some(x) => {
+            self.x1_read = true;
+            match self.hwstack.last() {
+                Some(&x) => {
                     self.registers[reg_index] = x;
                     Ok(x)
                 }
@@ -578,6 +581,7 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
     /// [InstructionTrap] is returned when the instruction execution causes a trap.
     pub fn step(&mut self) -> Result<(), InstructionTrap> {
         if self.hart_state.track_state { self.hart_state.updated.clear(); }
+        self.hart_state.x1_read = false;
 
         if let Some(next_insn) = self.imem.read_mem(self.hart_state.pc) {
             if !self.imem.is_valid(self.hart_state.pc) {
@@ -592,6 +596,9 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
 
             match step_result {
                 Some(Ok(pc_updated)) => {
+                    if self.hart_state.x1_read {
+                        self.hart_state.hwstack.pop();
+                    }
                     if !pc_updated {
                         let lstack = &mut self.hart_state.loopstack;
                         let loopdepth = lstack.len();
@@ -842,6 +849,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     make_store_op_fn! {sw}
 
     fn process_jal(&mut self, dec_insn: insn_format::JType) -> Self::InstructionResult {
+        let lstack = &self.hart_state.loopstack;
+        if let Some(hwloop) = lstack.last() {
+            if self.hart_state.pc == hwloop.end {
+                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
+            }
+        }
         let target_pc = self.hart_state.pc.wrapping_add(dec_insn.imm as u32);
         self.hart_state
             .write_register(dec_insn.rd, self.hart_state.pc + 4)?;
@@ -850,6 +863,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     }
 
     fn process_jalr(&mut self, dec_insn: insn_format::IType) -> Self::InstructionResult {
+        let lstack = &self.hart_state.loopstack;
+        if let Some(hwloop) = lstack.last() {
+            if self.hart_state.pc == hwloop.end {
+                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
+            }
+        }
         let target_pc = self
             .hart_state
             .read_register(dec_insn.rs1)?
@@ -904,16 +923,22 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
             start: self.hart_state.pc + 4, // next instruction
             end: self.hart_state.pc + bodysize * 4,
         };
-        if self.hart_state.loopstack.len() == self.hart_state.loopstack.capacity() {
+        let lstack = &mut self.hart_state.loopstack;
+        if lstack.len() == lstack.capacity() {
             // to be handled properly
             return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
         }
         if hwloop.count == 0 {
             return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
         }
+        if let Some(hwloop) = lstack.last() {
+            if self.hart_state.pc == hwloop.end {
+                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
+            }
+        }
         // need to check this instruction is not a last instruction in an existing loop
-        self.hart_state.loopstack.push(hwloop);
-        self.hart_state.updated.loophead = Some((self.hart_state.loopstack.len(), hwloop.count));
+        lstack.push(hwloop);
+        self.hart_state.updated.loophead = Some((lstack.len(), hwloop.count));
         Ok(false)
     }
 
@@ -1200,7 +1225,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let modv = self.hart_state.csr_set.get_mod();
 
         let (mut res, over) = a.overflowing_add(b);
-        if over || res > modv {
+        if over || res >= modv {
             res = res.wrapping_sub(modv)
         }
 

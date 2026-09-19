@@ -196,6 +196,12 @@ impl Proxy {
                 self.registers
                     .fatal_bits
                     .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
+                self.registers
+                    .status
+                    .store(otbn::Status::Locked as u32, Ordering::Relaxed);
+                if let Some(ref mut cb) = self.on_complete {
+                    cb.signal();
+                }
                 return 0;
             }
         }
@@ -228,6 +234,12 @@ impl Proxy {
                 self.registers
                     .fatal_bits
                     .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
+                self.registers
+                    .status
+                    .store(otbn::Status::Locked as u32, Ordering::Relaxed);
+                if let Some(ref mut cb) = self.on_complete {
+                    cb.signal();
+                }
                 return false;
             }
         }
@@ -545,29 +557,38 @@ pub extern "C" fn ot_otbn_proxy_get_instruction_count(proxy: Option<&mut Proxy>)
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_instruction_count(proxy: Option<&mut Proxy>, value: u32) {
+pub extern "C" fn ot_otbn_proxy_set_instruction_count(proxy: Option<&mut Proxy>, _value: u32) {
     let proxy = proxy.unwrap();
-    if proxy.get_status() == otbn::Status::Idle {
+    let status = proxy.get_status();
+    if status == otbn::Status::Idle || status == otbn::Status::Locked {
         proxy
             .registers
             .insn_count
-            .store(value as usize, Ordering::Relaxed)
+            .store(0, Ordering::Relaxed)
     }
 }
 
 #[no_mangle]
 pub extern "C" fn ot_otbn_proxy_get_err_bits(proxy: Option<&mut Proxy>) -> u32 {
-    proxy.unwrap().registers.err_bits.load(Ordering::Relaxed)
+    let proxy = proxy.unwrap();
+    let err_bits = proxy.registers.err_bits.load(Ordering::Relaxed);
+    let fatal_bits = proxy.registers.fatal_bits.load(Ordering::Relaxed);
+    err_bits | fatal_bits
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_err_bits(proxy: Option<&mut Proxy>, value: u32) {
+pub extern "C" fn ot_otbn_proxy_set_err_bits(proxy: Option<&mut Proxy>, _value: u32) {
     let proxy = proxy.unwrap();
-    if proxy.get_status() == otbn::Status::Idle {
+    let status = proxy.get_status();
+    if status == otbn::Status::Idle || status == otbn::Status::Locked {
         proxy.registers.err_bits.store(
-            otbn::ErrBits::from_bits_truncate(value).bits(),
+            0,
             Ordering::Relaxed,
-        )
+        );
+        proxy.registers.fatal_bits.store(
+            0,
+            Ordering::Relaxed,
+        );
     }
 }
 
