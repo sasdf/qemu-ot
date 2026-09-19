@@ -854,6 +854,90 @@ static void ot_entropy_src_update_alerts(OtEntropySrcState *s)
     }
 }
 
+static bool ot_entropy_src_mb4_is_invalid(uint8_t mbbool)
+{
+    return mbbool != OT_MULTIBITBOOL4_TRUE && mbbool != OT_MULTIBITBOOL4_FALSE;
+}
+
+static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
+{
+    uint32_t alerts = 0u;
+
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_MODULE_ENABLE], MODULE_ENABLE,
+                       MODULE_ENABLE))) {
+        alerts |= R_RECOV_ALERT_STS_MODULE_ENABLE_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_CONF], CONF, FIPS_ENABLE))) {
+        alerts |= R_RECOV_ALERT_STS_FIPS_ENABLE_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_CONF], CONF, FIPS_FLAG))) {
+        alerts |= R_RECOV_ALERT_STS_FIPS_FLAG_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_CONF], CONF, RNG_FIPS))) {
+        alerts |= R_RECOV_ALERT_STS_RNG_FIPS_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_CONF], CONF, RNG_BIT_ENABLE))) {
+        alerts |= R_RECOV_ALERT_STS_RNG_BIT_ENABLE_FIELD_ALERT_MASK;
+    }
+    if (s->version < 3) {
+        if (ot_entropy_src_mb4_is_invalid(FIELD_EX32(
+                s->regs_hi[R_CONF], CONF, V2_ENTROPY_DATA_REG_ENABLE))) {
+            alerts |=
+                R_RECOV_ALERT_STS_ENTROPY_DATA_REG_ENABLE_FIELD_ALERT_MASK;
+        }
+        if (ot_entropy_src_mb4_is_invalid(
+                FIELD_EX32(s->regs_hi[R_CONF], CONF, V2_THRESHOLD_SCOPE))) {
+            alerts |= R_RECOV_ALERT_STS_THRESHOLD_SCOPE_FIELD_ALERT_MASK;
+        }
+    } else {
+        if (ot_entropy_src_mb4_is_invalid(FIELD_EX32(
+                s->regs_hi[R_CONF], CONF, V3_ENTROPY_DATA_REG_ENABLE))) {
+            alerts |=
+                R_RECOV_ALERT_STS_ENTROPY_DATA_REG_ENABLE_FIELD_ALERT_MASK;
+        }
+        if (ot_entropy_src_mb4_is_invalid(
+                FIELD_EX32(s->regs_hi[R_CONF], CONF, V3_THRESHOLD_SCOPE))) {
+            alerts |= R_RECOV_ALERT_STS_THRESHOLD_SCOPE_FIELD_ALERT_MASK;
+        }
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_ENTROPY_CONTROL], ENTROPY_CONTROL,
+                       ES_ROUTE))) {
+        alerts |= R_RECOV_ALERT_STS_ES_ROUTE_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_ENTROPY_CONTROL], ENTROPY_CONTROL,
+                       ES_TYPE))) {
+        alerts |= R_RECOV_ALERT_STS_ES_TYPE_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_FW_OV_CONTROL], FW_OV_CONTROL,
+                       FW_OV_MODE))) {
+        alerts |= R_RECOV_ALERT_STS_FW_OV_MODE_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_FW_OV_CONTROL], FW_OV_CONTROL,
+                       FW_OV_ENTROPY_INSERT))) {
+        alerts |= R_RECOV_ALERT_STS_FW_OV_ENTROPY_INSERT_FIELD_ALERT_MASK;
+    }
+    if (ot_entropy_src_mb4_is_invalid(
+            FIELD_EX32(s->regs_hi[R_FW_OV_SHA3_START], FW_OV_SHA3_START,
+                       FW_OV_INSERT_START))) {
+        alerts |= R_RECOV_ALERT_STS_FW_OV_SHA3_START_FIELD_ALERT_MASK;
+    }
+    if ((uint16_t)s->regs_hi[R_ALERT_THRESHOLD] !=
+        (uint16_t)(~(s->regs_hi[R_ALERT_THRESHOLD] >> 16u))) {
+        alerts |= R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK;
+    }
+
+    return alerts;
+}
+
 static bool ot_entropy_src_check_multibitboot(
     OtEntropySrcState *s, uint8_t mbbool, uint32_t alert_bit)
 {
@@ -1894,6 +1978,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             val32 &= (s->version < 3) ? CONF_V2_WMASK : CONF_V3_WMASK;
             s->regs_hi[reg] = val32;
             CHECK_MULTIBOOT(s, hi, CONF, FIPS_ENABLE);
+            CHECK_MULTIBOOT(s, hi, CONF, FIPS_FLAG);
+            CHECK_MULTIBOOT(s, hi, CONF, RNG_FIPS);
             CHECK_MULTIBOOT(s, hi, CONF, RNG_BIT_ENABLE);
             if (s->version < 3) {
                 CHECK_MULTIBOOT_VER(s, hi, CONF, V2, ENTROPY_DATA_REG_ENABLE);
@@ -1950,11 +2036,10 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         break;
     case R_ALERT_THRESHOLD:
         if (s->regs_lo[R_REGWEN]) {
+            s->regs_hi[reg] = val32;
             if ((uint16_t)(val32) != (uint16_t)(~(val32 >> 16u))) {
                 ot_entropy_src_trigger_recov_alert(
                     s, R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK);
-            } else {
-                s->regs_hi[reg] = val32;
             }
             ot_entropy_src_update_alerts(s);
         }
@@ -2074,6 +2159,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_RECOV_ALERT_STS:
         val32 &= RECOV_ALERT_STS_WMASK;
         s->regs_hi[reg] &= val32; /* RW0C */
+        s->regs_hi[reg] |= ot_entropy_src_get_cfg_alerts(s);
         break;
     case R_ERR_CODE_TEST:
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
