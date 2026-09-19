@@ -1703,11 +1703,46 @@ static int ot_gpio_eg_chr_be_change(void *opaque)
     return 0;
 }
 
+static MemTxResult ot_gpio_eg_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t word = ot_gpio_eg_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (word >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_gpio_eg_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
+    ot_gpio_eg_write(opaque, aligned_addr, wdata, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_gpio_eg_regs_ops = {
-    .read = &ot_gpio_eg_read,
-    .write = &ot_gpio_eg_write,
+    .read_with_attrs = &ot_gpio_eg_read_with_attrs,
+    .write_with_attrs = &ot_gpio_eg_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
