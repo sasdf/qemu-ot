@@ -1855,6 +1855,10 @@ static void ot_flash_op_prog(OtFlashState *s)
     OtFlashStorage *storage = &s->flash;
     uint32_t *dest = s->op.info_part ? storage->info : storage->data;
 
+    unsigned first_word_address = UINT_MAX;
+    unsigned last_word_address = 0u;
+    unsigned last_byte_address = 0u;
+
     while (s->op.remaining) {
         uint32_t word = ot_fifo32_pop(&s->prog_fifo);
         bool fifo_empty = ot_fifo32_is_empty(&s->prog_fifo);
@@ -1923,23 +1927,30 @@ static void ot_flash_op_prog(OtFlashState *s)
                                     sizeof(uint32_t));
         }
         trace_ot_flash_prog_word(s->ot_id, s->op.info_part, word_address, word);
-        if (ot_flash_is_backend_writable(s)) {
-            uintptr_t dest_offset =
-                (uintptr_t)&dest[word_address] - (uintptr_t)storage->data;
-            if (ot_flash_write_backend(s, &dest[word_address],
-                                       (unsigned)dest_offset,
-                                       sizeof(uint32_t))) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "%s: %s: cannot update flash backend\n", __func__,
-                              s->ot_id);
-                uint32_t ebit = s->op.hw ? R_FAULT_STATUS_PROG_ERR_MASK :
-                                           R_ERR_CODE_PROG_ERR_MASK;
-                ot_flash_set_error(s, ebit, address);
-            }
+        if (first_word_address == UINT_MAX) {
+            first_word_address = word_address;
         }
+        last_word_address = word_address;
+        last_byte_address = address;
 
         if (fifo_empty) {
             break;
+        }
+    }
+
+    if (first_word_address != UINT_MAX && ot_flash_is_backend_writable(s)) {
+        uintptr_t dest_offset =
+            (uintptr_t)&dest[first_word_address] - (uintptr_t)storage->data;
+        unsigned write_size =
+            (last_word_address - first_word_address + 1u) * sizeof(uint32_t);
+        if (ot_flash_write_backend(s, &dest[first_word_address],
+                                   (unsigned)dest_offset, write_size)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: cannot update flash backend\n", __func__,
+                          s->ot_id);
+            uint32_t ebit = s->op.hw ? R_FAULT_STATUS_PROG_ERR_MASK :
+                                       R_ERR_CODE_PROG_ERR_MASK;
+            ot_flash_set_error(s, ebit, last_byte_address);
         }
     }
 
