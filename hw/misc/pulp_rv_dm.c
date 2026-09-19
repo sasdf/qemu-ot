@@ -459,6 +459,20 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
     (void)size;
 
     addr += PULP_RV_DM_DMACT_BASE;
+    if (R32_OFF(addr) != R_HALTED && R32_OFF(addr) != R_GOING &&
+        R32_OFF(addr) != R_RESUMING && R32_OFF(addr) != R_EXCEPTION) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return MEMTX_DECODE_ERROR;
+    }
+    /*
+     * In dm_mem.sv:392-395, Halted/Going/Resuming/Exception check
+     * gen_wr_err(we_i, be_i, 4'b0001). Any write that does not include byte 0
+     * ((addr & 3) != 0) asserts err_d = 1'b1 (MEMTX_ERROR).
+     */
+    if ((addr & 0x3u) != 0u) {
+        return MEMTX_ERROR;
+    }
 
 #ifdef DISCARD_REPEATED_IO_TRACES
     static TraceCache trace_cache;
@@ -521,8 +535,6 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
         break;
     default:
         res = MEMTX_DECODE_ERROR;
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
         break;
     }
 
@@ -535,13 +547,16 @@ static MemTxResult pulp_rv_dm_prog_read_with_attrs(
     PulpRVDMState *s = opaque;
     (void)attrs;
 
-    if ((addr & 0x3u) || (size != sizeof(uint32_t)) ||
-        (addr + size > PULP_RV_DM_PROG_SIZE)) {
+    hwaddr word_addr = addr & ~3ULL;
+    if (word_addr + sizeof(uint32_t) > PULP_RV_DM_PROG_SIZE) {
         return MEMTX_ERROR;
     }
 
     const uint8_t *ram = memory_region_get_ram_ptr(&s->prog);
-    *val64 = ldl_le_p(ram + addr);
+    uint32_t val32 = ldl_le_p(ram + word_addr);
+    unsigned shift = (unsigned)((addr & 0x3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
     return MEMTX_OK;
 }
 
@@ -582,21 +597,18 @@ static MemTxResult pulp_rv_dm_dmflag_read_with_attrs(
 {
     PulpRVDMState *s = opaque;
     uint32_t val32 = 0u;
-    (void)size;
     (void)attrs;
 
-    if (addr & 0x3u) {
-        return MEMTX_ERROR;
-    }
-
-    addr += PULP_RV_DM_DMFLAG_BASE;
-    unsigned reg = R32_OFF(addr);
+    hwaddr word_addr = (addr & ~3ULL) + PULP_RV_DM_DMFLAG_BASE;
+    unsigned reg = R32_OFF(word_addr);
 
     if (reg >= R_FLAGS_0 && reg <= R_FLAGS_LAST) {
         val32 = s->dmflag_regs[reg - R_FLAGS_0];
     }
 
-    *val64 = val32;
+    unsigned shift = (unsigned)((addr & 0x3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
     return MEMTX_OK;
 };
 
@@ -605,9 +617,8 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
 {
     PulpRVDMState *s = opaque;
     uint32_t val32 = (uint32_t)val64;
-    (void)size;
 
-    if (addr & 0x3u) {
+    if ((addr & 0x3u) || (size != sizeof(uint32_t))) {
         return MEMTX_ERROR;
     }
 
@@ -652,24 +663,42 @@ static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
     .read_with_attrs = &pulp_rv_dm_dmact_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmact_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .impl = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
 };
 
 static const MemoryRegionOps pulp_rv_dm_prog_ops = {
     .read_with_attrs = &pulp_rv_dm_prog_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_prog_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .impl = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
 };
 
 static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
     .read_with_attrs = &pulp_rv_dm_dmflag_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmflag_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .impl = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
 };
 
 static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
