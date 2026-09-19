@@ -1083,6 +1083,7 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
             if (ix == SW_INSTANCE_ID) {
                 ot_fifo32_reset(&inst->sw.bits_fifo);
                 inst->sw.fips = false;
+                inst->drng.prev_genbits_valid = false;
             } else {
                 inst->hw.genbits_ready = false;
             }
