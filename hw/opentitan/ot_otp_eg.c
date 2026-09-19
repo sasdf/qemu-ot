@@ -889,10 +889,9 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
     }
 
     bool is_readable = c->is_readable(s, part_ix);
-    bool is_digest = ot_otp_engine_is_part_digest_offset(s, part_ix, addr);
     bool is_zer = ot_otp_engine_is_part_zer_offset(s, part_ix, addr);
 
-    if (!is_readable && !(is_digest || is_zer)) {
+    if (!is_readable && !is_zer) {
         trace_ot_otp_access_error_on(s->ot_id, partition, addr, "not readable");
         c->set_error(s, part_ix, OT_OTP_ACCESS_ERROR);
 

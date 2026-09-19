@@ -348,8 +348,7 @@ ot_otp_engine_get_part_from_address(const OtOTPEngineState *s, hwaddr addr)
 {
     for (unsigned part_ix = 0; part_ix < s->part_count; part_ix++) {
         const OtOTPPartDesc *part = &s->part_descs[part_ix];
-        if ((addr >= part->offset) &&
-            ((addr + sizeof(uint32_t)) <= (part->offset + part->size))) {
+        if ((addr >= part->offset) && (addr < (part->offset + part->size))) {
             trace_ot_otp_addr_to_part(s->ot_id, (uint32_t)addr,
                                       ot_otp_engine_part_name(s, part_ix),
                                       part_ix);
@@ -1076,10 +1075,11 @@ static void ot_otp_engine_dai_read(OtOTPEngineState *s)
     bool is_buffered = ot_otp_engine_is_buffered(s, part_ix);
     bool is_secret = ot_otp_engine_is_secret(s, part_ix);
     bool is_digest = ot_otp_engine_is_part_digest_offset(s, part_ix, address);
+    bool is_hw_digest = s->part_descs[part_ix].hw_digest && is_digest;
     bool is_zer = ot_otp_engine_is_part_zer_offset(s, part_ix, address);
 
-    /* in all partitions, the digest and zer fields are always readable. */
-    if (!is_digest && !is_zer && !is_readable) {
+    /* HW digest and zer fields remain readable even when read_lock is set. */
+    if (!is_hw_digest && !is_zer && !is_readable) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: partition %s @ 0x%04x not readable\n", __func__,
                       s->ot_id, ot_otp_engine_part_name(s, part_ix), address);
