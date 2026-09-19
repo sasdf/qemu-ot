@@ -1420,8 +1420,10 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
-        s->regs[R_ALERT_TEST] = val32;
-        ot_spi_host_update_alert(s);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     case R_CONTROL:
         val32 &= R_CONTROL_MASK;
@@ -1436,6 +1438,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CONFIGOPTS:
+        val32 &= R_CONFIGOPTS_MASK;
         s->regs[reg] = val32;
         ot_spi_host_update_bb_config(s, val32);
         break;
@@ -1448,13 +1451,6 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             val32 = ot_spi_host_convert_from_c2_command(val32);
         }
         val32 &= R_COMMAND_MASK;
-
-        /* IP not enabled */
-        if (!(REG_GET(s, CONTROL, SPIEN))) {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: no SPI/EN\n", __func__,
-                          s->ot_id);
-            return;
-        }
 
         if (!ot_spi_host_is_ready(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: busy (cmd_fifo full)\n",
@@ -1483,6 +1479,11 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             csid = 0;
         }
 
+        if (REG_GET(s, CONTROL, SW_RST)) {
+            ot_spi_host_update_regs(s);
+            break;
+        }
+
         CmdFifoSlot slot = {
             .opts = s->regs[R_CONFIGOPTS],
             .command = val32,
@@ -1499,7 +1500,8 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
 
         cmdfifo_push(s->cmd_fifo, &slot);
 
-        if (s->active.state == CMD_NONE && !s->regs[R_ERROR_STATUS]) {
+        if (REG_GET(s, CONTROL, SPIEN) && s->active.state == CMD_NONE &&
+            !s->regs[R_ERROR_STATUS]) {
             cmdfifo_pop(s->cmd_fifo, &s->active.cmd);
             s->active.state = CMD_ONGOING;
             s->active.size = 0u;
@@ -1529,6 +1531,10 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
     case R_TXDATA: {
+        if (REG_GET(s, CONTROL, SW_RST)) {
+            ot_spi_host_update_regs(s);
+            return;
+        }
         if (txfifo_is_full(s->tx_fifo)) {
             ot_spi_host_raise_error(s, R_ERROR_STATUS_OVERFLOW_MASK);
             return;
