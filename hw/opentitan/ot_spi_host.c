@@ -1786,7 +1786,7 @@ static void ot_spi_host_instance_init(Object *obj)
 
     s->pclk = 1u;
     memory_region_init_io(&s->mmio, obj, &ot_spi_host_ops, s, TYPE_OT_SPI_HOST,
-                          0x40u);
+                          REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
 
     _Static_assert(IRQ_COUNT == ARRAY_SIZE(s->irqs), "Incoherent IRQ count");

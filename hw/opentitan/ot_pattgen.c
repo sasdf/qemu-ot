@@ -391,7 +391,7 @@ static void ot_pattgen_init(Object *obj)
     OtPattgenState *s = OT_PATTGEN(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_pattgen_regs_ops, s,
-                          TYPE_OT_PATTGEN, 0x40u);
+                          TYPE_OT_PATTGEN, REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     for (unsigned i = 0; i < PARAM_NUM_IRQS; i++) {

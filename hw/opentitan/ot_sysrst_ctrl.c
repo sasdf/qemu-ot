@@ -97,7 +97,7 @@ REG32(KEY_INTR_STATUS, 0xa8u)
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define R_LAST_REG   (R_KEY_INTR_STATUS)
 #define REGS_COUNT   (R_LAST_REG + 1u)
-#define REGS_SIZE    0x100u
+#define REGS_SIZE    (REGS_COUNT * sizeof(uint32_t))
 
 struct OtSysrstCtrlState {
     SysBusDevice parent_obj;
