@@ -111,6 +111,10 @@ impl HartState {
             return Ok(());
         }
         if reg_index == 1 {
+            if self.x1_read {
+                self.hwstack.pop();
+                self.x1_read = false;
+            }
             if self.hwstack.len() >= self.hwstack.capacity() {
                 return Err(InstructionTrap::Exception(ExceptionCause::ECallStack, None));
             }
