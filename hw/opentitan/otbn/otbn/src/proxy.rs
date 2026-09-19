@@ -199,6 +199,8 @@ impl Proxy {
                 self.registers
                     .status
                     .store(otbn::Status::Locked as u32, Ordering::Relaxed);
+                self.syncurnd.abort_wait();
+                self.rnd.abort_wait();
                 if let Some(ref mut cb) = self.on_complete {
                     cb.signal();
                 }
@@ -237,6 +239,8 @@ impl Proxy {
                 self.registers
                     .status
                     .store(otbn::Status::Locked as u32, Ordering::Relaxed);
+                self.syncurnd.abort_wait();
+                self.rnd.abort_wait();
                 if let Some(ref mut cb) = self.on_complete {
                     cb.signal();
                 }

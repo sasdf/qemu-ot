@@ -321,6 +321,10 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
 
     trace_ot_otbn_proxy_completion_bh(s->ot_id, last_cmd);
 
+    if (last_cmd == OT_OTBN_CMD_NONE) {
+        return;
+    }
+
     if (ot_otbn_is_locked(s)) {
         timer_del(s->proxy_defer);
         ot_otbn_post_execute(s);

@@ -252,23 +252,33 @@ impl Executer {
             comm::Command::Execute(dump) => {
                 // always update the state before replying
                 self.set_status(Status::BusyExecute);
+                self.registers
+                    .err_bits
+                    .store(ErrBits::empty().bits(), Ordering::Relaxed);
+                self.registers.insn_count.store(0, Ordering::Relaxed);
                 self.channel.1.send(comm::Response::Ack).unwrap();
                 self.execute(dump);
-                self.signal_completion();
+                if self.get_status() != Status::Locked {
+                    self.signal_completion();
+                }
             }
             comm::Command::WipeDMem => {
                 // always update the state before replying
                 self.set_status(Status::BusySecWipeDMem);
                 self.channel.1.send(comm::Response::Ack).unwrap();
                 self.wipe_memory(false);
-                self.signal_completion();
+                if self.get_status() != Status::Locked {
+                    self.signal_completion();
+                }
             }
             comm::Command::WipeIMem => {
                 // always update the state before replying
                 self.set_status(Status::BusySecWipeIMem);
                 self.channel.1.send(comm::Response::Ack).unwrap();
                 self.wipe_memory(true);
-                self.signal_completion();
+                if self.get_status() != Status::Locked {
+                    self.signal_completion();
+                }
             }
             comm::Command::Reset => (),
             comm::Command::Terminate => {
@@ -285,11 +295,15 @@ impl Executer {
         // "Each new execution of OTBN will reseed the URND PRNG."
         // Stall OTBN execution till entropy is injected
         self.syncurnd.sync_reseed();
-        if self.registers.resetting.load(Ordering::Relaxed) {
+        if self.registers.resetting.load(Ordering::Relaxed)
+            || self.get_status() == Status::Locked
+        {
             return;
         }
         let trap = self.do_execute(dump);
-        if self.registers.resetting.load(Ordering::Relaxed) {
+        if self.registers.resetting.load(Ordering::Relaxed)
+            || self.get_status() == Status::Locked
+        {
             return;
         }
         match trap {
@@ -336,6 +350,7 @@ impl Executer {
             self.imem.try_lock().unwrap().wipe(&mut *x.lock().unwrap());
             self.registers.insn_count.store(0, Ordering::Relaxed);
             self.set_status(Status::Locked);
+            self.signal_completion();
         };
         // note: it is required that the OTBN client calls
         // Proxy::acknowledge_execution() to reset the OTBN status once the
@@ -392,7 +407,10 @@ impl Executer {
             }
 
             let fatalbits = if (local_insn_count & 0xff) == 0 {
-                if self.registers.resetting.load(Ordering::Relaxed) {
+                if self.registers.resetting.load(Ordering::Relaxed)
+                    || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
+                        == Status::Locked
+                {
                     return insn_exec::InstructionTrap::Exception(
                         ExceptionCause::ECallMMode,
                         None,
@@ -412,7 +430,10 @@ impl Executer {
                 ))
             };
             if let Err(trap) = result {
-                if self.registers.resetting.load(Ordering::Relaxed) {
+                if self.registers.resetting.load(Ordering::Relaxed)
+                    || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
+                        == Status::Locked
+                {
                     return trap;
                 }
                 if let Some(log_file) = &mut self.log_file {
