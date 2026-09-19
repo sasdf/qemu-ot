@@ -234,7 +234,7 @@ static void ot_otbn_update_alert(OtOTBNState *s)
     }
 
     uint16_t fatal_err_bits = (uint16_t)(s->errbits >> 16u);
-    if (fatal_err_bits) {
+    if (fatal_err_bits || s->fatal_alert_cause) {
         levels |= 1u << ALERT_FATAL;
     }
 
@@ -254,7 +254,7 @@ static void ot_otbn_update_alert(OtOTBNState *s)
     /* ALERT_TEST and recoverable error alerts are transient */
     s->alert_test = 0u;
     s->errbits &= ~UINT16_MAX;
-    levels = fatal_err_bits ? (1u << ALERT_FATAL) : 0u;
+    levels = (fatal_err_bits || s->fatal_alert_cause) ? (1u << ALERT_FATAL) : 0u;
 
     for (unsigned ix = 0u; ix < ALERT_COUNT; ix++) {
         int level = (int)((levels >> ix) & 0x1u);
@@ -707,6 +707,7 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             trace_ot_otbn_deny(s->ot_id, pc, "write denied: busy");
             break;
         }
+        s->errbits = 0u;
         ot_otbn_proxy_set_err_bits(s->proxy, val32);
         break;
     case R_INSN_CNT:
@@ -745,6 +746,10 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
+    if (s->lc_escalated) {
+        trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, 0u);
+        return 0u;
+    }
     bool valid = true;
     uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr, &valid);
     trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value);
@@ -763,6 +768,11 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
                               uint32_t value)
 {
+    if (s->lc_escalated) {
+        trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr,
+                                value, " FAILED");
+        return;
+    }
     bool written = ot_otbn_proxy_write_memory(s->proxy, doi, addr, value);
     trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value,
                             written ? "" : " FAILED");
@@ -938,13 +948,21 @@ static void ot_otbn_lc_escalate_en(void *opaque, int irq, int level)
 
     g_assert(irq == 0);
 
-    if (level) {
+    if (level && !s->lc_escalated) {
+        uint32_t status = ot_otbn_proxy_get_status(s->proxy);
+        bool was_running = (s->last_cmd != OT_OTBN_CMD_NONE) ||
+                           (status != OT_OTBN_STATUS_IDLE &&
+                            status != OT_OTBN_STATUS_LOCKED);
         s->lc_escalated = true;
-        s->errbits |= R_ERR_BITS_LIFECYCLE_ESCALATION_MASK;
         s->fatal_alert_cause |= R_FATAL_ALERT_CAUSE_LIFECYCLE_ESCALATION_MASK;
         qemu_bh_cancel(s->proxy_completion_bh);
         timer_del(s->proxy_defer);
         s->last_cmd = OT_OTBN_CMD_NONE;
+        if (was_running) {
+            s->errbits |= R_ERR_BITS_LIFECYCLE_ESCALATION_MASK;
+            s->intr_state |= INTR_DONE_MASK;
+            ot_otbn_update_irq(s);
+        }
         ot_otbn_update_alert(s);
     }
 }
