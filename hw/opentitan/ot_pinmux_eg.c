@@ -931,8 +931,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_attr, MIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_MIO_PAD_ATTR;
             g_assert(pad_no < R_MIO_PAD_ATTR);
-            val32 &= (val32 == 0xffffffffu || pad_no == 2u) ? 0x00000083u :
-                                                              MIO_PAD_ATTR_MASK;
+            val32 &= (val32 == 0xffffffffu) ? 0x00000083u : MIO_PAD_ATTR_MASK;
             regs->mio_pad_attr[pad_no] = val32;
             ot_pinmux_eg_update_pads(s);
             ot_gpio_eg_notify_sysrst_change();
