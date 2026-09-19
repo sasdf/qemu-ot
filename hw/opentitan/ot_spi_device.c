@@ -2703,8 +2703,14 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
     s->sram[addr >> 2u] = val32;
-    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 != 0u &&
-        val32 != 0xffffffffu) {
+    /*
+     * Detect atomic commit of an OTTF SPI console frame
+     * (kSpiDeviceFrameMagicNumber = 0xa5a5beef in ottf_console_internal.h and
+     * sw/host/opentitanlib/src/console/spi.rs) to wake up the SPI host chardev
+     * poll timer and synchronize CSB edge polling when TX-ready GPIO mode
+     * writes the frame header at offset 0.
+     */
+    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 == 0xa5a5beefu) {
         s->flash.read_buf_modified = true;
         if (addr == 0u && !s->last_read_addr_polled) {
             s->csb_poll_enabled = true;
