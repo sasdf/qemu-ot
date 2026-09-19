@@ -49,6 +49,8 @@
 #include "qemu/osdep.h"
 #include "qemu/compiler.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "accel/tcg/cpu-ldst.h"
@@ -1308,11 +1310,19 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             if (dm->unavailable_bm & hbit) {
                 if (!cs->disabled) {
                     /* hart exited from reset, became available */
-                    dm->unavailable_bm &= ~hbit;
                     hart->have_reset = true;
-                    hart->halted = false;
                     trace_riscv_dm_hart_reset(dm->soc, cs->cpu_index,
                                               dm->hart->hartid, "exited");
+                    if ((dm->haltreq_bm | dm->resethaltreq_bm) & hbit) {
+                        if (!hart->halted) {
+                            riscv_dm_halt_hart(dm, hartsel);
+                        } else {
+                            dm->unavailable_bm &= ~hbit;
+                        }
+                    } else if (!(cs->interrupt_request & CPU_INTERRUPT_DEBUG)) {
+                        dm->unavailable_bm &= ~hbit;
+                        hart->halted = false;
+                    }
                 }
             }
         }
@@ -1559,17 +1569,53 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
     if (!bql_locked() || !runstate_is_running()) {
         return;
     }
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 1000; i++) {
         bool pending = dm->cmd_busy;
-        for (unsigned hix = 0; !pending && hix < dm->hart_count; hix++) {
+        for (unsigned hix = 0; hix < dm->hart_count; hix++) {
             RISCVDMHartState *hart = &dm->harts[hix];
             CPUState *cs = hart->cpu ? CPU(hart->cpu) : NULL;
-            if (!cs || cs->disabled || cs->stopped) {
+            uint64_t mask = 1ULL << hix;
+            if (!cs) {
                 continue;
+            }
+            if (cs->disabled) {
+                if (!dm->in_ndmreset &&
+                    (i < 20 ||
+                     ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) ||
+                     (cs->interrupt_request & CPU_INTERRUPT_DEBUG))) {
+                    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+                    aio_bh_poll(qemu_get_aio_context());
+                    if (cs->disabled) {
+                        pending = true;
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            if (dm->unavailable_bm & mask) {
+                if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
+                    if (!hart->halted) {
+                        riscv_dm_halt_hart(dm, hix);
+                    }
+                }
+                if (hart->halted ||
+                    !((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
+                      ((dm->haltreq_bm | dm->resethaltreq_bm) & mask))) {
+                    trace_riscv_dm_status(dm->soc, cs->cpu_index,
+                                          "became available");
+                    dm->unavailable_bm &= ~mask;
+                }
             }
             if (hart->resuming ||
                 (!hart->halted &&
-                 (cs->interrupt_request & CPU_INTERRUPT_DEBUG))) {
+                 ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
+                  ((dm->haltreq_bm | dm->resethaltreq_bm) & mask)))) {
+                if (cs->stopped && !cs->disabled) {
+                    cpu_resume(cs);
+                } else {
+                    qemu_cpu_kick(cs);
+                }
                 pending = true;
             }
         }
@@ -1631,30 +1677,21 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
             continue;
         }
         if (dm->unavailable_bm & mask) {
+            if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
+                if (!hart->halted) {
+                    riscv_dm_halt_hart(dm, hix);
+                }
+            }
+            if (!hart->halted &&
+                ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
+                 ((dm->haltreq_bm | dm->resethaltreq_bm) & mask))) {
+                unavail += 1;
+                trace_riscv_dm_status(dm->soc, cs->cpu_index, "unavailable");
+                continue;
+            }
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "became available");
             /* clear the unavailability flag and resume w/ "regular" states */
             dm->unavailable_bm &= ~mask;
-
-            /*
-             * If a pending haltreq exists for this hart, enter debug mode.
-             *
-             * @todo: This is a workaround for the fact that the current
-             * implementation does not conform to the debug specification. See
-             * e.g. section C.1.4: "When a hart comes out of reset and haltreq
-             * is set, the hart will immediately enter Debug Mode". To support
-             * this the CPU would need to query the DM when it begins executing
-             * instructions, and hence would need a reference to the DM, which
-             * is not ideal.
-             *
-             * For now, we can support most real use cases by exploiting the
-             * fact that reasonable SW will usually send a haltreq and then
-             * repeatedly poll `dmstatus` to see the hart(s) halt. Hence, we
-             * latch haltreqs for unresponsive cores and halt any hart that is
-             * polled as newly available/responsive on a `dmstatus` read.
-             */
-            if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
-                riscv_dm_halt_hart(dm, hix);
-            }
         }
         if (hart->resumed) {
             resumeack += 1;
@@ -2116,13 +2153,16 @@ static CmdErr riscv_dm_abstractcs_write(RISCVDMState *dm, uint32_t value)
 
 static CmdErr riscv_dm_haltsum0_read(RISCVDMState *dm, uint32_t *value)
 {
+    riscv_dm_sync_vcpu(dm);
+
     unsigned hix = 0;
     unsigned halted_bm = 0;
 
     while (hix < dm->hart_count) {
         if (dm->harts[hix].halted) {
-            halted_bm = 1u << hix;
+            halted_bm |= 1u << hix;
         }
+        hix++;
     }
 
     *value = dm->regs[A_HALTSUM0] = halted_bm;
@@ -2499,7 +2539,7 @@ static void riscv_dm_ensure_running(RISCVDMState *dm)
         return;
     }
 
-    RISCVCPU *cpu = dm->hart->cpu;
+    RISCVCPU *cpu = dm->hart ? dm->hart->cpu : dm->harts[0].cpu;
     CPUState *cs = CPU(cpu);
 
     cpu_synchronize_state(cs);
@@ -2522,20 +2562,26 @@ static void riscv_dm_ensure_running(RISCVDMState *dm)
 
 static void riscv_dm_halt_hart(RISCVDMState *dm, unsigned hartsel)
 {
-    RISCVCPU *cpu = dm->harts[hartsel].cpu;
+    RISCVDMHartState *hart = &dm->harts[hartsel];
+    RISCVCPU *cpu = hart->cpu;
     CPUState *cs = CPU(cpu);
+    uint64_t hartbit = 1ULL << hartsel;
 
     trace_riscv_dm_change_hart(dm->soc, "HALT", hartsel, cs->halted,
-                               cs->running, cs->stopped, dm->hart->resumed);
+                               cs->running, cs->stopped, hart->resumed);
 
     /* Note: NMI are not yet supported */
     cpu_exit(cs);
-    dm->haltreq_bm &= ~(1u << hartsel);
+    dm->haltreq_bm &= ~hartbit;
     /* not sure if the real HW clear this flag on halt */
-    dm->hart->resumed = false;
-    dm->hart->resuming = false;
-    riscv_dm_set_cs(dm, true);
-    riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
+    hart->resumed = false;
+    hart->resuming = false;
+    cpu->env.debug_cs = true;
+    trace_riscv_dm_cs(dm->soc, true);
+    riscv_cpu_store_debug_cause(
+        cs, ((dm->unavailable_bm & hartbit) && (dm->resethaltreq_bm & hartbit)) ?
+                DCSR_CAUSE_RESETHALTREQ :
+                DCSR_CAUSE_HALTREQ);
     cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
     /* vCPU should always be "running" - halt mode runs the park loop */
     riscv_dm_ensure_running(dm);
