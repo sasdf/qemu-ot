@@ -522,6 +522,7 @@ ot_rom_ctrl_handle_kmac_response(void *opaque, const OtKMACAppRsp *rsp)
     g_assert(s->scrambled.word_pos == s->scrambled.word_count);
 
     qemu_vfree(s->scrambled.buffer);
+    s->scrambled.buffer = NULL;
     s->scrambled.word_count = 0u;
 
     /*
