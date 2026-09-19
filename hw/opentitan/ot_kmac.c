@@ -406,6 +406,7 @@ struct OtKMACState {
     bool in_process;
     bool invalid_state_read;
     bool error_awaiting_sw; /* error awaiting SW acknowledgement */
+    bool app_in_error; /* kmac_app.sv in StError/StErrorAwaitSw */
     bool cfg_entropy_ready; /* kmac_errchk.sv cfg_entropy_ready */
     bool entropy_configured; /* kmac_entropy.sv st != StRandReset */
     bool entropy_in_err; /* kmac_entropy.sv st == StRandErr */
@@ -746,6 +747,7 @@ static void ot_kmac_get_key(OtKMACState *s, uint8_t *key, size_t *keylen)
         if (!sl_key->valid) {
             /* HW defaults to info = app_id = 0 when in a SW operation. */
             uint32_t err_info = s->current_app ? s->current_app->index : 0;
+            s->app_in_error = true;
             ot_kmac_report_error(s, OT_KMAC_ERR_KEY_NOT_VALID, err_info);
         }
         return;
@@ -1189,6 +1191,7 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
          * If we haven't got all the data, we should wait for it all before
          * sending a response (but we store SW acknowledgement).
          */
+        s->app_in_error = false;
         if (s->state == KMAC_ST_MSG_FEED) {
             ot_kmac_process(s);
         } else if (s->state == KMAC_ST_PROCESSING ||
@@ -1197,8 +1200,14 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
         }
         s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
         ot_kmac_update_irq(s);
-    } else {
-        /* for SW: ignore further msg feed, absorb, report done & go to idle */
+    } else if (s->app_in_error) {
+        /*
+         * RTL (kmac_app.sv:520-611, 646-648): When kmac_app entered StError /
+         * StErrorAwaitSw during a SW operation (e.g. ErrKeyNotValid),
+         * err_processed_i flushes the SHA3 engine via CmdProcess ->
+         * StErrorWaitAbsorbed -> CmdDone + absorbed_o = MuBi4True -> StIdle.
+         */
+        s->app_in_error = false;
         switch (s->state) {
         case KMAC_ST_IDLE:
             ot_kmac_return_to_idle(s);
@@ -1218,14 +1227,19 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
         default:
             g_assert_not_reached();
         }
+        s->regs[R_INTR_STATE] |= INTR_KMAC_DONE_MASK;
+        ot_kmac_update_irq(s);
     }
 
     /* Clear the status / alert */
     s->regs[R_STATUS] &= ~R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
     ot_kmac_update_alert(s);
 
-    /* Clear the error */
-    s->regs[R_ERR_CODE] = 0u;
+    /*
+     * Note: In RTL (kmac.sv:684, kmac_reg_top.sv:2563-2587), u_err_code is a
+     * SwAccessRO prim_subreg gated solely by hw2reg.err_code.de = event_error.
+     * CMD.err_processed does NOT clear ERR_CODE.
+     */
 
     /* SW shoud not send a command along with the err_processed bit */
     if (cmd != OT_KMAC_CMD_NONE) {
@@ -1277,13 +1291,17 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
             /* retrieve configuration from CFG_SHADOWED register */
             ot_kmac_get_sw_config(s);
 
+            bool kmac_en = FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) != 0;
             bool en_unsupported_modestrength =
                 FIELD_EX32(cfg, CFG_SHADOWED, EN_UNSUPPORTED_MODESTRENGTH) != 0;
             if (!ot_kmac_check_mode_and_strength(&s->sw_cfg)) {
                 err_modestrength = true;
             }
-            /* if KMAC mode, check prefix & entropy ready */
-            if (s->sw_cfg.mode == OT_KMAC_MODE_KMAC) {
+            /*
+             * In RTL (kmac_errchk.sv:268, 288), check_prefix and
+             * check_entropy_ready check kmac_en_i independently of cfg_mode_i.
+             */
+            if (kmac_en) {
                 if (!ot_kmac_check_kmac_sw_prefix(s)) {
                     err_prefix = true;
                 }
@@ -1365,11 +1383,13 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         uint8_t code;
         uint32_t info = 0;
         /*
-         * error encoding in OpenTitan RTL (hw/ip/kmac/rtl/kmac_errchk.sv):
-         * info[23:16] = {4'h0, err_entropy_ready, err_swsequence,
-         *                err_modestrength, err_prefix}
+         * error encoding in OpenTitan RTL (hw/ip/kmac/rtl/kmac_errchk.sv:325-368):
+         * For err_swsequence, err_modestrength, and err_prefix:
+         *   info[23:16] = {5'h0, err_swsequence, err_modestrength, err_prefix}
+         * For err_entropy_ready:
+         *   info[23:16] = {4'h0, err_entropy_ready, err_swsequence,
+         *                  err_modestrength, err_prefix}
          */
-        info |= err_entropy_ready ? (1u << 19u) : 0;
         info |= err_swsequence ? (1u << 18u) : 0;
         info |= err_modestrength ? (1u << 17u) : 0;
         info |= err_prefix ? (1u << 16u) : 0;
@@ -1384,6 +1404,7 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         } else if (err_prefix) {
             code = OT_KMAC_ERR_INCORRECT_FUNCTION_NAME;
         } else if (err_entropy_ready) {
+            info |= (1u << 19u);
             info |= FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) ? (1u << 1u) : 0;
             info |= s->cfg_entropy_ready ? 1u : 0;
             code = OT_KMAC_ERR_SW_HASHING_WITHOUT_ENTROPY_READY;
@@ -1391,8 +1412,6 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
             g_assert_not_reached();
         }
         ot_kmac_report_error(s, code, info);
-    } else if (!s->error_awaiting_sw) {
-        s->regs[R_ERR_CODE] = 0;
     }
 }
 
@@ -1836,9 +1855,16 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
 
     /* trigger error if an app is running or not in MSG_FEED state */
     if (s->current_app || s->state != KMAC_ST_MSG_FEED) {
-        /* info field mux_sel=1 (SW) or 2 (App) */
-        ot_kmac_report_error(s, OT_KMAC_ERR_SW_PUSHED_MSG_FIFO,
-                             s->current_app ? 2 : 1);
+        /*
+         * RTL (kmac_app.sv:200, 219, 728-734; kmac_pkg.sv:295-296):
+         * info = {8'h00, 8'(st), 8'(mux_sel_buf_err_check)}.
+         * In StIdle (10'b1010111110 = 0x2be -> 8'(st) = 0xbe) with
+         * SelNone (5'b10100 = 0x14), info = 0x00be14.
+         * In StAppMsg (10'b1110001011 = 0x38b -> 8'(st) = 0x8b) with
+         * SelApp (5'b11001 = 0x19), info = 0x008b19.
+         */
+        uint32_t err_info = s->current_app ? 0x008b19u : 0x00be14u;
+        ot_kmac_report_error(s, OT_KMAC_ERR_SW_PUSHED_MSG_FIFO, err_info);
         return;
     }
 
@@ -2060,6 +2086,7 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->in_process = false;
     s->invalid_state_read = false;
     s->error_awaiting_sw = false;
+    s->app_in_error = false;
     s->cfg_entropy_ready = false;
     s->entropy_configured = false;
     s->entropy_in_err = false;
