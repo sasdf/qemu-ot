@@ -2536,17 +2536,17 @@ static MemTxResult ot_spi_device_buf_read_with_attrs(
     } else if (addr >= SPI_SRAM_CMD_OFFSET &&
                last < (SPI_SRAM_CMD_OFFSET + SPI_SRAM_CMD_SIZE)) {
         /* flash command FIFO */
-        val32 = s->flash.cmd_fifo.data[addr >> 2u];
+        val32 = s->flash.cmd_fifo.data[(addr - SPI_SRAM_CMD_OFFSET) >> 2u];
     } else if (addr >= SPI_SRAM_ADDR_OFFSET &&
                last < (SPI_SRAM_ADDR_OFFSET + SPI_SRAM_ADDR_SIZE)) {
         /* flash address FIFO */
-        val32 = s->flash.address_fifo.data[addr >> 2u];
+        val32 = s->flash.address_fifo.data[(addr - SPI_SRAM_ADDR_OFFSET) >> 2u];
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: Invalid ingress buffer access to "
                       "0x%03x-0x%03x\n",
                       __func__, s->ot_id, (uint32_t)addr, (uint32_t)last);
-        val32 = 0;
+        return MEMTX_DECODE_ERROR;
     }
 
     /* TODO: check which buffers can only be accessed as 32-bit locations */
@@ -2575,12 +2575,20 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
     trace_ot_spi_device_io_buf_write_in(s->ot_id, (uint32_t)addr, size, val32,
                                         pc);
 
+    if (size != 4u || (addr & 3u) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: sub-word write to egress buffer 0x%03x "
+                      "(size=%u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
     hwaddr last = addr + (hwaddr)(size - 1u);
 
-    if (last >= SPI_SRAM_INGRESS_OFFSET) {
+    if (last >= EGRESS_BUFFER_SIZE_BYTES) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: cannot write ingress buffer 0x%03x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      "%s: %s: cannot write ingress/unmapped buffer 0x%03x\n",
+                      __func__, s->ot_id, (uint32_t)addr);
         return MEMTX_DECODE_ERROR;
     }
     s->sram[addr >> 2u] = val32;
