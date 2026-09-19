@@ -860,6 +860,7 @@ struct OtFlashState {
 
     uint32_t *regs;
     uint32_t *csrs;
+    OtShadowReg mp_bank_cfg;
 
     /* "sticky" alerts that should stay signaled after firing */
     uint32_t latched_alerts;
@@ -1153,7 +1154,6 @@ static void ot_flash_set_error(OtFlashState *s, uint32_t ebit, uint32_t eaddr)
             s->regs[R_FAULT_STATUS] |= ebit;
         } else {
             s->regs[R_OP_STATUS] |= R_OP_STATUS_ERR_MASK;
-            s->regs[R_INTR_STATE] |= INTR_CORR_ERR_MASK;
             s->regs[R_ERR_ADDR] = FIELD_DP32(0, ERR_ADDR, ERR_ADDR, eaddr);
             s->regs[R_ERR_CODE] |= ebit;
             s->regs[R_ALERT_TEST] |= ALERT_RECOV_ERR_MASK;
@@ -1172,6 +1172,7 @@ static void ot_flash_op_complete(OtFlashState *s)
      * if there was an error at some point in the operation.
      */
     if (!s->op.hw) {
+        s->regs[R_CONTROL] &= ~R_CONTROL_START_MASK;
         s->regs[R_OP_STATUS] |= R_OP_STATUS_DONE_MASK;
         s->regs[R_INTR_STATE] |= INTR_OP_DONE_MASK;
         ot_flash_update_irqs(s);
@@ -2366,7 +2367,9 @@ static void ot_flash_process_control_op(OtFlashState *s)
     if (ot_flash_is_disabled(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: flash has been disabled\n",
                       __func__, s->ot_id);
-        ot_flash_set_error(s, R_ERR_CODE_MP_ERR_MASK, 0u);
+        ot_flash_set_error(s, R_ERR_CODE_MP_ERR_MASK,
+                           WORD_ALIGN_ADDR(s->regs[R_ADDR]));
+        ot_flash_op_complete(s);
         return;
     }
 
@@ -2538,7 +2541,6 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_BANK1_INFO2_PAGE_CFG_1:
     case R_HW_INFO_CFG_OVERRIDE:
     case R_BANK_CFG_REGWEN:
-    case R_MP_BANK_CFG_SHADOWED:
     case R_OP_STATUS:
     case R_DEBUG_STATE:
     case R_ERR_CODE:
@@ -2555,6 +2557,9 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_FIFO_RST:
     case R_STATUS:
         val32 = s->regs[reg];
+        break;
+    case R_MP_BANK_CFG_SHADOWED:
+        val32 = ot_shadow_reg_read(&s->mp_bank_cfg);
         break;
     case R_RD_FIFO:
         if (!ot_fifo32_is_empty(&s->rd_fifo)) {
@@ -2602,6 +2607,7 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = SHARED_FIELD_DP32(val32, FIFO_LVL_PROG,
                                   ot_fifo32_num_used(&s->prog_fifo));
         break;
+    case R_INTR_TEST:
     case R_ALERT_TEST:
     case R_PROG_FIFO:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%03x (%s)\n",
@@ -2678,7 +2684,7 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_INIT:
         val32 &= R_INIT_VAL_MASK;
-        s->regs[reg] = val32;
+        s->regs[reg] |= val32; /* rw1s */
         if (val32) {
             ot_flash_initialize(s);
         }
@@ -2718,12 +2724,26 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_flash_process_control_op(s);
         break;
     case R_ADDR:
+        if (!(s->regs[R_CTRL_REGWEN] & R_CTRL_REGWEN_EN_MASK)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: %s is not enabled, so %s is protected\n",
+                          __func__, s->ot_id, REG_NAME(R_CTRL_REGWEN),
+                          REG_NAME(reg));
+            break;
+        }
         val32 &= R_ADDR_START_MASK;
         s->regs[reg] = val32;
         break;
     case R_PROG_TYPE_EN:
+        if (!(s->regs[R_CTRL_REGWEN] & R_CTRL_REGWEN_EN_MASK)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: %s is not enabled, so %s is protected\n",
+                          __func__, s->ot_id, REG_NAME(R_CTRL_REGWEN),
+                          REG_NAME(reg));
+            break;
+        }
         val32 &= R_PROG_TYPE_EN_NORMAL_MASK | R_PROG_TYPE_EN_REPAIR_MASK;
-        s->regs[reg] = val32;
+        s->regs[reg] &= val32; /* rw0c */
         break;
     case R_ERASE_SUSPEND:
         if ((val32 & R_ERASE_SUSPEND_REQ_MASK) && s->op.kind == OP_ERASE) {
@@ -2868,9 +2888,23 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_MP_BANK_CFG_SHADOWED:
-        val32 &= (R_MP_BANK_CFG_SHADOWED_ERASE_EN_0_MASK |
-                  R_MP_BANK_CFG_SHADOWED_ERASE_EN_1_MASK);
-        s->regs[reg] = val32;
+        if (ot_flash_regs_is_wr_enabled(s, R_BANK_CFG_REGWEN)) {
+            val32 &= (R_MP_BANK_CFG_SHADOWED_ERASE_EN_0_MASK |
+                      R_MP_BANK_CFG_SHADOWED_ERASE_EN_1_MASK);
+            switch (ot_shadow_reg_write(&s->mp_bank_cfg, val32)) {
+            case OT_SHADOW_REG_COMMITTED:
+                s->regs[reg] = ot_shadow_reg_peek(&s->mp_bank_cfg);
+                break;
+            case OT_SHADOW_REG_ERROR:
+                s->regs[R_ERR_CODE] |= R_ERR_CODE_UPDATE_ERR_MASK;
+                s->regs[R_ALERT_TEST] |= ALERT_RECOV_ERR_MASK;
+                ot_flash_update_alerts(s);
+                break;
+            case OT_SHADOW_REG_STAGED:
+            default:
+                break;
+            }
+        }
         break;
     case R_OP_STATUS:
         val32 &= R_OP_STATUS_DONE_MASK | R_OP_STATUS_ERR_MASK;
@@ -3033,16 +3067,20 @@ static void ot_flash_csrs_write(void *opaque, hwaddr addr, uint64_t val64,
     bool enable = s->csrs[R_CSR0_REGWEN] & R_CSR0_REGWEN_FIELD0_MASK;
     switch (csr) {
     case R_CSR0_REGWEN:
-        val32 &= R_CSR0_REGWEN_FIELD0_MASK;
-        break;
+        s->csrs[R_CSR0_REGWEN] &= (val32 & R_CSR0_REGWEN_FIELD0_MASK);
+        return;
     case R_CSR1:
         val32 &= R_CSR1_FIELD0_MASK | R_CSR1_FIELD1_MASK;
         break;
-    case R_CSR2:
-        val32 &= R_CSR2_FIELD0_MASK | R_CSR2_FIELD1_MASK | R_CSR2_FIELD2_MASK |
-                 R_CSR2_FIELD3_MASK | R_CSR2_FIELD4_MASK | R_CSR2_FIELD5_MASK |
-                 R_CSR2_FIELD6_MASK | R_CSR2_FIELD7_MASK;
-        break;
+    case R_CSR2: {
+        uint32_t rw1c_mask = R_CSR2_FIELD0_MASK | R_CSR2_FIELD1_MASK |
+                             R_CSR2_FIELD2_MASK | R_CSR2_FIELD4_MASK |
+                             R_CSR2_FIELD5_MASK | R_CSR2_FIELD6_MASK;
+        uint32_t rw_mask = R_CSR2_FIELD3_MASK | R_CSR2_FIELD7_MASK;
+        s->csrs[R_CSR2] = ((s->csrs[R_CSR2] & ~(val32 & rw1c_mask)) & ~rw_mask) |
+                          (val32 & rw_mask);
+        return;
+    }
     case R_CSR3:
         val32 &= R_CSR3_FIELD0_MASK | R_CSR3_FIELD1_MASK | R_CSR3_FIELD2_MASK |
                  R_CSR3_FIELD3_MASK | R_CSR3_FIELD4_MASK | R_CSR3_FIELD5_MASK |
@@ -3095,9 +3133,9 @@ static void ot_flash_csrs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= R_CSR19_FIELD0_MASK;
         break;
     case R_CSR20:
-        val32 &=
-            R_CSR20_FIELD0_MASK | R_CSR20_FIELD1_MASK | R_CSR20_FIELD2_MASK;
-        break;
+        s->csrs[R_CSR20] &=
+            ~(val32 & (R_CSR20_FIELD0_MASK | R_CSR20_FIELD1_MASK));
+        return;
     default:
         enable = false;
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
@@ -3633,7 +3671,9 @@ static void ot_flash_reset_enter(Object *obj, ResetType type)
     s->regs[R_STATUS] = 0xau;
     s->regs[R_PHY_STATUS] = 0x6u;
     s->regs[R_FIFO_LVL] = 0xf0fu;
+    ot_shadow_reg_init(&s->mp_bank_cfg, 0u);
 
+    memset(s->csrs, 0, CSRS_SIZE);
     s->csrs[R_CSR0_REGWEN] = 0x1u;
 
     /* restore flash memory region enablement if previously disabled */
