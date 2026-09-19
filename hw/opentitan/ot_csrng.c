@@ -354,6 +354,7 @@ struct OtCSRNGState {
     unsigned entropy_delay;
     unsigned es_retry_count;
     unsigned state_db_ix;
+    unsigned state_db_dump_id;
     int aes_cipher; /* AES handle for tomcrypt */
     OtCSRNGFsmState state;
     OtCSRNGInstance *instances;
@@ -1090,12 +1091,42 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
             }
         }
 
+        /* csrng_state_db.sv:163, 172: !state_db_enable_i resets ptr & dump_id */
+        s->state_db_ix = 0xfu;
+        s->state_db_dump_id = 0u;
+
         if (s->state != CSRNG_ERROR) {
             CHANGE_STATE(s, CSRNG_IDLE);
         }
 
         xtrace_ot_csrng_info("CSRNG disabled", 0);
     }
+}
+
+static uint32_t ot_csrng_get_ctrl_recov_alert_sts(const OtCSRNGState *s)
+{
+    uint32_t ctrl = s->regs[R_CTRL];
+    uint32_t sts = 0u;
+
+    uint8_t en = FIELD_EX32(ctrl, CTRL, ENABLE);
+    if (en != OT_MULTIBITBOOL4_TRUE && en != OT_MULTIBITBOOL4_FALSE) {
+        sts |= ALERT_STATUS_BIT(ENABLE);
+    }
+    uint8_t sw_app = FIELD_EX32(ctrl, CTRL, SW_APP_ENABLE);
+    if (sw_app != OT_MULTIBITBOOL4_TRUE && sw_app != OT_MULTIBITBOOL4_FALSE) {
+        sts |= ALERT_STATUS_BIT(SW_APP_ENABLE);
+    }
+    uint8_t read_int = FIELD_EX32(ctrl, CTRL, READ_INT_STATE);
+    if (read_int != OT_MULTIBITBOOL4_TRUE &&
+        read_int != OT_MULTIBITBOOL4_FALSE) {
+        sts |= ALERT_STATUS_BIT(READ_INT_STATE);
+    }
+    uint8_t fips_force = FIELD_EX32(ctrl, CTRL, FIPS_FORCE_ENABLE);
+    if (fips_force != OT_MULTIBITBOOL4_TRUE &&
+        fips_force != OT_MULTIBITBOOL4_FALSE) {
+        sts |= ALERT_STATUS_BIT(FIPS_FORCE_ENABLE);
+    }
+    return sts;
 }
 
 static void
@@ -1698,56 +1729,58 @@ out:
 
 static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
 {
-    unsigned appid = s->regs[R_INT_STATE_NUM];
-    if (appid >= N_APP_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid appid %d\n", __func__,
-                      appid);
-        return 0;
-    }
-    if (!s->read_int_granted) {
+    if (!s->enabled || !s->read_int_granted) {
+        s->state_db_ix = 0xfu;
         qemu_log_mask(LOG_GUEST_ERROR, "%s: read state db disabled\n",
                       __func__);
         return 0;
     }
-    if (!((s->regs[R_INT_STATE_READ_ENABLE] >> appid) & 0x1)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: read state db not enable for %d\n",
-                      __func__, appid);
-        return 0;
+
+    unsigned appid = s->state_db_dump_id;
+    uint32_t val32 = 0;
+
+    if (appid < N_APP_COUNT &&
+        ((s->regs[R_INT_STATE_READ_ENABLE] >> appid) & 0x1u) &&
+        s->state_db_ix < 14u) {
+        OtCSRNGInstance *inst = &s->instances[appid];
+        OtCSRNGDrng *drng = &inst->drng;
+        unsigned base;
+        switch (s->state_db_ix) {
+        case 0: /* Reseed counter */
+            val32 = drng->reseed_counter;
+            break;
+        case 1u ... 4u: /* V (counter) */
+            /* use big endian and reverse order to match OpenTitan order */
+            base = 4u - s->state_db_ix;
+            val32 = ldl_be_p(&drng->v_counter[base * sizeof(uint32_t)]);
+            break;
+        case 5u ... 12u: /* Key */
+            /* use big endian and reverse order to match OpenTitan order */
+            base = 12u - s->state_db_ix;
+            val32 = ldl_be_p(&drng->key[base * sizeof(uint32_t)]);
+            break;
+        case 13u: /* Status + Compliance, only 8 LSBs matter */
+            val32 = (uint32_t)((((uint8_t)drng->instantiated) << 0u) |
+                               (((uint8_t)!drng->no_fips) << 1u));
+            break;
+        default:
+            val32 = 0;
+            break;
+        }
+        trace_ot_csrng_read_state_db(ot_csrng_get_slot(inst), s->state_db_ix,
+                                     val32);
     }
 
-    OtCSRNGInstance *inst = &s->instances[appid];
-    OtCSRNGDrng *drng = &inst->drng;
-    uint32_t val32;
-    unsigned base;
-    switch (s->state_db_ix) {
-    case 0: /* Reseed counter */
-        val32 = drng->reseed_counter;
-        break;
-    case 1u ... 4u: /* V (counter) */
-        /* use big endian and reverse order to match OpenTitan order */
-        base = 4u - s->state_db_ix;
-        val32 = ldl_be_p(&drng->v_counter[base * sizeof(uint32_t)]);
-        break;
-    case 5u ... 12u: /* Key */
-        /* use big endian and reverse order to match OpenTitan order */
-        base = 12u - s->state_db_ix;
-        val32 = ldl_be_p(&drng->key[base * sizeof(uint32_t)]);
-        break;
-    case 13u: /* Status + Compliance, only 8 LSBs matter */
-        val32 = (uint32_t)((((uint8_t)drng->instantiated) << 0u) |
-                           (((uint8_t)!drng->no_fips) << 1u));
-        break;
-    default:
-        val32 = 0;
-        break;
-    }
-
-    trace_ot_csrng_read_state_db(ot_csrng_get_slot(inst), s->state_db_ix,
-                                 val32);
-
-    s->state_db_ix += 1u;
-    if (s->state_db_ix >= 14u) {
-        s->state_db_ix = 0;
+    /*
+     * csrng_state_db.sv:162-168:
+     *   (reg_rd_ptr_q == 4'he) ? '0 : reg_rd_ptr_inc ? (reg_rd_ptr_q + 1) : ...
+     * Reading when reg_rd_ptr_q == 4'hf returns '0 and advances ptr to 4'h0.
+     * Reading when reg_rd_ptr_q == 4'hd (13) advances ptr to 4'he, which
+     * wraps to 4'h0 on the next cycle.
+     */
+    s->state_db_ix = (s->state_db_ix + 1u) & 0xfu;
+    if (s->state_db_ix == 0xeu) {
+        s->state_db_ix = 0u;
     }
 
     return val32;
@@ -1929,6 +1962,9 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 s->sw_app_granted = false;
                 s->read_int_granted = false;
             }
+            if (!s->enabled || !s->read_int_granted) {
+                s->state_db_ix = 0xfu;
+            }
         }
         break;
     case R_CMD_REQ:
@@ -1970,7 +2006,10 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_INT_STATE_NUM:
         val32 &= R_INT_STATE_NUM_VAL_MASK;
         s->regs[reg] = val32;
-        s->state_db_ix = 0;
+        if (s->enabled) {
+            s->state_db_dump_id = val32;
+        }
+        s->state_db_ix = (s->enabled && s->read_int_granted) ? 0u : 0xfu;
         if (val32 > OT_CSRNG_HW_APP_MAX) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid INT_STATE_NUM %u\n",
                           __func__, val32);
@@ -1991,7 +2030,13 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_RECOV_ALERT_STS:
         val32 &= RECOV_ALERT_STS_MASK;
-        s->regs[reg] &= val32; /* RW0C */
+        /*
+         * In csrng_core.sv:784-846, invalid CTRL mubi4 field alerts
+         * continuously assert hw2reg.recov_alert_sts.*_field_alert.{de,d} = 1'b1
+         * as long as the invalid mubi4 value remains in CTRL.
+         */
+        s->regs[reg] =
+            (s->regs[reg] & val32) | ot_csrng_get_ctrl_recov_alert_sts(s);
         ot_csrng_update_alerts(s);
         break;
     case R_ERR_CODE_TEST:
@@ -2019,15 +2064,15 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
         }
         break;
-    case R_RESEED_COUNTER_0:
-    case R_RESEED_COUNTER_1:
-    case R_RESEED_COUNTER_2:
     case R_SW_CMD_STS:
     case R_GENBITS_VLD:
     case R_GENBITS:
     case R_INT_STATE_VAL:
     case R_ERR_CODE:
     case R_MAIN_SM_STATE:
+    case R_RESEED_COUNTER_0:
+    case R_RESEED_COUNTER_1:
+    case R_RESEED_COUNTER_2:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
                       __func__, (uint32_t)addr, REG_NAME(reg));
         break;
@@ -2087,6 +2132,8 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->sw_app_granted = false;
     s->read_int_granted = false;
     s->es_retry_count = 0;
+    s->state_db_ix = 0xfu;
+    s->state_db_dump_id = 0u;
     s->state = CSRNG_IDLE;
 
     for (unsigned ix = 0; ix < N_APP_COUNT; ix++) {
