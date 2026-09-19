@@ -161,6 +161,24 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #undef REG_NAME_ENTRY
 /* clang-format on */
 
+static const uint8_t RSTMGR_PERMIT[REGS_COUNT] = {
+    [R_ALERT_TEST] = 0x1u,      [R_RESET_REQ] = 0x1u,
+    [R_RESET_INFO] = 0x1u,      [R_ALERT_REGWEN] = 0x1u,
+    [R_ALERT_INFO_CTRL] = 0x1u, [R_ALERT_INFO_ATTR] = 0x1u,
+    [R_ALERT_INFO] = 0xfu,      [R_CPU_REGWEN] = 0x1u,
+    [R_CPU_INFO_CTRL] = 0x1u,   [R_CPU_INFO_ATTR] = 0x1u,
+    [R_CPU_INFO] = 0xfu,        [R_SW_RST_REGWEN_0] = 0x1u,
+    [R_SW_RST_REGWEN_1] = 0x1u, [R_SW_RST_REGWEN_2] = 0x1u,
+    [R_SW_RST_REGWEN_3] = 0x1u, [R_SW_RST_REGWEN_4] = 0x1u,
+    [R_SW_RST_REGWEN_5] = 0x1u, [R_SW_RST_REGWEN_6] = 0x1u,
+    [R_SW_RST_REGWEN_7] = 0x1u, [R_SW_RST_CTRL_N_0] = 0x1u,
+    [R_SW_RST_CTRL_N_1] = 0x1u, [R_SW_RST_CTRL_N_2] = 0x1u,
+    [R_SW_RST_CTRL_N_3] = 0x1u, [R_SW_RST_CTRL_N_4] = 0x1u,
+    [R_SW_RST_CTRL_N_5] = 0x1u, [R_SW_RST_CTRL_N_6] = 0x1u,
+    [R_SW_RST_CTRL_N_7] = 0x1u, [R_ERR_CODE] = 0x1u,
+};
+
+
 #define OT_RSTMGR_SW_RESET_MAX 8u
 
 struct OtRstMgrState {
@@ -727,6 +745,54 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static MemTxResult ot_rstmgr_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    OtRstMgrState *s = opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint32_t val32 = (uint32_t)ot_rstmgr_regs_read(opaque, addr & ~0x3ULL, 4u);
+    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    *data = (val32 >> shift) & size_mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_rstmgr_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    OtRstMgrState *s = opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    if ((RSTMGR_PERMIT[reg] & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    uint32_t val32 = ((uint32_t)val64 & size_mask) << shift;
+    ot_rstmgr_regs_write(opaque, addr & ~0x3ULL, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const Property ot_rstmgr_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtRstMgrState, ot_id),
     DEFINE_PROP_UINT32("fatal_reset", OtRstMgrState, fatal_reset, 0),
@@ -734,12 +800,15 @@ static const Property ot_rstmgr_properties[] = {
 };
 
 static const MemoryRegionOps ot_rstmgr_regs_ops = {
-    .read = &ot_rstmgr_regs_read,
-    .write = &ot_rstmgr_regs_write,
+    .read_with_attrs = &ot_rstmgr_regs_read_with_attrs,
+    .write_with_attrs = &ot_rstmgr_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
+
 
 static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
 {
@@ -846,7 +915,8 @@ static void ot_rstmgr_init(Object *obj)
     OtRstMgrState *s = OT_RSTMGR(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_rstmgr_regs_ops, s, TYPE_OT_RSTMGR,
-                          REGS_SIZE);
+                          0x80u);
+
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regs = g_new0(uint32_t, REGS_COUNT);
