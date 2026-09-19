@@ -2703,7 +2703,8 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
     s->sram[addr >> 2u] = val32;
-    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 == 0xa5a5beefu) {
+    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 != 0u &&
+        val32 != 0xffffffffu) {
         s->flash.read_buf_modified = true;
         if (addr == 0u && !s->last_read_addr_polled) {
             s->csb_poll_enabled = true;
