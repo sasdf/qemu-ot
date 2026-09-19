@@ -236,10 +236,13 @@ static void ot_timer_clock_input(void *opaque, int irq, int level)
     /* TODO: @loic: update on-going timer */
 }
 
-static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_timer_read_with_attrs(void *opaque, hwaddr addr,
+                                            uint64_t *data, unsigned size,
+                                            MemTxAttrs attrs)
 {
     OtTimerState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32 = 0;
 
     hwaddr reg = R32_OFF(addr);
@@ -275,22 +278,24 @@ static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        val32 = 0;
-        break;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
-    return (uint32_t)val32;
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
 }
 
-static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
-                           unsigned size)
+static MemTxResult ot_timer_write_with_attrs(void *opaque, hwaddr addr,
+                                             uint64_t value, unsigned size,
+                                             MemTxAttrs attrs)
 {
     OtTimerState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);
@@ -395,12 +400,15 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
+        return MEMTX_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_timer_ops = {
-    .read = &ot_timer_read,
-    .write = &ot_timer_write,
+    .read_with_attrs = &ot_timer_read_with_attrs,
+    .write_with_attrs = &ot_timer_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
