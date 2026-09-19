@@ -180,6 +180,7 @@ static void ot_timer_rearm(OtTimerState *s, bool reset_origin)
     timer_del(s->timer);
 
     if (!s->pclk) {
+        ot_timer_update_irqs(s);
         return;
     }
 
@@ -189,8 +190,8 @@ static void ot_timer_rearm(OtTimerState *s, bool reset_origin)
         s->origin_ns = now;
     }
 
-    uint32_t step = FIELD_EX32(s->regs[R_CFG0], CFG0, STEP);
-    if (!ot_timer_is_active(s) || !step) {
+    if (!ot_timer_is_active(s)) {
+        ot_timer_update_irqs(s);
         return;
     }
 
@@ -198,9 +199,10 @@ static void ot_timer_rearm(OtTimerState *s, bool reset_origin)
     uint64_t mtimecmp = s->regs[R_COMPARE_LOWER0_0] |
                         ((uint64_t)s->regs[R_COMPARE_UPPER0_0] << 32u);
 
+    uint32_t step = FIELD_EX32(s->regs[R_CFG0], CFG0, STEP);
     if (mtime >= mtimecmp) {
         s->regs[R_INTR_STATE0] |= INTR_CMP0_MASK;
-    } else {
+    } else if (step) {
         int64_t delta = ot_timer_ticks_to_ns(s, mtimecmp - mtime);
         int64_t next = ot_timer_compute_next_timeout(s, now, delta);
         if (next < INT64_MAX) {
@@ -299,8 +301,10 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
     switch (reg) {
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
-        s->regs[reg] = val32;
-        ot_timer_update_alert(s);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     case R_CTRL: {
         uint32_t prev = s->regs[R_CTRL];
@@ -347,15 +351,32 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         ot_timer_update_irqs(s);
         break;
     case R_CFG0:
-        if (!ot_timer_is_active(s)) {
+        if (ot_timer_is_active(s)) {
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            uint64_t mtime = ot_timer_get_mtime(s, now);
+            s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
+            s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
+            s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
+            ot_timer_rearm(s, true);
+        } else {
             s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
         }
         break;
     case R_TIMER_V_LOWER0:
+        if (ot_timer_is_active(s)) {
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            uint64_t mtime = ot_timer_get_mtime(s, now);
+            s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
+        }
         s->regs[R_TIMER_V_LOWER0] = val32;
         ot_timer_rearm(s, true);
         break;
     case R_TIMER_V_UPPER0:
+        if (ot_timer_is_active(s)) {
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            uint64_t mtime = ot_timer_get_mtime(s, now);
+            s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
+        }
         s->regs[R_TIMER_V_UPPER0] = val32;
         ot_timer_rearm(s, true);
         break;
