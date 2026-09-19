@@ -1763,6 +1763,10 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
                     ot_entropy_src_update_filler(s);
                 }
             } else {
+                s->regs_hi[R_ERR_CODE] |= R_ERR_CODE_SFIFO_OBSERVE_ERR_MASK |
+                                          R_ERR_CODE_FIFO_READ_ERR_MASK;
+                ot_entropy_src_update_alerts(s);
+                ot_entropy_src_update_irqs(s);
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "%s: Read from empty observe FIFO\n", __func__);
                 val32 = 0;
@@ -2135,10 +2139,6 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             }
         }
     } break;
-    case R_FW_OV_RD_FIFO_OVERFLOW:
-        val32 &= R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK;
-        s->regs_hi[reg] &= val32; /* RW0C */
-        break;
     case R_FW_OV_WR_DATA:
         if (!ot_entropy_src_is_module_enabled(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: module not enabled\n",
@@ -2225,6 +2225,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_ALERT_SUMMARY_FAIL_COUNTS:
     case R_ALERT_FAIL_COUNTS:
     case R_EXTHT_FAIL_COUNTS:
+    case R_FW_OV_RD_FIFO_OVERFLOW:
     case R_FW_OV_WR_FIFO_FULL:
     case R_FW_OV_RD_DATA:
     case R_OBSERVE_FIFO_DEPTH:
