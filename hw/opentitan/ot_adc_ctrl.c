@@ -361,10 +361,48 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
     }
 }
 
-static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
+static const uint8_t ADC_CTRL_PERMIT[REGS_COUNT] = {
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_ENABLE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_ADC_EN_CTL] = 0x1u,
+    [R_ADC_PD_CTL] = 0xfu,
+    [R_ADC_LP_SAMPLE_CTL] = 0x1u,
+    [R_ADC_SAMPLE_CTL] = 0x3u,
+    [R_ADC_FSM_RST] = 0x1u,
+    [R_ADC_CHN0_FILTER_CTL_0] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_1] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_2] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_3] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_4] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_5] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_6] = 0xfu,
+    [R_ADC_CHN0_FILTER_CTL_7] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_0] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_1] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_2] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_3] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_4] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_5] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_6] = 0xfu,
+    [R_ADC_CHN1_FILTER_CTL_7] = 0xfu,
+    [R_ADC_CHN_VAL_0] = 0xfu,
+    [R_ADC_CHN_VAL_1] = 0xfu,
+    [R_ADC_WAKEUP_CTL] = 0x3u,
+    [R_FILTER_STATUS] = 0x3u,
+    [R_ADC_INTR_CTL] = 0x3u,
+    [R_ADC_INTR_STATUS] = 0x3u,
+    [R_ADC_FSM_STATE] = 0x1u,
+};
+
+static MemTxResult ot_adc_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
+                                                    uint64_t *val64,
+                                                    unsigned size,
+                                                    MemTxAttrs attrs)
 {
     OtAdcCtrlState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -397,27 +435,50 @@ static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        val32 = 0;
-        break;
+        *val64 = 0;
+        return MEMTX_DECODE_ERROR;
     }
+
+    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    val32 = (val32 >> shift) & size_mask;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    *val64 = (uint64_t)val32;
+    return MEMTX_OK;
 }
 
-static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                                   unsigned size)
+static MemTxResult ot_adc_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
+                                                     uint64_t val64,
+                                                     unsigned size,
+                                                     MemTxAttrs attrs)
 {
     OtAdcCtrlState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
+
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    if ((ADC_CTRL_PERMIT[reg] & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Sub-word write error at 0x%02x (size=%u)\n",
+                      __func__, (uint32_t)addr, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    val32 <<= (addr & 0x3u) * 8u;
 
     switch (reg) {
     case R_INTR_STATE:
@@ -500,16 +561,20 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        break;
+        return MEMTX_DECODE_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_adc_ctrl_regs_ops = {
-    .read = &ot_adc_ctrl_regs_read,
-    .write = &ot_adc_ctrl_regs_write,
+    .read_with_attrs = &ot_adc_ctrl_regs_read_with_attrs,
+    .write_with_attrs = &ot_adc_ctrl_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
