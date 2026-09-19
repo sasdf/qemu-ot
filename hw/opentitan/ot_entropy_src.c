@@ -407,7 +407,7 @@ static const char *REG_HI_NAMES[REGS_HI_COUNT] = {
  * FIFO packets. They are assembled into either 384-bit or 2048-bit packets.
  */
 #define ES_FILL_BITS                   128u
-#define ES_FINAL_FIFO_DEPTH            4u
+#define ES_FINAL_FIFO_DEPTH            3u
 #define OT_ENTROPY_SRC_FILL_WORD_COUNT (ES_FILL_BITS / (8u * sizeof(uint32_t)))
 #define ES_WORD_COUNT                  (OT_ENTROPY_SRC_WORD_COUNT)
 #define ES_SWREAD_FIFO_WORD_COUNT      ES_WORD_COUNT
@@ -1143,6 +1143,13 @@ ot_entropy_src_push_bypass_entropy(OtEntropySrcState *s, uint32_t word)
     return true;
 }
 
+static bool ot_entropy_src_is_entropy_data_enabled(const OtEntropySrcState *s)
+{
+    return (s->version < 3) ?
+               REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE) :
+               REG_MB4_IS_TRUE(s, hi, CONF, V3_ENTROPY_DATA_REG_ENABLE);
+}
+
 static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
 {
     if (ot_fifo32_num_used(&s->final_fifo) >= ES_WORD_COUNT) {
@@ -1153,11 +1160,15 @@ static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
             while (count--) {
                 ot_fifo32_push(&s->swread_fifo, ot_fifo32_pop(&s->final_fifo));
             }
-            s->regs_lo[R_INTR_STATE] |= INTR_ES_ENTROPY_VALID_MASK;
             trace_ot_entropy_src_available(s->ot_id, STATE_NAME(s->state),
                                            s->state);
             ot_entropy_src_update_filler(s);
         }
+    }
+    if (!ot_fifo32_is_empty(&s->swread_fifo) &&
+        ot_entropy_src_is_module_enabled(s) && ot_entropy_src_is_fw_route(s) &&
+        ot_entropy_src_is_entropy_data_enabled(s)) {
+        s->regs_lo[R_INTR_STATE] |= INTR_ES_ENTROPY_VALID_MASK;
     }
 }
 
@@ -1707,15 +1718,18 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_ERR_CODE_TEST:
         val32 = s->regs_hi[reg];
         break;
-    case R_DEBUG_STATUS:
+    case R_DEBUG_STATUS: {
         /* SHA3 block reporting is not supported */
-        val32 = FIELD_DP32(0, DEBUG_STATUS, ENTROPY_FIFO_DEPTH,
-                           ot_fifo32_num_used(&s->final_fifo));
+        unsigned seed_depth =
+            (ot_fifo32_num_used(&s->final_fifo) / ES_WORD_COUNT) +
+            (!ot_fifo32_is_empty(&s->swread_fifo) ? 1u : 0u);
+        seed_depth = MIN(seed_depth, ES_FINAL_FIFO_DEPTH);
+        val32 = FIELD_DP32(0, DEBUG_STATUS, ENTROPY_FIFO_DEPTH, seed_depth);
         val32 = FIELD_DP32(val32, DEBUG_STATUS, MAIN_SM_IDLE,
                            (uint32_t)(s->state == ENTROPY_SRC_IDLE));
         val32 = FIELD_DP32(val32, DEBUG_STATUS, MAIN_SM_BOOT_DONE,
                            (uint32_t)(s->state == ENTROPY_SRC_BOOT_PHASE_DONE));
-        break;
+    } break;
     case R_MAIN_SM_STATE:
         if (s->state < ARRAY_SIZE(OtEDNFsmStateCode)) {
             val32 = OtEDNFsmStateCode[s->state];
@@ -1823,7 +1837,10 @@ static void ot_entropy_src_lo_regs_write(void *opaque, hwaddr addr,
     case R_INTR_STATE:
         val32 &= INTR_WMASK;
         s->regs_lo[reg] &= ~val32; /* RW1C */
-        if (!ot_fifo32_is_empty(&s->swread_fifo)) {
+        if (!ot_fifo32_is_empty(&s->swread_fifo) &&
+            ot_entropy_src_is_module_enabled(s) &&
+            ot_entropy_src_is_fw_route(s) &&
+            ot_entropy_src_is_entropy_data_enabled(s)) {
             s->regs_lo[R_INTR_STATE] |= INTR_ES_ENTROPY_VALID_MASK;
         }
         if (ot_entropy_src_is_fw_ov_mode(s) &&
