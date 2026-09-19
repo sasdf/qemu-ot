@@ -203,57 +203,97 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     return invert ? !active : active;
 }
 
-static uint64_t ot_pwm_read(void *opaque, hwaddr addr, unsigned size)
+static const uint8_t PWM_PERMIT[REGS_COUNT] = {
+    [R_ALERT_TEST] = 0x1u,
+    [R_REGWEN] = 0x1u,
+    [R_CFG] = 0xfu,
+    [R_PWM_EN] = 0x1u,
+    [R_INVERT] = 0x1u,
+    [R_PWM_PARAM_0] = 0xfu,
+    [R_PWM_PARAM_1] = 0xfu,
+    [R_PWM_PARAM_2] = 0xfu,
+    [R_PWM_PARAM_3] = 0xfu,
+    [R_PWM_PARAM_4] = 0xfu,
+    [R_PWM_PARAM_5] = 0xfu,
+    [R_DUTY_CYCLE_0] = 0xfu,
+    [R_DUTY_CYCLE_1] = 0xfu,
+    [R_DUTY_CYCLE_2] = 0xfu,
+    [R_DUTY_CYCLE_3] = 0xfu,
+    [R_DUTY_CYCLE_4] = 0xfu,
+    [R_DUTY_CYCLE_5] = 0xfu,
+    [R_BLINK_PARAM_0] = 0xfu,
+    [R_BLINK_PARAM_1] = 0xfu,
+    [R_BLINK_PARAM_2] = 0xfu,
+    [R_BLINK_PARAM_3] = 0xfu,
+    [R_BLINK_PARAM_4] = 0xfu,
+    [R_BLINK_PARAM_5] = 0xfu,
+};
+
+static MemTxResult ot_pwm_read_with_attrs(void *opaque, hwaddr addr,
+                                          uint64_t *val64, unsigned size,
+                                          MemTxAttrs attrs)
 {
     OtPwmState *s = opaque;
-    (void)size;
+    (void)attrs;
     hwaddr reg = R32_OFF(addr);
 
     if (reg >= REGS_COUNT) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return 0;
+        *val64 = 0;
+        return MEMTX_DECODE_ERROR;
     }
 
-    if (reg == R_ALERT_TEST) {
-        return 0;
-    }
-
-    return s->regs[reg];
+    uint32_t val32 = (reg == R_ALERT_TEST) ? 0u : s->regs[reg];
+    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    *val64 = (uint64_t)((val32 >> shift) & size_mask);
+    return MEMTX_OK;
 }
 
-static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
-                         unsigned size)
+static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
+                                           uint64_t val64, unsigned size,
+                                           MemTxAttrs attrs)
 {
     OtPwmState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
     hwaddr reg = R32_OFF(addr);
 
     if (reg >= REGS_COUNT) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return;
+        return MEMTX_DECODE_ERROR;
     }
+
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    if ((PWM_PERMIT[reg] & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    val32 <<= (addr & 0x3u) * 8u;
 
     if (reg == R_ALERT_TEST) {
         if (val32 & R_ALERT_TEST_FATAL_FAULT_MASK) {
             ibex_irq_set(&s->alert, 1);
             ibex_irq_set(&s->alert, 0);
         }
-        return;
+        return MEMTX_OK;
     }
 
     if (reg == R_REGWEN) {
         s->regs[R_REGWEN] &= (val32 & R_REGWEN_EN_MASK);
-        return;
+        return MEMTX_OK;
     }
 
     if (!s->regs[R_REGWEN]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: Write to locked register 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return;
+        return MEMTX_OK;
     }
 
     switch (reg) {
@@ -291,14 +331,18 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     default:
         break;
     }
+
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_pwm_regs_ops = {
-    .read = &ot_pwm_read,
-    .write = &ot_pwm_write,
+    .read_with_attrs = &ot_pwm_read_with_attrs,
+    .write_with_attrs = &ot_pwm_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static const Property ot_pwm_properties[] = {
