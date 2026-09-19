@@ -580,6 +580,17 @@ void ot_pwrmgr_trigger_check(OtPwrMgrState *s)
     timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
 }
 
+static void ot_pwrmgr_set_low_power(OtPwrMgrState *s, bool low_power)
+{
+    s->in_low_power = low_power;
+    ibex_irq_set(&s->sleep_en, (int)low_power);
+    OtAonTimerState *aon = (OtAonTimerState *)object_resolve_path_type(
+        "", TYPE_OT_AON_TIMER, NULL);
+    if (aon) {
+        ot_aon_timer_set_sleep_mode(aon, low_power);
+    }
+}
+
 static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
 {
     if (s->regs[R_RESET_STATUS]) {
@@ -610,12 +621,11 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 ot_pwrmgr_update_irq(s);
                 return;
             }
-            s->in_low_power = true;
             if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
                   R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
                 s->wake_info_recording = true;
             }
-            ibex_irq_set(&s->sleep_en, 1);
+            ot_pwrmgr_set_low_power(s, true);
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
                 ibex_irq_set(&s->cpu_enable, (int)false);
             }
@@ -654,8 +664,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         "", TYPE_OT_AON_TIMER, NULL);
                 if (aon && !ot_aon_timer_is_active(aon)) {
                     s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
-                    s->in_low_power = false;
-                    ibex_irq_set(&s->sleep_en, 0);
+                    ot_pwrmgr_set_low_power(s, false);
                     s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                     s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                     ibex_irq_set(&s->cpu_enable, (int)false);
@@ -678,8 +687,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                     (OtAonTimerState *)object_resolve_path_type(
                         "", TYPE_OT_AON_TIMER, NULL);
                 if (aon && !ot_aon_timer_is_active(aon)) {
-                    s->in_low_power = false;
-                    ibex_irq_set(&s->sleep_en, 0);
+                    ot_pwrmgr_set_low_power(s, false);
                     s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                     s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                     ibex_irq_set(&s->cpu_enable, (int)false);
@@ -698,8 +706,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             }
         }
         if (active_wkup) {
-            s->in_low_power = false;
-            ibex_irq_set(&s->sleep_en, 0);
+            ot_pwrmgr_set_low_power(s, false);
             if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
                   R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
                 s->regs[R_WAKE_INFO] |= active_wkup;
@@ -1379,8 +1386,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     PWR_CHANGE_FAST_STATE(s, LOW_POWER);
     PWR_CHANGE_SLOW_STATE(s, RESET);
 
-    s->in_low_power = false;
-    ibex_irq_set(&s->sleep_en, 0);
+    ot_pwrmgr_set_low_power(s, false);
     ot_pwrmgr_update_irq(s);
     ibex_irq_set(&s->strap, 0);
     ibex_irq_set(&s->cpu_enable, 0);

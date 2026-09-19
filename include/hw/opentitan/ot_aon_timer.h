@@ -39,5 +39,6 @@ OBJECT_DECLARE_TYPE(OtAonTimerState, OtAonTimerClass, OT_AON_TIMER)
 #define OT_AON_TIMER_LC_ESCALATE TYPE_OT_AON_TIMER "-lc-escalate"
 
 bool ot_aon_timer_is_active(OtAonTimerState *s);
+void ot_aon_timer_set_sleep_mode(OtAonTimerState *s, bool sleep_mode);
 
 #endif /* HW_OPENTITAN_OT_AON_TIMER_H */

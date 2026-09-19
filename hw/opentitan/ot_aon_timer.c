@@ -132,6 +132,7 @@ struct OtAonTimerState {
     bool wdog_bark_level;
     bool wdog_bite;
     bool lc_escalate_en;
+    bool sleep_mode;
     uint32_t pclks[OT_AON_TIMER_CLOCK_SRC_COUNT];
     const char *clock_src_names[OT_AON_TIMER_CLOCK_SRC_COUNT];
 
@@ -180,8 +181,11 @@ static inline bool ot_aon_timer_is_wkup_enabled(OtAonTimerState *s)
 
 static inline bool ot_aon_timer_is_wdog_enabled(OtAonTimerState *s)
 {
+    bool pause =
+        s->sleep_mode &&
+        (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, PAUSE_IN_SLEEP);
     return (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE) &&
-           !s->lc_escalate_en;
+           !s->lc_escalate_en && !pause;
 }
 
 bool ot_aon_timer_is_active(OtAonTimerState *s)
@@ -602,6 +606,21 @@ static const Property ot_aon_timer_properties[] = {
                      DeviceState *),
 };
 
+void ot_aon_timer_set_sleep_mode(OtAonTimerState *s, bool sleep_mode)
+{
+    if (!s || sleep_mode == s->sleep_mode) {
+        return;
+    }
+
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    ot_aon_timer_sync_wkup(s, now);
+    ot_aon_timer_sync_wdog(s, now);
+
+    s->sleep_mode = sleep_mode;
+    ot_aon_timer_rearm_wkup(s, now);
+    ot_aon_timer_rearm_wdog(s, now);
+}
+
 static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
 {
     OtAonTimerClass *c = OT_AON_TIMER_GET_CLASS(obj);
@@ -616,28 +635,24 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
     timer_del(s->wkup_timer);
     timer_del(s->wdog_timer);
 
+    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     if (type != RESET_TYPE_COLD &&
         ((s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) ||
          (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK) ||
-         ot_aon_timer_is_wkup_enabled(s)) &&
+         ot_aon_timer_is_wkup_enabled(s) ||
+         (bool)FIELD_EX32(s->regs[R_WDOG_CTRL], WDOG_CTRL, ENABLE)) &&
         !s->wdog_bite) {
+        ot_aon_timer_sync_wkup(s, now);
+        ot_aon_timer_sync_wdog(s, now);
+        s->sleep_mode = false;
         if (ot_aon_timer_is_wkup_enabled(s) &&
             !(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK)) {
             s->regs[R_WKUP_CAUSE] = R_WKUP_CAUSE_CAUSE_MASK;
         }
-        if (s->regs[R_WDOG_CTRL] & R_WDOG_CTRL_PAUSE_IN_SLEEP_MASK) {
-            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-            int64_t pre_sleep_delta = MAX(s->wkup_origin_ns - s->wdog_origin_ns, 0);
-            s->wdog_origin_ns = now - pre_sleep_delta;
-            uint64_t now_clks = ot_aon_timer_ns_to_aon_clks(s, now);
-            uint64_t pre_sleep_clks =
-                (s->wkup_origin_clks > s->wdog_origin_clks) ?
-                    (s->wkup_origin_clks - s->wdog_origin_clks) :
-                    0u;
-            s->wdog_origin_clks = now_clks - pre_sleep_clks;
-        }
         s->regs[R_INTR_STATE] = 0;
         s->regs[R_WDOG_REGWEN] = 1u;
+        ot_aon_timer_rearm_wkup(s, now);
+        ot_aon_timer_rearm_wdog(s, now);
     } else {
         memset(s->regs, 0, sizeof(s->regs));
         s->regs[R_WDOG_REGWEN] = 1u;
@@ -647,6 +662,7 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
         s->wdog_bark_level = false;
         s->wdog_bite = false;
         s->lc_escalate_en = false;
+        s->sleep_mode = false;
     }
 
     ot_aon_timer_update_irqs(s);
