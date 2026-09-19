@@ -469,8 +469,11 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
-    uint32_t pc = ibex_get_current_pc();
-    bool in_debug_rom = (pc >= 0x800u && pc < 0x900u);
+    uint32_t pc = first_cpu && first_cpu->cc->get_pc ?
+                      (uint32_t)first_cpu->cc->get_pc(first_cpu) :
+                      0u;
+    bool in_debug_rom =
+        (pc >= 0x800u && pc < 0x900u) || (pc >= 0x10800u && pc < 0x10900u);
     bool cpu_idle = !first_cpu || first_cpu->disabled ||
                     first_cpu->stopped || first_cpu->halted || in_debug_rom;
     uint64_t rt_delay_ns =
