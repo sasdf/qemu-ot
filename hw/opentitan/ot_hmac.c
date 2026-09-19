@@ -1195,18 +1195,18 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
     }
 }
 
-static uint64_t ot_hmac_fifo_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_hmac_fifo_read_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t *val64, unsigned size,
+                                                MemTxAttrs attrs)
 {
-    OtHMACState *s = OT_HMAC(opaque);
+    (void)opaque;
     (void)addr;
+    (void)val64;
     (void)size;
+    (void)attrs;
     qemu_log_mask(LOG_GUEST_ERROR, "%s: MSG_FIFO is write only\n", __func__);
 
-    if (!s->regs->cmd || !(s->regs->cfg & R_CFG_SHA_EN_MASK)) {
-        ot_hmac_report_error(s, R_ERR_CODE_PUSH_MSG_WHEN_DISALLOWED);
-    }
-
-    return 0xffffffffu;
+    return MEMTX_ERROR;
 }
 
 static void ot_hmac_fifo_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1291,7 +1291,7 @@ static const MemoryRegionOps ot_hmac_regs_ops = {
 };
 
 static const MemoryRegionOps ot_hmac_fifo_ops = {
-    .read = &ot_hmac_fifo_read,
+    .read_with_attrs = &ot_hmac_fifo_read_with_attrs,
     .write = &ot_hmac_fifo_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
