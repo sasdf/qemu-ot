@@ -474,10 +474,35 @@ static void ot_aon_timer_lc_escalate(void *opaque, int irq, int level)
     ot_aon_timer_rearm_wdog(s, now);
 }
 
-static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * Per-register byte-enable write permission mask (AON_TIMER_PERMIT in
+ * hw/ip/aon_timer/rtl/aon_timer_reg_pkg.sv). A write raises TL-UL d_error=1
+ * (wr_err) if any bit in PERMIT is not covered by the active byte enables
+ * (i.e. (PERMIT & ~reg_be) != 0).
+ */
+static const uint8_t AON_TIMER_PERMIT[REGS_COUNT] = {
+    [R_ALERT_TEST] = 0x1u,
+    [R_WKUP_CTRL] = 0x3u,
+    [R_WKUP_THOLD_HI] = 0xfu,
+    [R_WKUP_THOLD_LO] = 0xfu,
+    [R_WKUP_COUNT_HI] = 0xfu,
+    [R_WKUP_COUNT_LO] = 0xfu,
+    [R_WDOG_REGWEN] = 0x1u,
+    [R_WDOG_CTRL] = 0x1u,
+    [R_WDOG_BARK_THOLD] = 0xfu,
+    [R_WDOG_BITE_THOLD] = 0xfu,
+    [R_WDOG_COUNT] = 0xfu,
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_WKUP_CAUSE] = 0x1u,
+};
+
+static MemTxResult ot_aon_timer_read_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t *val64, unsigned size,
+                                                MemTxAttrs attrs)
 {
     OtAonTimerState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32;
 
     s->low_power_exit = false;
@@ -488,6 +513,13 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
     ot_aon_timer_update_irqs(s);
 
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        *val64 = 0u;
+        return MEMTX_ERROR;
+    }
+
     switch (reg) {
     case R_WKUP_CTRL:
     case R_WKUP_THOLD_HI:
@@ -512,22 +544,29 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        val32 = 0;
-        break;
+        *val64 = 0u;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_aon_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                    val32, pc);
 
-    return (uint64_t)val32;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    val32 >>= (byte_off * 8u);
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
+    *val64 = (uint64_t)val32;
+    return MEMTX_OK;
 }
 
-static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
-                               unsigned size)
+static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t value, unsigned size,
+                                                 MemTxAttrs attrs)
 {
     OtAonTimerState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)value;
 
     s->low_power_exit = false;
@@ -537,6 +576,24 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
     ot_aon_timer_sync_wdog(s, now);
 
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
+
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    if ((AON_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: sub-word write wr_err at 0x%02x (%s, be=0x%x)\n",
+                      __func__, (uint32_t)addr, REG_NAME(reg), reg_be);
+        return MEMTX_ERROR;
+    }
+
+    if (size < 4u) {
+        val32 = (val32 & ((1u << (size * 8u)) - 1u)) << (byte_off * 8u);
+    }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_aon_timer_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -607,14 +664,19 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
+        return MEMTX_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_aon_timer_ops = {
-    .read = &ot_aon_timer_read,
-    .write = &ot_aon_timer_write,
+    .read_with_attrs = &ot_aon_timer_read_with_attrs,
+    .write_with_attrs = &ot_aon_timer_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
