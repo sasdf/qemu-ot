@@ -2623,6 +2623,10 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Read empty FIFO\n",
                               __func__, s->ot_id);
             }
+            if (!(ot_flash_operation_ongoing(s) && s->op.kind == OP_READ)) {
+                *val64 = 0u;
+                return MEMTX_ERROR;
+            }
             val32 = 0u;
         }
         break;
