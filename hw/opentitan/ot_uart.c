@@ -450,13 +450,7 @@ static void ot_uart_update_val(OtUARTState *s)
 {
     if ((ot_uart_is_tx_enabled(s) || ot_uart_is_rx_enabled(s)) &&
         FIELD_EX32(s->regs[R_CTRL], CTRL, NCO) != 0) {
-        if (ot_uart_is_sys_loopack_enabled(s) &&
-            (s->regs[R_OVRD] & R_OVRD_TXEN_MASK) &&
-            !(s->regs[R_OVRD] & R_OVRD_TXVAL_MASK)) {
-            s->regs[R_VAL] = 0u;
-        } else {
-            s->regs[R_VAL] = UINT16_MAX;
-        }
+        s->regs[R_VAL] = UINT16_MAX;
     }
 }
 
@@ -465,16 +459,29 @@ static void ot_uart_update_rx_timeout(OtUARTState *s)
     if (!s->rx_timeout_timer) {
         return;
     }
-    if ((s->regs[R_TIMEOUT_CTRL] & R_TIMEOUT_CTRL_EN_MASK) &&
-        ot_uart_is_rx_enabled(s) && !fifo8_is_empty(&s->rx_fifo)) {
+    if (s->regs[R_TIMEOUT_CTRL] & R_TIMEOUT_CTRL_EN_MASK) {
         uint32_t val = FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, VAL);
-        uint64_t bit_ns = MAX(ot_uart_char_ns(s) / 10ULL, 100ULL);
-        uint64_t delay_ns = bit_ns * (uint64_t)MAX(val, 1u);
-        timer_mod(s->rx_timeout_timer,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)delay_ns);
-    } else {
-        timer_del(s->rx_timeout_timer);
+        if (val == 0u) {
+            /*
+             * In uart_core.sv, event_rx_timeout = (rx_timeout_count_q ==
+             * uart_rxto_val) & uart_rxto_en. Since rx_timeout_count_q is 0 when
+             * idle/empty, enabling TIMEOUT_CTRL with VAL == 0 immediately
+             * asserts INTR_STATE.RX_TIMEOUT.
+             */
+            s->regs[R_INTR_STATE] |= INTR_RX_TIMEOUT_MASK;
+            ot_uart_update_irqs(s);
+            timer_del(s->rx_timeout_timer);
+            return;
+        }
+        if (ot_uart_is_rx_enabled(s) && !fifo8_is_empty(&s->rx_fifo)) {
+            uint64_t bit_ns = MAX(ot_uart_char_ns(s) / 10ULL, 100ULL);
+            uint64_t delay_ns = bit_ns * (uint64_t)val;
+            timer_mod(s->rx_timeout_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)delay_ns);
+            return;
+        }
     }
+    timer_del(s->rx_timeout_timer);
 }
 
 static void ot_uart_rx_timeout_timer_cb(void *opaque)
@@ -759,11 +766,8 @@ static uint64_t ot_uart_char_ns(const OtUARTState *s)
 {
     uint32_t nco = FIELD_EX32(s->regs[R_CTRL], CTRL, NCO);
     if (nco && s->pclk) {
-        uint64_t baud = ((uint64_t)nco * (uint64_t)s->pclk) >>
-                        (R_CTRL_NCO_LENGTH + 4);
-        if (baud) {
-            return (10ULL * NANOSECONDS_PER_SECOND) / baud;
-        }
+        return (10ULL * NANOSECONDS_PER_SECOND << (R_CTRL_NCO_LENGTH + 4)) /
+               ((uint64_t)nco * (uint64_t)s->pclk);
     }
     return 86805ULL;
 }
@@ -866,7 +870,9 @@ static void ot_uart_tx_schedule(OtUARTState *s)
         (s->regs[R_INTR_ENABLE] &
          (INTR_TX_DONE_MASK | INTR_TX_WATERMARK_MASK | INTR_TX_EMPTY_MASK)) !=
             0 ||
-        s->tx_busy;
+        s->tx_busy || ot_uart_is_sys_loopack_enabled(s) ||
+        !qemu_chr_fe_backend_connected(ot_uart_get_tx_chr(s)) ||
+        ot_uart_char_ns(s) > 100000ULL;
     if (!use_timer) {
         ot_uart_xmit(s);
         return;
@@ -963,7 +969,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
 
     if (!fifo8_is_empty(&s->tx_fifo) && !s->tx_busy &&
         ot_uart_is_tx_enabled(s)) {
-        ot_uart_xmit(s);
+        ot_uart_tx_schedule(s);
     }
 
     hwaddr reg = R32_OFF(addr);
@@ -1094,6 +1100,7 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
          */
         val32 &= INTR_MASK & ~INTR_STATUS_MASK;
         s->regs[R_INTR_STATE] &= ~val32; /* RW1C (event-type bits only) */
+        ot_uart_update_rx_timeout(s);
         ot_uart_update_irqs(s);
         break;
     case R_INTR_ENABLE:
