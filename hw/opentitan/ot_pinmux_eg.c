@@ -162,7 +162,7 @@ REG32(WKUP_CAUSE,
 #define R32_OFF(_r_)             ((_r_) / sizeof(uint32_t))
 #define R_LAST_REG               (R_WKUP_CAUSE)
 #define REGS_COUNT               (R_LAST_REG + 1u)
-#define REGS_SIZE                (REGS_COUNT * sizeof(uint32_t))
+#define REGS_SIZE                0x1000u
 #define CASE_SCALAR(_reg_)       R_##_reg_
 #define CASE_RANGE(_reg_, _rpt_) R_##_reg_...(R_##_reg_ + (_rpt_) - (1u))
 #define PAD_ATTR_TO_IRQ(_pad_)   ((int)((_pad_) & INT32_MAX))
@@ -1098,11 +1098,66 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static uint8_t ot_pinmux_eg_permit(hwaddr reg)
+{
+    if ((reg >= R_MIO_PAD_ATTR && reg < R_MIO_PAD_ATTR + PARAM_N_MIO_PADS) ||
+        (reg >= R_DIO_PAD_ATTR && reg < R_DIO_PAD_ATTR + PARAM_N_DIO_PADS)) {
+        return 0x7u;
+    }
+    if (reg == R_MIO_PAD_SLEEP_STATUS) {
+        return 0xfu;
+    }
+    if (reg == R_MIO_PAD_SLEEP_STATUS + 1u || reg == R_DIO_PAD_SLEEP_STATUS) {
+        return 0x3u;
+    }
+    return 0x1u;
+}
+
+static MemTxResult ot_pinmux_eg_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return MEMTX_ERROR;
+    }
+
+    uint32_t val32 =
+        (uint32_t)ot_pinmux_eg_regs_read(opaque, addr & ~0x3ull, 4u);
+    unsigned shift = (unsigned)((addr & 0x3ull) * 8u);
+    uint64_t mask =
+        (size == 4u) ? 0xffffffffull : ((1ull << (size * 8u)) - 1ull);
+    *val64 = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_pinmux_eg_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    uint8_t reg_be = ((1u << size) - 1u) << (addr & 0x3u);
+
+    if (reg >= REGS_COUNT || (ot_pinmux_eg_permit(reg) & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Write error at offset 0x%" HWADDR_PRIx
+                      " size %u reg_be 0x%x\n",
+                      __func__, addr, size, reg_be);
+        return MEMTX_ERROR;
+    }
+
+    unsigned shift = (unsigned)((addr & 0x3ull) * 8u);
+    ot_pinmux_eg_regs_write(opaque, addr & ~0x3ull, val64 << shift, size);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_pinmux_eg_regs_ops = {
-    .read = &ot_pinmux_eg_regs_read,
-    .write = &ot_pinmux_eg_regs_write,
+    .read_with_attrs = &ot_pinmux_eg_regs_read_with_attrs,
+    .write_with_attrs = &ot_pinmux_eg_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
