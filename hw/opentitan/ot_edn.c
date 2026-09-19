@@ -151,6 +151,7 @@ static const char *REG_NAMES[REGS_COUNT] = {
     REG_NAME_ENTRY(BOOT_GEN_CMD),
     REG_NAME_ENTRY(SW_CMD_REQ),
     REG_NAME_ENTRY(SW_CMD_STS),
+    REG_NAME_ENTRY(HW_CMD_STS),
     REG_NAME_ENTRY(RESEED_CMD),
     REG_NAME_ENTRY(GENERATE_CMD),
     REG_NAME_ENTRY(MAX_NUM_REQS_BETWEEN_RESEEDS),
@@ -1538,7 +1539,12 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_RECOV_ALERT_STS:
         val32 &= RECOV_ALERT_STS_MASK;
-        s->regs[reg] &= val32; /* rw0c */
+        /*
+         * In edn_core.sv, invalid CTRL mubi4 field alerts continuously drive
+         * hw2reg.recov_alert_sts.*_field_alert.{de,d} = 1'b1 as long as the
+         * invalid mubi4 value remains in CTRL.
+         */
+        s->regs[reg] = (s->regs[reg] & val32) | s->recov_alert_sts; /* rw0c */
         break;
     case R_ERR_CODE_TEST:
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
@@ -1559,6 +1565,7 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_edn_update_alerts(s);
         break;
     case R_SW_CMD_STS:
+    case R_HW_CMD_STS:
     case R_ERR_CODE:
     case R_MAIN_SM_STATE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
