@@ -581,15 +581,37 @@ static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
     return ot_otbn_proxy_get_status(s->proxy);
 }
 
-static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
+static uint8_t ot_otbn_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_ERR_BITS:
+        return 0x7u;
+    case R_INSN_CNT:
+    case R_LOAD_CHECKSUM:
+        return 0xfu;
+    default:
+        return 0x1u;
+    }
+}
+
+static MemTxResult ot_otbn_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtOTBNState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     uint32_t pc = ibex_get_current_pc();
 
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
+    }
+
     switch (reg) {
     case R_INTR_STATE:
         if (!(s->intr_state & INTR_DONE_MASK)) {
@@ -638,23 +660,21 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
                       s->ot_id, REG_NAME(reg));
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        val32 = 0;
-        break;
+        g_assert_not_reached();
     }
 
     trace_ot_otbn_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
 
-    return (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                               unsigned size)
+static MemTxResult ot_otbn_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtOTBNState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
@@ -662,7 +682,19 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otbn_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
 
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
 
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    if ((ot_otbn_reg_permit(reg) & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: sub-word write error at 0x%02x (%s, be=0x%x)\n",
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg), reg_be);
+        return MEMTX_ERROR;
+    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -726,10 +758,10 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                       s->ot_id, REG_NAME(reg));
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        break;
+        g_assert_not_reached();
     }
+
+    return MEMTX_OK;
 }
 
 static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
@@ -746,15 +778,20 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
+    hwaddr word_addr = addr & ~3ULL;
     if (s->lc_escalated) {
-        trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, 0u);
+        trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
+                               0u);
         return 0u;
     }
     bool valid = true;
-    uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr, &valid);
-    trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value);
+    uint32_t value =
+        ot_otbn_proxy_read_memory(s->proxy, doi, word_addr, &valid);
+    trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
+                           value);
     if (!valid) {
-        hwaddr offset = (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + addr;
+        hwaddr offset =
+            (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + word_addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
     }
     if (ot_otbn_is_locked(s)) {
@@ -786,38 +823,46 @@ static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
     }
 }
 
-static inline uint64_t
-ot_otbn_imem_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_otbn_imem_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     (void)size;
-
-    return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, true, addr);
+    (void)attrs;
+    uint32_t val32 = ot_otbn_mem_read((OtOTBNState *)opaque, true, addr);
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static inline void ot_otbn_imem_write(void *opaque, hwaddr addr, uint64_t val64,
-                                      unsigned size)
+static MemTxResult ot_otbn_imem_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
-    (void)size;
-
-    return ot_otbn_mem_write((OtOTBNState *)opaque, true, addr,
-                             (uint32_t)val64);
+    (void)attrs;
+    if (size != 4u || (addr & 3u) != 0u) {
+        return MEMTX_ERROR;
+    }
+    ot_otbn_mem_write((OtOTBNState *)opaque, true, addr, (uint32_t)val64);
+    return MEMTX_OK;
 }
 
-static inline uint64_t
-ot_otbn_dmem_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_otbn_dmem_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     (void)size;
-
-    return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, false, addr);
+    (void)attrs;
+    uint32_t val32 = ot_otbn_mem_read((OtOTBNState *)opaque, false, addr);
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static inline void ot_otbn_dmem_write(void *opaque, hwaddr addr, uint64_t val64,
-                                      unsigned size)
+static MemTxResult ot_otbn_dmem_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
-    (void)size;
-
-    return ot_otbn_mem_write((OtOTBNState *)opaque, false, addr,
-                             (uint32_t)val64);
+    (void)attrs;
+    if (size != 4u || (addr & 3u) != 0u) {
+        return MEMTX_ERROR;
+    }
+    ot_otbn_mem_write((OtOTBNState *)opaque, false, addr, (uint32_t)val64);
+    return MEMTX_OK;
 }
 
 static const Property ot_otbn_properties[] = {
@@ -837,27 +882,33 @@ static const Property ot_otbn_properties[] = {
 };
 
 static const MemoryRegionOps ot_otbn_regs_ops = {
-    .read = &ot_otbn_regs_read,
-    .write = &ot_otbn_regs_write,
+    .read_with_attrs = &ot_otbn_regs_read_with_attrs,
+    .write_with_attrs = &ot_otbn_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_otbn_imem_ops = {
-    .read = &ot_otbn_imem_read,
-    .write = &ot_otbn_imem_write,
+    .read_with_attrs = &ot_otbn_imem_read_with_attrs,
+    .write_with_attrs = &ot_otbn_imem_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_otbn_dmem_ops = {
-    .read = &ot_otbn_dmem_read,
-    .write = &ot_otbn_dmem_write,
+    .read_with_attrs = &ot_otbn_dmem_read_with_attrs,
+    .write_with_attrs = &ot_otbn_dmem_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_otbn_reset_enter(Object *obj, ResetType type)
