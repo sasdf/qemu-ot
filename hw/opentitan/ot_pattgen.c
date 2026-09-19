@@ -296,19 +296,15 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02" HWADDR_PRIx
-                      " (size=%u)\n",
-                      __func__, addr, size);
-        return MEMTX_DECODE_ERROR;
+    if (reg < REGS_COUNT) {
+        uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+        if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: Sub-word write error at 0x%02" HWADDR_PRIx
+                          " (size=%u)\n",
+                          __func__, addr, size);
+            return MEMTX_DECODE_ERROR;
+        }
     }
 
     val32 <<= (addr & 0x3u) * 8u;
@@ -352,12 +348,17 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
             bool now_en = (bool)((s->regs[R_CTRL] >> c) & 1u);
             if (!now_en) {
                 s->chan[c].pending_start = false;
-                s->chan[c].active = false;
                 ot_pattgen_latch_channel(s, c);
-                s->pda[c] = s->chan[c].inactive_pda;
-                s->pcl[c] = s->chan[c].inactive_pcl;
+                if (s->chan[c].active) {
+                    s->pda[c] = (bool)(s->chan[c].data & 1u);
+                    s->pcl[c] = s->chan[c].polarity;
+                } else {
+                    s->pda[c] = s->chan[c].inactive_pda;
+                    s->pcl[c] = s->chan[c].inactive_pcl;
+                }
             } else if (!was_en && now_en) {
                 ot_pattgen_latch_channel(s, c);
+                s->chan[c].active = true;
                 s->chan[c].pending_start = true;
                 schedule_timer = true;
                 uint64_t total_steps = 2ULL * ((uint64_t)s->chan[c].len + 1ULL) *
@@ -375,7 +376,7 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
             }
         }
 
-        if (!s->chan[0].active && !s->chan[1].active && s->gpio) {
+        if (s->gpio) {
             ot_gpio_eg_notify_pattgen_change(s->gpio);
         }
 
@@ -435,7 +436,7 @@ static void ot_pattgen_init(Object *obj)
     OtPattgenState *s = OT_PATTGEN(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_pattgen_regs_ops, s,
-                          TYPE_OT_PATTGEN, REGS_SIZE);
+                          TYPE_OT_PATTGEN, 0x40u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     for (unsigned i = 0; i < PARAM_NUM_IRQS; i++) {
