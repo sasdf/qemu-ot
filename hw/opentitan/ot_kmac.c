@@ -474,7 +474,7 @@ static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
                       0u;
     bool in_debug_rom =
         (pc >= 0x800u && pc < 0x900u) || (pc >= 0x10800u && pc < 0x10900u);
-    bool cpu_idle = !first_cpu || first_cpu->disabled ||
+    bool cpu_idle = !current_cpu || !first_cpu || first_cpu->disabled ||
                     first_cpu->stopped || first_cpu->halted || in_debug_rom;
     uint64_t rt_delay_ns =
         cpu_idle ? BH_TRIGGER_DELAY_NS : (50u * 1000u * 1000u);
