@@ -365,24 +365,28 @@ static void ot_rstmgr_reset_bus(void *opaque)
 {
     OtRstMgrState *s = opaque;
 
-    /* request the vCPU to stop */
-    s->cpu->stop = true;
+    if (!s->cpu->stopped) {
+        /* request the vCPU to stop */
+        s->cpu->stop = true;
 
-    /*
-     * Drop replay_mutex so the vCPU thread can acquire it in rr_cpu_thread_fn
-     * and reach rr_wait_io_event() to set cpu->stopped = true.
-     * Lock ordering: replay_mutex must always be acquired before bql.
-     */
-    replay_mutex_unlock();
-    bql_unlock();
-    while (!s->cpu->stopped) {
-        qemu_cpu_kick(s->cpu);
-        g_usleep(100);
+        /*
+         * Drop replay_mutex so the vCPU thread can acquire it in rr_cpu_thread_fn
+         * and reach rr_wait_io_event() to set cpu->stopped = true.
+         * Lock ordering: replay_mutex must always be acquired before bql.
+         */
+        replay_mutex_unlock();
+        bql_unlock();
+        while (!s->cpu->stopped) {
+            qemu_cpu_kick(s->cpu);
+            g_usleep(100);
+        }
+        g_usleep(1000);
+        replay_mutex_lock();
+        bql_lock();
+        qemu_notify_event();
+    } else {
+        s->cpu->stop = false;
     }
-    g_usleep(1000);
-    replay_mutex_lock();
-    bql_lock();
-    qemu_notify_event();
 
     if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
         ibex_get_crash_dump(s->cpu, s->cpu_info_dump);
