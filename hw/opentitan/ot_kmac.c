@@ -414,6 +414,7 @@ struct OtKMACState {
     bool entropy_seeded;
     bool entropy_refresh_needed;
     bool edn_pending;
+    bool msgfifo_full_seen; /* kmac.sv msgfifo_full_seen_q */
     hash_state ltc_state; /* TomCrypt hash state */
     uint8_t keccak_state[KECCAK_STATE_BYTES];
 
@@ -847,8 +848,14 @@ static void ot_kmac_process(void *opaque)
                     sha3_process(&s->ltc_state, &value, 1);
                 }
 
-                /* assert FIFO Empty interrupt */
-                s->regs[R_INTR_STATE] |= INTR_FIFO_EMPTY_MASK;
+                /*
+                 * In RTL (kmac.sv:626-674), status_msgfifo_empty is gated
+                 * unless SHA3 is in StAbsorb (not final Process block) and
+                 * msgfifo_full_seen_q is set.
+                 */
+                if (s->state == KMAC_ST_MSG_FEED && s->msgfifo_full_seen) {
+                    s->regs[R_INTR_STATE] |= INTR_FIFO_EMPTY_MASK;
+                }
             }
         }
 
@@ -1048,7 +1055,7 @@ static bool ot_kmac_decode_sw_prefix(OtKMACState *s)
     for (size_t ix = 0; ix < prefix->customstr_len; ix++) {
         prefix->customstr[ix] = ot_kmac_get_prefix_byte(s, offset + ix);
     }
-    offset += prefix->funcname_len;
+    offset += prefix->customstr_len;
 
     if (offset <= NUM_PREFIX_REGS * sizeof(uint32_t)) {
         return true;
@@ -1220,8 +1227,8 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
             ot_kmac_report_error(s, OT_KMAC_ERR_SW_ISSUED_CMD_IN_APP_ACTIVE,
                                  cmd);
         } else {
-            /* see error encoding in (hw/ip/kmac/rtl/kmac_pkg.sv) */
-            uint32_t info = (1 << 11u);
+            /* see error encoding in (hw/ip/kmac/rtl/kmac_errchk.sv) */
+            uint32_t info = (1u << 18u);
             info |= (uint32_t)s->state << 8u;
             info |= cmd;
             ot_kmac_report_error(s, OT_KMAC_ERR_SW_CMD_SEQUENCE, info);
@@ -1264,9 +1271,10 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
             /* retrieve configuration from CFG_SHADOWED register */
             ot_kmac_get_sw_config(s);
 
+            bool en_unsupported_modestrength =
+                FIELD_EX32(cfg, CFG_SHADOWED, EN_UNSUPPORTED_MODESTRENGTH) != 0;
             if (!ot_kmac_check_mode_and_strength(&s->sw_cfg)) {
                 err_modestrength = true;
-                break;
             }
             /* if KMAC mode, check prefix & entropy ready */
             if (s->sw_cfg.mode == OT_KMAC_MODE_KMAC) {
@@ -1275,11 +1283,14 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
                 }
                 if (!s->cfg_entropy_ready) {
                     err_entropy_ready = true;
-                    break;
                 }
-                if (!s->entropy_seeded) {
-                    ot_kmac_request_entropy(s);
-                }
+            }
+            if ((err_modestrength && !en_unsupported_modestrength) ||
+                err_entropy_ready) {
+                break;
+            }
+            if (s->sw_cfg.mode == OT_KMAC_MODE_KMAC && !s->entropy_seeded) {
+                ot_kmac_request_entropy(s);
             }
             /* if cSHAKE or KMAC modes, decode prefix from PREFIX_x registers */
             if (s->sw_cfg.mode == OT_KMAC_MODE_CSHAKE ||
@@ -1293,6 +1304,7 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
                 }
             }
 
+            s->msgfifo_full_seen = false;
             s->current_cfg = &s->sw_cfg;
             ot_kmac_process_start(s);
             ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
@@ -1304,6 +1316,8 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         if (cmd == OT_KMAC_CMD_NONE) {
             /* nothing to do */
         } else if (cmd == OT_KMAC_CMD_PROCESS) {
+            s->msgfifo_full_seen = false;
+            s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
             ot_kmac_change_fsm_state(s, KMAC_ST_PROCESSING);
             ot_kmac_trigger_deferred_bh(s);
         } else {
@@ -1324,6 +1338,7 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
             ot_kmac_change_fsm_state(s, KMAC_ST_SQUEEZING);
             ot_kmac_trigger_deferred_bh(s);
         } else if (cmd == OT_KMAC_CMD_DONE) {
+            s->msgfifo_full_seen = false;
             ot_kmac_return_to_idle(s);
         } else {
             err_swsequence = true;
@@ -1344,12 +1359,14 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         uint8_t code;
         uint32_t info = 0;
         /*
-         * error encoding is not documented, reference is OpenTitan RTL
-         * (hw/ip/kmac/rtl/kmac_pkg.sv)
+         * error encoding in OpenTitan RTL (hw/ip/kmac/rtl/kmac_errchk.sv):
+         * info[23:16] = {4'h0, err_entropy_ready, err_swsequence,
+         *                err_modestrength, err_prefix}
          */
-        info |= err_swsequence ? 1 << 11u : 0;
-        info |= err_modestrength ? 1 << 10u : 0;
-        info |= err_prefix ? 1 << 9u : 0;
+        info |= err_entropy_ready ? (1u << 19u) : 0;
+        info |= err_swsequence ? (1u << 18u) : 0;
+        info |= err_modestrength ? (1u << 17u) : 0;
+        info |= err_prefix ? (1u << 16u) : 0;
         if (err_swsequence) {
             info |= (uint32_t)s->state << 8u;
             info |= cmd;
@@ -1361,8 +1378,8 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         } else if (err_prefix) {
             code = OT_KMAC_ERR_INCORRECT_FUNCTION_NAME;
         } else if (err_entropy_ready) {
-            info |= err_entropy_ready ? 1 << 12u : 0;
-            info |= FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) ? 1 << 1u : 0;
+            info |= FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) ? (1u << 1u) : 0;
+            info |= s->cfg_entropy_ready ? 1u : 0;
             code = OT_KMAC_ERR_SW_HASHING_WITHOUT_ENTROPY_READY;
         } else {
             g_assert_not_reached();
@@ -1740,14 +1757,14 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
         s->invalid_state_read = false;
 
         /* compute share index */
-        while (offset > KECCAK_STATE_SHARE_BYTES) {
+        while (offset >= KECCAK_STATE_SHARE_BYTES) {
             offset -= KECCAK_STATE_SHARE_BYTES;
             share++;
         }
 
         switch (share) {
         case 0:
-            if (addr + size <= KECCAK_STATE_BYTES) {
+            if (offset + size <= KECCAK_STATE_BYTES) {
                 val32 = 0;
                 for (unsigned ix = 0; ix < size; ix++) {
                     size_t byte_offset = byteswap ? ix : size - 1 - ix;
@@ -1821,6 +1838,16 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
 
     uint32_t cfg = ot_shadow_reg_peek(&s->cfg);
     bool byteswap = FIELD_EX32(cfg, CFG_SHADOWED, MSG_ENDIANNESS) != 0;
+
+    if (fifo8_is_empty(&s->input_fifo)) {
+        /* Negative edge on empty clears msgfifo_full_seen_q (kmac.sv:637) */
+        s->msgfifo_full_seen = false;
+        s->regs[R_INTR_STATE] &= ~INTR_FIFO_EMPTY_MASK;
+    }
+
+    if (fifo8_num_free(&s->input_fifo) <= size) {
+        s->msgfifo_full_seen = true;
+    }
 
     if (fifo8_num_free(&s->input_fifo) < size) {
         /*
@@ -2035,7 +2062,8 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->entropy_seeded = false;
     s->entropy_refresh_needed = false;
     s->edn_pending = false;
-    memset(s->regs, 0, sizeof(*(s->regs)));
+    s->msgfifo_full_seen = false;
+    memset(s->regs, 0, REGS_SIZE);
     s->regs[R_STATUS] = 0x4001u;
     ot_shadow_reg_init(&s->cfg, 0u);
     ot_shadow_reg_init(&s->entropy_refresh_threshold, 0u);
