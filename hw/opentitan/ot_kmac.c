@@ -1810,18 +1810,22 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
         }
 
         switch (share) {
-        case 0:
-            if (offset + size <= KECCAK_STATE_BYTES) {
-                val32 = 0;
-                for (unsigned ix = 0; ix < size; ix++) {
-                    size_t byte_offset = byteswap ? ix : size - 1 - ix;
-                    val32 =
-                        (val32 << 8u) + s->keccak_state[offset + byte_offset];
+        case 0: {
+            hwaddr word_offset = offset & ~3ULL;
+            if (word_offset + 4u <= KECCAK_STATE_BYTES) {
+                uint32_t word32 = ldl_le_p(&s->keccak_state[word_offset]);
+                if (byteswap) {
+                    word32 = bswap32(word32);
                 }
+                unsigned shift = (unsigned)((offset & 3ULL) * 8u);
+                uint32_t mask =
+                    (size >= 4u) ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+                val32 = (word32 >> shift) & mask;
             } else {
                 val32 = 0;
             }
             break;
+        }
         case 1:
             /*
              * TODO: implement masking. Current version returns unmasked state
