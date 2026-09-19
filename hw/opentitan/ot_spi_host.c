@@ -1678,10 +1678,70 @@ ot_spi_host_device_passthrough_cs_input(void *opaque, int irq, int level)
 /* Device description/instanciation */
 /* ------------------------------------------------------------------------ */
 
+static const uint8_t SPI_HOST_PERMIT[REGS_COUNT] = {
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_ENABLE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_CONTROL] = 0xfu,
+    [R_STATUS] = 0xfu,
+    [R_CONFIGOPTS] = 0xfu,
+    [R_CSID] = 0xfu,
+    [R_COMMAND] = 0x3u,
+    [R_RXDATA] = 0x0u,
+    [R_TXDATA] = 0x0u,
+    [R_ERROR_ENABLE] = 0x1u,
+    [R_ERROR_STATUS] = 0x1u,
+    [R_EVENT_ENABLE] = 0x1u,
+};
+
+static MemTxResult ot_spi_host_read_with_attrs(void *opaque, hwaddr addr,
+                                               uint64_t *val64, unsigned size,
+                                               MemTxAttrs attrs)
+{
+    (void)attrs;
+    uint32_t reg = (uint32_t)(addr >> 2u);
+    if (reg >= REGS_COUNT || reg == R_TXDATA) {
+        return MEMTX_ERROR;
+    }
+    if (reg == R_RXDATA) {
+        *val64 = ot_spi_host_io_read(opaque, addr, size);
+        return MEMTX_OK;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint64_t val32 = ot_spi_host_io_read(opaque, addr & ~3ULL, 4u);
+    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_spi_host_write_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t val64, unsigned size,
+                                                MemTxAttrs attrs)
+{
+    (void)attrs;
+    uint32_t reg = (uint32_t)(addr >> 2u);
+    if (reg >= REGS_COUNT || reg == R_RXDATA) {
+        return MEMTX_ERROR;
+    }
+    if (reg == R_TXDATA) {
+        ot_spi_host_io_write(opaque, addr, val64, size);
+        return MEMTX_OK;
+    }
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((SPI_HOST_PERMIT[reg] & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
+    ot_spi_host_io_write(opaque, addr & ~3ULL, val32, 4u);
+    return MEMTX_OK;
+}
+
 /* clang-format off */
 static const MemoryRegionOps ot_spi_host_ops = {
-    .read = ot_spi_host_io_read,
-    .write = ot_spi_host_io_write,
+    .read_with_attrs = ot_spi_host_read_with_attrs,
+    .write_with_attrs = ot_spi_host_write_with_attrs,
     /* OpenTitan default LE */
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
