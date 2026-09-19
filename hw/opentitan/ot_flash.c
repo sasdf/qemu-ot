@@ -2655,8 +2655,51 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
     trace_ot_flash_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
+    val32 >>= (addr & 3u) * 8u;
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
     *val64 = (uint64_t)val32;
     return MEMTX_OK;
+}
+
+static inline uint32_t ot_flash_byte_mask(hwaddr addr, unsigned size)
+{
+    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
+    return (mask << (addr & 3u)) & 0xfu;
+}
+
+static uint32_t ot_flash_core_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_EXEC:
+    case R_CONTROL:
+    case R_MP_REGION_CFG_0 ... R_MP_REGION_CFG_7:
+    case R_BANK0_INFO0_PAGE_CFG_0 ... R_BANK0_INFO0_PAGE_CFG_9:
+    case R_BANK0_INFO1_PAGE_CFG:
+    case R_BANK0_INFO2_PAGE_CFG_0 ... R_BANK0_INFO2_PAGE_CFG_1:
+    case R_BANK1_INFO0_PAGE_CFG_0 ... R_BANK1_INFO0_PAGE_CFG_9:
+    case R_BANK1_INFO1_PAGE_CFG:
+    case R_BANK1_INFO2_PAGE_CFG_0 ... R_BANK1_INFO2_PAGE_CFG_1:
+    case R_SCRATCH:
+    case R_PROG_FIFO:
+        return 0xfu;
+    case R_ADDR:
+    case R_MP_REGION_0 ... R_MP_REGION_7:
+    case R_DEFAULT_REGION:
+    case R_ERR_ADDR:
+    case R_ECC_SINGLE_ERR_ADDR_0 ... R_ECC_SINGLE_ERR_ADDR_1:
+        return 0x7u;
+    case R_DEBUG_STATE:
+    case R_STD_FAULT_STATUS:
+    case R_FAULT_STATUS:
+    case R_ECC_SINGLE_ERR_CNT:
+    case R_FIFO_LVL:
+    case R_CURR_FIFO_LVL:
+        return 0x3u;
+    default:
+        return (reg < REGS_COUNT) ? 0x1u : 0u;
+    }
 }
 
 static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
@@ -2664,11 +2707,22 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
                                                   MemTxAttrs attrs)
 {
     OtFlashState *s = opaque;
-    (void)size;
     (void)attrs;
-    uint32_t val32 = (uint32_t)val64;
-
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (reg != R_RD_FIFO) {
+        uint32_t be = ot_flash_byte_mask(addr, size);
+        uint32_t permit = ot_flash_core_reg_permit(reg);
+        if ((permit & ~be) != 0u) {
+            return MEMTX_ERROR;
+        }
+    }
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mask =
+        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
+    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_flash_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
@@ -3193,6 +3247,72 @@ static void ot_flash_csrs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 }
 
+static uint32_t ot_flash_prim_csr_permit(hwaddr csr)
+{
+    switch (csr) {
+    case R_CSR0_REGWEN:
+    case R_CSR2:
+    case R_CSR18 ... R_CSR20:
+        return 0x1u;
+    case R_CSR1:
+    case R_CSR4:
+    case R_CSR12:
+    case R_CSR14 ... R_CSR17:
+        return 0x3u;
+    case R_CSR5:
+    case R_CSR7:
+    case R_CSR13:
+        return 0x7u;
+    case R_CSR3:
+    case R_CSR6:
+    case R_CSR8 ... R_CSR11:
+        return 0xfu;
+    default:
+        return 0u;
+    }
+}
+
+static MemTxResult ot_flash_csrs_read_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t *data, unsigned size,
+                                                 MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr csr = R32_OFF(addr);
+    if (csr >= CSRS_COUNT) {
+        *data = 0xffffffffu;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t val32 = (uint32_t)ot_flash_csrs_read(opaque, addr & ~3ull, 4u);
+    val32 >>= (addr & 3u) * 8u;
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_flash_csrs_write_with_attrs(void *opaque, hwaddr addr,
+                                                  uint64_t val64, unsigned size,
+                                                  MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr csr = R32_OFF(addr);
+    if (csr >= CSRS_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t be = ot_flash_byte_mask(addr, size);
+    uint32_t permit = ot_flash_prim_csr_permit(csr);
+    if ((permit & ~be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mask =
+        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
+    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
+    ot_flash_csrs_write(opaque, addr & ~3ull, val32, 4u);
+    return MEMTX_OK;
+}
+
 static void ot_flash_rma_wipe(OtFlashState *s)
 {
     OtFlashStorage *storage = &s->flash;
@@ -3596,16 +3716,20 @@ static const MemoryRegionOps ot_flash_regs_ops = {
     .read_with_attrs = &ot_flash_regs_read_with_attrs,
     .write_with_attrs = &ot_flash_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_flash_csrs_ops = {
-    .read = &ot_flash_csrs_read,
-    .write = &ot_flash_csrs_write,
+    .read_with_attrs = &ot_flash_csrs_read_with_attrs,
+    .write_with_attrs = &ot_flash_csrs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 #if DATA_PART_USE_IO_OPS
