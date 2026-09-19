@@ -480,10 +480,6 @@ static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
 {
     OtPinmuxEgStateRegs *regs = s->regs;
     for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
-        if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
-            s->wkup_prev_level[i] = 0;
-            continue;
-        }
         bool det_dio = (bool)(regs->wkup_detector_cfg[i] &
                               R_WKUP_DETECTOR_CFG_MIODIO_MASK);
         int level = 0;
@@ -511,6 +507,9 @@ static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
         }
         int prev = (int)s->wkup_prev_level[i];
         s->wkup_prev_level[i] = (uint8_t)level;
+        if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
+            continue;
+        }
         uint32_t mode = regs->wkup_detector_cfg[i] & 0x7u;
         bool match = false;
         switch (mode) {
