@@ -121,6 +121,7 @@ struct OtOtpOtBeState {
 
     uint32_t regs[REGS_COUNT];
     OtOtpBeCharacteristics characteristics;
+    bool lc_dft_en;
 
     char *ot_id;
     DeviceState *parent;
@@ -138,11 +139,18 @@ static const OtOtpBeCharacteristics OTP_BE_CHARACTERISTICS = {
     },
 };
 
-static uint64_t ot_otp_ot_be_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_otp_ot_be_read_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t *data, unsigned size,
+                                                MemTxAttrs attrs)
 {
     OtOtpOtBeState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
+
+    if (!s->lc_dft_en) {
+        return MEMTX_ERROR;
+    }
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -154,20 +162,19 @@ static uint64_t ot_otp_ot_be_read(void *opaque, hwaddr addr, unsigned size)
     case R_CSR5:
     case R_CSR6:
     case R_CSR7:
-        /* TODO: not yet implemented */
         val32 = s->regs[reg];
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        val32 = 0;
-        break;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otp_ot_be_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
 }
 
 #define CSR0_WMASK \
@@ -188,12 +195,18 @@ static uint64_t ot_otp_ot_be_read(void *opaque, hwaddr addr, unsigned size)
     (R_CSR6_FIELD0_MASK | R_CSR6_FIELD1_MASK | R_CSR6_FIELD2_MASK | \
      R_CSR6_FIELD3_MASK)
 
-static void ot_otp_ot_be_write(void *opaque, hwaddr addr, uint64_t value,
-                               unsigned size)
+static MemTxResult ot_otp_ot_be_write_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t value, unsigned size,
+                                                 MemTxAttrs attrs)
 {
     OtOtpOtBeState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)value;
+
+    if (!s->lc_dft_en) {
+        return MEMTX_ERROR;
+    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -229,8 +242,10 @@ static void ot_otp_ot_be_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        break;
+        return MEMTX_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static bool ot_otp_ot_be_is_ecc_enabled(OtOtpBeIf *beif)
@@ -248,6 +263,13 @@ ot_otp_ot_be_get_characteristics(OtOtpBeIf *beif)
     return &s->characteristics;
 }
 
+static void ot_otp_ot_be_set_lc_dft_en(OtOtpBeIf *beif, bool en)
+{
+    OtOtpOtBeState *s = OT_OTP_OT_BE(beif);
+
+    s->lc_dft_en = en;
+}
+
 static const Property ot_otp_ot_be_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtOtpOtBeState, ot_id),
     DEFINE_PROP_LINK("parent", OtOtpOtBeState, parent, TYPE_DEVICE,
@@ -261,8 +283,8 @@ static const Property ot_otp_ot_be_properties[] = {
 };
 
 static const MemoryRegionOps ot_otp_ot_be_ops = {
-    .read = &ot_otp_ot_be_read,
-    .write = &ot_otp_ot_be_write,
+    .read_with_attrs = &ot_otp_ot_be_read_with_attrs,
+    .write_with_attrs = &ot_otp_ot_be_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
@@ -278,6 +300,7 @@ static void ot_otp_ot_be_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs, 0, sizeof(s->regs));
+    s->lc_dft_en = false;
 }
 
 static void ot_otp_ot_be_init(Object *obj)
@@ -305,6 +328,7 @@ static void ot_otp_ot_be_class_init(ObjectClass *klass, const void *data)
     OtOtpBeIfClass *bec = OT_OTP_BE_IF_CLASS(klass);
     bec->is_ecc_enabled = &ot_otp_ot_be_is_ecc_enabled;
     bec->get_characteristics = &ot_otp_ot_be_get_characteristics;
+    bec->set_lc_dft_en = &ot_otp_ot_be_set_lc_dft_en;
 }
 
 static const TypeInfo ot_otp_ot_be_init_info = {

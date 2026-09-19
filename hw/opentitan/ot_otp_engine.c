@@ -752,8 +752,12 @@ static void ot_otp_engine_lc_broadcast_bh(void *opaque)
 
         switch ((int)sig) {
         case OT_OTP_LC_DFT_EN:
-            qemu_log_mask(LOG_UNIMP, "%s: %s: DFT feature not supported\n",
-                          __func__, s->ot_id);
+            if (s->otp_backend) {
+                OtOtpBeIfClass *bec = OT_OTP_BE_IF_GET_CLASS(s->otp_backend);
+                if (bec->set_lc_dft_en) {
+                    bec->set_lc_dft_en(s->otp_backend, level);
+                }
+            }
             break;
         case OT_OTP_LC_ESCALATE_EN:
             if (level) {
