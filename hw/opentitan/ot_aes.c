@@ -349,15 +349,20 @@ static inline size_t ot_aes_get_key_length(OtAESRegisters *r)
 static inline uint32_t ot_aes_get_key_mask(OtAESRegisters *r)
 {
     uint32_t ctrl = ot_shadow_reg_peek(&r->ctrl);
+    uint32_t mask;
     switch (FIELD_EX32(ctrl, CTRL_SHADOWED, KEY_LEN)) {
     case 0x01u:
-        return 0x0fu; /* 128 bits, 16 bytes, 4 words */
+        mask = 0x0fu; /* 128 bits, 16 bytes, 4 words */
+        break;
     case 0x02u:
-        return 0x3fu; /* 192 bits, 24 bytes, 6 words */
+        mask = 0x3fu; /* 192 bits, 24 bytes, 6 words */
+        break;
     case 0x04u:
     default:
-        return 0xffu; /* 256bits, 32 bytes, 8 words */
+        mask = 0xffu; /* 256bits, 32 bytes, 8 words */
+        break;
     }
+    return mask | (mask << PARAM_NUM_REGS_KEY);
 };
 
 static void ot_aes_update_alert(OtAESState *s)
@@ -622,7 +627,6 @@ static void ot_aes_update_key(OtAESState *s)
 
     bool reseed = !c->key_ready && ot_aes_key_touch_force_reseed(r);
     c->key_ready = true;
-    r->keyshare_armed = true;
 
     if (reseed) {
         r->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
@@ -648,7 +652,6 @@ static void ot_aes_update_iv(OtAESState *s)
     }
 
     c->iv_ready = true;
-    r->iv_armed = true;
 }
 
 static inline bool ot_aes_can_process(const OtAESState *s)
