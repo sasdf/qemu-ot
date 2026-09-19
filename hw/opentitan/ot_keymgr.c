@@ -2475,11 +2475,77 @@ static const Property ot_keymgr_properties[] = {
                      disable_flash_seed_check, false),
 };
 
+static const uint8_t KEYMGR_PERMIT[REGS_COUNT] = {
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_ENABLE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_CFG_REGWEN] = 0x1u,
+    [R_START] = 0x1u,
+    [R_CONTROL_SHADOWED] = 0x3u,
+    [R_SIDELOAD_CLEAR] = 0x1u,
+    [R_RESEED_INTERVAL_REGWEN] = 0x1u,
+    [R_RESEED_INTERVAL_SHADOWED] = 0x3u,
+    [R_SW_BINDING_REGWEN] = 0x1u,
+    [R_SEALING_SW_BINDING_0 ... R_SEALING_SW_BINDING_7] = 0xfu,
+    [R_ATTEST_SW_BINDING_0 ... R_ATTEST_SW_BINDING_7] = 0xfu,
+    [R_SALT_0 ... R_SALT_7] = 0xfu,
+    [R_KEY_VERSION] = 0xfu,
+    [R_MAX_CREATOR_KEY_VER_REGWEN] = 0x1u,
+    [R_MAX_CREATOR_KEY_VER_SHADOWED] = 0xfu,
+    [R_MAX_OWNER_INT_KEY_VER_REGWEN] = 0x1u,
+    [R_MAX_OWNER_INT_KEY_VER_SHADOWED] = 0xfu,
+    [R_MAX_OWNER_KEY_VER_REGWEN] = 0x1u,
+    [R_MAX_OWNER_KEY_VER_SHADOWED] = 0xfu,
+    [R_SW_SHARE0_OUTPUT_0 ... R_SW_SHARE0_OUTPUT_7] = 0xfu,
+    [R_SW_SHARE1_OUTPUT_0 ... R_SW_SHARE1_OUTPUT_7] = 0xfu,
+    [R_WORKING_STATE] = 0x1u,
+    [R_OP_STATUS] = 0x1u,
+    [R_ERR_CODE] = 0x1u,
+    [R_FAULT_STATUS] = 0x3u,
+    [R_DEBUG] = 0x1u,
+};
+
+static MemTxResult ot_keymgr_read_with_attrs(void *opaque, hwaddr addr,
+                                             uint64_t *val64, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    if ((aligned_addr >> 2u) >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint64_t val32 = ot_keymgr_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_keymgr_write_with_attrs(void *opaque, hwaddr addr,
+                                              uint64_t val64, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    (void)attrs;
+    uint32_t reg = (uint32_t)(addr >> 2u);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((KEYMGR_PERMIT[reg] & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
+    ot_keymgr_write(opaque, addr & ~3ULL, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_keymgr_regs_ops = {
-    .read = &ot_keymgr_read,
-    .write = &ot_keymgr_write,
+    .read_with_attrs = &ot_keymgr_read_with_attrs,
+    .write_with_attrs = &ot_keymgr_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
