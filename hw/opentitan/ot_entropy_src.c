@@ -705,7 +705,7 @@ static bool ot_entropy_src_is_module_enabled(const OtEntropySrcState *s)
 
 static bool ot_entropy_src_is_module_disabled(const OtEntropySrcState *s)
 {
-    return REG_MB4_IS_FALSE(s, hi, MODULE_ENABLE, MODULE_ENABLE);
+    return !ot_entropy_src_is_module_enabled(s);
 }
 
 static bool ot_entropy_src_is_fips_enabled(const OtEntropySrcState *s)
@@ -1937,6 +1937,15 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                 s->regs_hi[R_MARKOV_LO_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_HI_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_LO_TOTAL_FAILS] = 0u;
+                s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_REPCNTS_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
+                s->regs_hi[R_EXTHT_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
+                s->regs_hi[R_BUCKET_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_MARKOV_HI_WATERMARKS] = 0u;
+                s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
 
                 s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
                 if (ot_entropy_src_is_fw_ov_mode(s) &&
