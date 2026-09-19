@@ -617,9 +617,11 @@ struct OtUsbdevState {
     bool vbus_override;
     /* VBUS gate: meaning depends on the vbus_override mode */
     bool vbus_gate;
-    /* AON wake latched pullup states */
+    /* AON wake latched pullup and event states (u_usbdev_aon_wake / u_wake_events_cdc) */
     bool aon_dppullup_en;
     bool aon_dnpullup_en;
+    uint32_t aon_wake_events;
+    uint32_t aon_cdc_dst_qs;
 };
 
 #define REG_NAME(_reg_) \
@@ -1161,6 +1163,8 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
     else {
         if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
             s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_DISCONNECTED_MASK;
+            s->aon_wake_events = s->regs[R_WAKE_EVENTS];
+            s->aon_cdc_dst_qs = s->aon_wake_events;
             ibex_irq_set(&s->wkup, 1);
         }
         ot_fifo32_reset(&s->rx_fifo);
@@ -1328,6 +1332,8 @@ static void ot_usbdev_simulate_link_resume(OtUsbdevState *s)
     g_assert(!resettable_is_in_reset(OBJECT(s)));
     if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
         s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
+        s->aon_wake_events = s->regs[R_WAKE_EVENTS];
+        s->aon_cdc_dst_qs = s->aon_wake_events;
         ibex_irq_set(&s->wkup, 1);
     }
     OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
@@ -1350,6 +1356,8 @@ static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
     if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
         s->regs[R_WAKE_EVENTS] |=
             R_WAKE_EVENTS_BUS_RESET_MASK | R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
+        s->aon_wake_events = s->regs[R_WAKE_EVENTS];
+        s->aon_cdc_dst_qs = s->aon_wake_events;
         ibex_irq_set(&s->wkup, 1);
         ot_usbdev_server_report_connected(s, false);
         return;
@@ -2295,6 +2303,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
                                           R_WAKE_EVENTS_BUS_RESET_MASK;
                 ibex_irq_set(&s->wkup, 1);
             }
+            s->aon_wake_events = s->regs[R_WAKE_EVENTS];
+            s->aon_cdc_dst_qs = s->aon_wake_events;
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
             bool was_connected =
                 ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
@@ -2303,6 +2313,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
                  (R_WAKE_EVENTS_BUS_RESET_MASK |
                   R_WAKE_EVENTS_DISCONNECTED_MASK)) != 0u;
             s->regs[R_WAKE_EVENTS] = 0u;
+            s->aon_wake_events = 0u;
+            s->aon_cdc_dst_qs = 0u;
             bool now_enabled = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
             if (now_enabled && !was_connected && !need_reinit) {
                 ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
@@ -3113,6 +3125,27 @@ static const MemoryRegionOps ot_usbdev_buffer_ops = {
  * QEMU reset handling
  */
 
+void ot_usbdev_aon_reset(OtUsbdevState *s, bool reset)
+{
+    if (reset) {
+        /*
+         * SW_RST_CTRL_N[4] (rst_usb_aon_n) resets u_wake_events_cdc.dst_qs_o
+         * and u_wake_events_* on the AON side of usbdev_reg_top.sv, while
+         * u_usbdev_aon_wake in u_pinmux_aon (rst_sys_aon_n) continues driving
+         * s->aon_wake_events.
+         */
+        s->aon_cdc_dst_qs = 0u;
+    } else if (s->aon_cdc_dst_qs != s->aon_wake_events) {
+        /*
+         * Upon release of rst_usb_aon_n, prim_reg_cdc_arb sees dst_qs_o (0) !=
+         * dst_ds_i (s->aon_wake_events) and pushes s->aon_wake_events into
+         * src_q (s->regs[R_WAKE_EVENTS]).
+         */
+        s->aon_cdc_dst_qs = s->aon_wake_events;
+        s->regs[R_WAKE_EVENTS] = s->aon_wake_events;
+    }
+}
+
 static void ot_usbdev_reset_enter(Object *obj, ResetType type)
 {
     OtUsbdevClass *c = OT_USBDEV_GET_CLASS(obj);
@@ -3126,10 +3159,13 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
 
     ot_usbdev_cancel_all_transfers(s, "device going into reset");
 
-    bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
+    bool is_sw_usb_rst = (type == RESET_TYPE_WAKEUP);
+    bool is_por = !is_sw_usb_rst &&
+                  (type == RESET_TYPE_COLD) && ot_rstmgr_is_por_reset();
     bool keep_aon = !is_por &&
-                    (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
-    uint32_t saved_wake_events = s->regs[R_WAKE_EVENTS];
+                    (s->aon_wake_events & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
+    uint32_t saved_wake_events = s->aon_wake_events;
+    uint32_t saved_cdc_dst_qs = s->aon_cdc_dst_qs;
     bool saved_dppullup = s->aon_dppullup_en;
     bool saved_dnpullup = s->aon_dnpullup_en;
 
@@ -3140,6 +3176,8 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
     }
     s->aon_dppullup_en = false;
     s->aon_dnpullup_en = false;
+    s->aon_wake_events = 0u;
+    s->aon_cdc_dst_qs = 0u;
 
     /*
      * If there is a bus reset in progress, we cancel it.
@@ -3157,9 +3195,27 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
     memset(s->regs, 0u, sizeof(s->regs));
     s->regs[R_PHY_CONFIG] = R_PHY_CONFIG_EOP_SINGLE_BIT_MASK;
     if (keep_aon) {
-        s->regs[R_WAKE_EVENTS] = saved_wake_events;
+        s->aon_wake_events = saved_wake_events;
         s->aon_dppullup_en = saved_dppullup;
         s->aon_dnpullup_en = saved_dnpullup;
+        if (is_sw_usb_rst) {
+            /*
+             * SW_RST_CTRL_N[3] (rst_usb_n) resets u_wake_events_cdc.src_q
+             * (s->regs[R_WAKE_EVENTS]) to 0, while u_wake_events_cdc.dst_qs_o
+             * (on rst_usb_aon_n) retains saved_cdc_dst_qs. If dst_qs_o !=
+             * dst_ds_i (e.g. SW_RST_CTRL_N[4] had already reset dst_qs_o),
+             * prim_reg_cdc_arb emits a CDC update pulse.
+             */
+            s->aon_cdc_dst_qs = saved_cdc_dst_qs;
+            if (s->aon_cdc_dst_qs != s->aon_wake_events) {
+                s->aon_cdc_dst_qs = s->aon_wake_events;
+                s->regs[R_WAKE_EVENTS] = s->aon_wake_events;
+            }
+        } else {
+            /* Full SoC non-POR reset resets both rst_usb_n and rst_usb_aon_n */
+            s->aon_cdc_dst_qs = s->aon_wake_events;
+            s->regs[R_WAKE_EVENTS] = s->aon_wake_events;
+        }
     }
 
     ot_fifo32_reset(&s->rx_fifo);

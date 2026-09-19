@@ -580,6 +580,14 @@ void ot_pwrmgr_trigger_check(OtPwrMgrState *s)
     timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
 }
 
+void ot_pwrmgr_cancel_check(OtPwrMgrState *s)
+{
+    if (!s) {
+        return;
+    }
+    s->glitch_check_count = 0;
+}
+
 static void ot_pwrmgr_set_low_power(OtPwrMgrState *s, bool low_power)
 {
     s->in_low_power = low_power;

@@ -102,5 +102,6 @@ typedef union {
 #define OT_PWRMGR_HOLDON_FETCH TYPE_OT_PWRMGR "-holdon-fetch"
 
 void ot_pwrmgr_trigger_check(OtPwrMgrState *s);
+void ot_pwrmgr_cancel_check(OtPwrMgrState *s);
 
 #endif /* HW_OPENTITAN_OT_PWRMGR_H */

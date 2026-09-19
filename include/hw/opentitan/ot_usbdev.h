@@ -36,4 +36,6 @@ OBJECT_DECLARE_TYPE(OtUsbdevState, OtUsbdevClass, OT_USBDEV)
 
 #define OT_USBDEV_WKUP TYPE_OT_USBDEV "-wkup"
 
+void ot_usbdev_aon_reset(OtUsbdevState *s, bool reset);
+
 #endif /* HW_OPENTITAN_OT_USBDEV_H */

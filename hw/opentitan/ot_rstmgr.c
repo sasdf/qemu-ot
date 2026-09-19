@@ -212,11 +212,13 @@ bool ot_rstmgr_is_ndm_reset(void)
 typedef struct {
     const char *typename;
     unsigned idx;
+    bool aon;
 } OtRstMgrResettable;
 
 typedef struct {
     char *path;
     bool reset;
+    bool aon;
     char *ot_id;
 } OtRstMgrResetDesc;
 
@@ -239,14 +241,14 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
         .sw_resettable_devices = {
-            [0u] = { TYPE_OT_SPI_DEVICE, 0u },
-            [1u] = { TYPE_OT_SPI_HOST, 0u },
-            [2u] = { TYPE_OT_SPI_HOST, 1u },
-            [3u] = { TYPE_OT_USBDEV, 0u },
-            [4u] = { NULL, 0u }, /* USB_AON has no software-visible CSRs */
-            [5u] = { TYPE_OT_I2C, 0u },
-            [6u] = { TYPE_OT_I2C, 1u },
-            [7u] = { TYPE_OT_I2C, 2u },
+            [0u] = { TYPE_OT_SPI_DEVICE, 0u, false },
+            [1u] = { TYPE_OT_SPI_HOST, 0u, false },
+            [2u] = { TYPE_OT_SPI_HOST, 1u, false },
+            [3u] = { TYPE_OT_USBDEV, 0u, false },
+            [4u] = { TYPE_OT_USBDEV, 0u, true },
+            [5u] = { TYPE_OT_I2C, 0u, false },
+            [6u] = { TYPE_OT_I2C, 1u, false },
+            [7u] = { TYPE_OT_I2C, 2u, false },
         }
     },
     [OT_RSTMGR_VERSION_DJ] = {
@@ -261,9 +263,9 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
         .sw_resettable_devices = {
-            [0u] = { TYPE_OT_SPI_DEVICE, 0u },
-            [1u] = { TYPE_OT_SPI_HOST, 0u },
-            [2u] = { TYPE_OT_I2C, 0u },
+            [0u] = { TYPE_OT_SPI_DEVICE, 0u, false },
+            [1u] = { TYPE_OT_SPI_HOST, 0u, false },
+            [2u] = { TYPE_OT_I2C, 0u, false },
         }
     },
 };
@@ -298,10 +300,27 @@ static const char *OT_RST_MGR_REQUEST_NAMES[] = {
 
 static void ot_rstmgr_update_alerts(OtRstMgrState *s)
 {
-    uint32_t level = s->regs[R_ALERT_TEST];
+    uint32_t err_level = 0;
+
+    if (s->regs[R_ERR_CODE] &
+        (R_ERR_CODE_REG_INTG_ERR_MASK | R_ERR_CODE_FSM_ERR_MASK)) {
+        err_level |= R_ALERT_TEST_FATAL_FAULT_MASK;
+    }
+    if (s->regs[R_ERR_CODE] & R_ERR_CODE_RESET_CONSISTENCY_ERR_MASK) {
+        err_level |= R_ALERT_TEST_FATAL_CNSTY_FAULT_MASK;
+    }
+
+    uint32_t level = s->regs[R_ALERT_TEST] | err_level;
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
+    }
+
+    if (s->regs[R_ALERT_TEST]) {
+        s->regs[R_ALERT_TEST] = 0u;
+        for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
+            ibex_irq_set(&s->alerts[ix], (int)((err_level >> ix) & 0x1u));
+        }
     }
 }
 
@@ -309,7 +328,9 @@ static void ot_rstmgr_sw_reset_timer_cb(void *opaque)
 {
     OtRstMgrState *s = opaque;
 
-    ibex_irq_raise(&s->sw_reset);
+    if (s->regs[R_RESET_REQ] == OT_MULTIBITBOOL4_TRUE) {
+        ibex_irq_raise(&s->sw_reset);
+    }
 }
 
 static int ot_rstmgr_alert_walker(DeviceState *dev, void *opaque)
@@ -376,10 +397,12 @@ static int ot_rstmgr_sw_rst_walker(DeviceState *dev, void *opaque)
 
     trace_ot_rstmgr_sw_rst(desc->ot_id, desc->path, desc->reset);
 
-    if (desc->reset) {
-        resettable_assert_reset(OBJECT(dev), RESET_TYPE_COLD);
+    if (desc->aon) {
+        ot_usbdev_aon_reset(OT_USBDEV(dev), desc->reset);
+    } else if (desc->reset) {
+        resettable_assert_reset(OBJECT(dev), RESET_TYPE_WAKEUP);
     } else {
-        resettable_release_reset(OBJECT(dev), RESET_TYPE_COLD);
+        resettable_release_reset(OBJECT(dev), RESET_TYPE_WAKEUP);
     }
 
     /* abort walk immediately */
@@ -404,6 +427,7 @@ static void ot_rstmgr_update_sw_reset(OtRstMgrState *s, unsigned devix)
 
     desc.path = g_strdup_printf("%s[%d]", rst->typename, rst->idx);
     desc.reset = !s->regs[R_SW_RST_CTRL_N_0 + devix];
+    desc.aon = rst->aon;
     desc.ot_id = s->ot_id;
 
     trace_ot_rstmgr_sw_reset(s->ot_id, desc.path);
@@ -519,17 +543,24 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_ALERT_INFO_ATTR:
         val32 = 9u;
         break;
-    case R_ALERT_INFO:
-        val32 = s->alert_info_dump[FIELD_EX32(s->regs[R_ALERT_INFO_CTRL],
-                                              ALERT_INFO_CTRL, INDEX) % 9u];
+    case R_ALERT_INFO: {
+        uint32_t idx =
+            FIELD_EX32(s->regs[R_ALERT_INFO_CTRL], ALERT_INFO_CTRL, INDEX);
+        val32 = (idx < ARRAY_SIZE(s->alert_info_dump)) ?
+                    s->alert_info_dump[idx] :
+                    0u;
         break;
+    }
     case R_CPU_INFO_ATTR:
         val32 = 8u;
         break;
-    case R_CPU_INFO:
-        val32 = s->cpu_info_dump[FIELD_EX32(s->regs[R_CPU_INFO_CTRL],
-                                            CPU_INFO_CTRL, INDEX) % 8u];
+    case R_CPU_INFO: {
+        uint32_t idx =
+            FIELD_EX32(s->regs[R_CPU_INFO_CTRL], CPU_INFO_CTRL, INDEX);
+        val32 =
+            (idx < ARRAY_SIZE(s->cpu_info_dump)) ? s->cpu_info_dump[idx] : 0u;
         break;
+    }
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x02%x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
@@ -568,18 +599,24 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         if (val32 == OT_MULTIBITBOOL4_TRUE) {
             /*
-             * "Upon completion of reset, this bit is automatically cleared by
-             * hardware."
-             * Schedule software reset request with a short delay (1 us) to model
-             * pwrmgr synchronization latency, allowing software to execute
-             * trailing instructions (e.g. wfi) before reset assertion.
-             * Do not re-arm if already pending, as tight shutdown loops (e.g.
-             * ROM shutdown_hang) repeatedly write R_RESET_REQ in < 1 us and
-             * would otherwise postpone the reset timer indefinitely.
-             */
+              * "Upon completion of reset, this bit is automatically cleared by
+              * hardware."
+              * Schedule software reset request with a short delay (1 us) to model
+              * pwrmgr synchronization latency, allowing software to execute
+              * trailing instructions (e.g. wfi) before reset assertion.
+              * Do not re-arm if already pending, as tight shutdown loops (e.g.
+              * ROM shutdown_hang) repeatedly write R_RESET_REQ in < 1 us and
+              * would otherwise postpone the reset timer indefinitely.
+              */
             if (!timer_pending(s->sw_reset_timer)) {
                 timer_mod(s->sw_reset_timer,
                           qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            }
+            OtPwrMgrState *pwrmgr =
+                (OtPwrMgrState *)object_resolve_path_type(
+                    "", TYPE_OT_PWRMGR, NULL);
+            if (pwrmgr) {
+                ot_pwrmgr_cancel_check(pwrmgr);
             }
             if (s->fatal_reset) {
                 s->fatal_reset--;
@@ -589,6 +626,9 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                         SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 1);
                 }
             }
+        } else {
+            timer_del(s->sw_reset_timer);
+            ibex_irq_lower(&s->sw_reset);
         }
         break;
     case R_RESET_INFO:
@@ -711,6 +751,8 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
     timer_del(s->sw_reset_timer);
 
     uint32_t reset_info = s->regs[R_RESET_INFO];
+    uint32_t alert_info_ctrl = s->regs[R_ALERT_INFO_CTRL];
+    uint32_t cpu_info_ctrl = s->regs[R_CPU_INFO_CTRL];
 
     memset(s->regs, 0, REGS_SIZE);
 
@@ -724,6 +766,12 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
         ot_rstmgr_last_reset_ndm = false;
     } else {
         s->regs[R_RESET_INFO] = reset_info;
+        uint32_t ctrl_mask = R_ALERT_INFO_CTRL_INDEX_MASK;
+        if (ot_rstmgr_is_low_power_exit()) {
+            ctrl_mask |= R_ALERT_INFO_CTRL_EN_MASK;
+        }
+        s->regs[R_ALERT_INFO_CTRL] = alert_info_ctrl & ctrl_mask;
+        s->regs[R_CPU_INFO_CTRL] = cpu_info_ctrl & ctrl_mask;
     }
     s->regs[R_RESET_REQ] = OT_MULTIBITBOOL4_FALSE;
     s->regs[R_ALERT_REGWEN] = R_ALERT_REGWEN_EN_MASK;
