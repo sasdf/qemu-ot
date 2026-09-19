@@ -2750,9 +2750,6 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
         uint32_t be = ot_flash_byte_mask(addr, size);
         uint32_t permit = ot_flash_core_reg_permit(reg);
         if ((permit & ~be) != 0u) {
-            if (reg == R_PROG_FIFO) {
-                ot_common_raise_load_integrity_error(DEVICE(s), addr);
-            }
             return MEMTX_ERROR;
         }
     }
@@ -3132,7 +3129,6 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: R/O FIFO window 0x%03x (%s) ErrOnWrite\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
-        ot_common_raise_load_integrity_error(DEVICE(s), addr);
         return MEMTX_ERROR;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
