@@ -901,7 +901,7 @@ static void ot_edn_clean_up(OtEDNState *s, bool discard_requests)
     c->hw_ack = false;
     c->sw_ack = false;
     s->recov_alert_sts = 0u;
-    s->max_reqs_cnt = 0;
+    s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
     memset(c->buffer, 0, sizeof(c->buffer));
     ot_fifo32_reset(&c->bits_fifo);
     ot_edn_update_irqs(s);
@@ -958,6 +958,7 @@ static bool ot_edn_update_mode(OtEDNState *s)
         } else {
             trace_ot_edn_enable(c->appid, "sw mode");
             s->sw_cmd_ready = true;
+            s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
             ot_edn_reset_replay_fifos(s);
             ot_edn_change_state(s, EDN_SW_PORT_MODE);
         }
@@ -1101,6 +1102,7 @@ static void ot_edn_auto_dispatch(OtEDNState *s)
     ot_edn_update_irqs(s);
 
     if (!auto_req_mode) {
+        s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
         ot_edn_change_state(s, EDN_IDLE);
         ot_edn_reset_replay_fifos(s);
         ot_edn_update_mode(s);
