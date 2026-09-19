@@ -61,7 +61,7 @@
 /* initial FSM start up delay */
 #define FSM_START_DELAY_NS 20000U /* 20 uS */
 
-#define TXFIFO_LEN  288U /* bytes */
+#define TXFIFO_LEN  292U /* (72 + 1) * 4 bytes (u_tx_fifo + u_select) */
 #define RXFIFO_LEN  256U /* bytes */
 #define CMDFIFO_LEN 4U /* slots */
 
@@ -550,9 +550,20 @@ static bool ot_spi_host_is_tx(uint32_t command)
     return (bool)(FIELD_EX32(command, COMMAND, DIRECTION) & 0x2u);
 }
 
+static bool ot_spi_host_is_stalled_in_idle(const OtSPIHostState *s)
+{
+    return s->active.state == CMD_ONGOING && s->active.size == 0u &&
+           s->fsm.tx_stall &&
+           !FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CPHA);
+}
+
 static bool ot_spi_host_is_ready(const OtSPIHostState *s)
 {
-    return !cmdfifo_is_full(s->cmd_fifo);
+    if (cmdfifo_is_full(s->cmd_fifo)) {
+        return false;
+    }
+    return !ot_spi_host_is_stalled_in_idle(s) ||
+           (cmdfifo_num_used(s->cmd_fifo) + 1u) < CMDFIFO_LEN;
 }
 
 /* Passthrough functionality is only implemented if there is one CS */
@@ -683,13 +694,16 @@ static uint32_t ot_spi_host_get_status(OtSPIHostState *s)
     status = FIELD_DP32(status, STATUS, TXSTALL, s->fsm.tx_stall);
 
     /* CMD */
-    status = FIELD_DP32(status, STATUS, CMDQD, cmdfifo_num_used(s->cmd_fifo));
+    bool stalled_in_idle = ot_spi_host_is_stalled_in_idle(s);
+    uint32_t cmdqd = cmdfifo_num_used(s->cmd_fifo) + (stalled_in_idle ? 1u : 0u);
+    status = FIELD_DP32(status, STATUS, CMDQD, cmdqd);
 
     /* State */
     status =
         FIELD_DP32(status, STATUS, READY, (uint32_t)ot_spi_host_is_ready(s));
     status = FIELD_DP32(status, STATUS, ACTIVE,
-                        (uint32_t)(s->active.state != CMD_NONE));
+                        (uint32_t)(s->active.state != CMD_NONE &&
+                                   !stalled_in_idle));
 
     return status;
 }
@@ -712,7 +726,8 @@ static uint32_t ot_spi_host_build_event_bits(OtSPIHostState *s)
     events = FIELD_DP32(events, EVENT_ENABLE, READY,
                         (uint32_t)ot_spi_host_is_ready(s));
     events = FIELD_DP32(events, EVENT_ENABLE, IDLE,
-                        (uint32_t)(s->active.state == CMD_NONE));
+                        (uint32_t)(s->active.state == CMD_NONE ||
+                                   ot_spi_host_is_stalled_in_idle(s)));
     return events;
 }
 
@@ -1129,11 +1144,14 @@ post:
 
     int64_t delay;
     if (s->active.state == CMD_EXECUTED && byte_count) {
-        if (!s->completion_delay_ns) {
-            unsigned spiclock = s->pclk / ((clkdiv + 1u) * 2u);
-            delay = NANOSECONDS_PER_SECOND / (int64_t)spiclock;
-            delay *= s->active.size * 8u;
-            delay >>= speed;
+        if (!s->completion_delay_ns || clkdiv > 0u) {
+            uint64_t pclk = s->pclk ? s->pclk : 1u;
+            uint64_t clk_period_ns =
+                (NANOSECONDS_PER_SECOND * ((uint64_t)clkdiv + 1u) * 2u) / pclk;
+            delay = (int64_t)(clk_period_ns * s->active.size * 8u) >> speed;
+            if (delay < (int64_t)s->completion_delay_ns) {
+                delay = (int64_t)s->completion_delay_ns;
+            }
         } else {
             delay = (int64_t)s->completion_delay_ns;
         }
@@ -1298,7 +1316,9 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
         break;
     case R_STATUS:
         val32 = ot_spi_host_get_status(s);
-        if (timer_pending(s->fsm_delay)) {
+        if (timer_pending(s->fsm_delay) &&
+            (s->active.state != CMD_EXECUTED ||
+             FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) == 0u)) {
             timer_del(s->fsm_delay);
             ot_spi_host_schedule_fsm(s);
         }
