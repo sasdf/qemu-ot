@@ -2062,12 +2062,67 @@ static const Property ot_kmac_properties[] = {
     DEFINE_PROP_UINT8("num-app", OtKMACState, num_app, 0),
 };
 
+static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_ENABLE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_CFG_REGWEN] = 0x1u,
+    [R_CFG_SHADOWED] = 0xfu,
+    [R_CMD] = 0x3u,
+    [R_STATUS] = 0x7u,
+    [R_ENTROPY_PERIOD] = 0xfu,
+    [R_ENTROPY_REFRESH_HASH_CNT] = 0x3u,
+    [R_ENTROPY_REFRESH_THRESHOLD_SHADOWED] = 0x3u,
+    [R_ENTROPY_SEED] = 0xfu,
+    [R_KEY_SHARE0_0 ... R_KEY_SHARE0_15] = 0xfu,
+    [R_KEY_SHARE1_0 ... R_KEY_SHARE1_15] = 0xfu,
+    [R_KEY_LEN] = 0x1u,
+    [R_PREFIX_0 ... R_PREFIX_10] = 0xfu,
+    [R_ERR_CODE] = 0xfu,
+};
+
+static MemTxResult ot_kmac_regs_read_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t *val64, unsigned size,
+                                                MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    if ((aligned_addr >> 2u) >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint64_t val32 = ot_kmac_regs_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_kmac_regs_write_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t val64, unsigned size,
+                                                 MemTxAttrs attrs)
+{
+    (void)attrs;
+    uint32_t reg = (uint32_t)(addr >> 2u);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((KMAC_PERMIT[reg] & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
+    ot_kmac_regs_write(opaque, addr & ~3ULL, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_kmac_regs_ops = {
-    .read = &ot_kmac_regs_read,
-    .write = &ot_kmac_regs_write,
+    .read_with_attrs = &ot_kmac_regs_read_with_attrs,
+    .write_with_attrs = &ot_kmac_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid = {
-        .min_access_size = 4u,
+    .impl = {
+        .min_access_size = 1u,
         .max_access_size = 4u,
     },
 };
