@@ -196,7 +196,6 @@ struct OtUARTState {
     QEMUTimer *rx_pace_timer;
     QEMUTimer *rx_timeout_timer;
     uint32_t rx_poll_count;
-    uint8_t last_tx_byte;
 };
 
 typedef struct {
@@ -936,14 +935,10 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2) {
         s->rx_poll_count = 1;
-        bool xmodem_active = (s->last_tx_byte == 0x04u ||
-                              s->last_tx_byte == 0x06u ||
-                              s->last_tx_byte == 0x15u);
-        int64_t step_ns = xmodem_active ? 200000 : 1000000;
-        g_usleep(xmodem_active ? 200 : 150);
+        g_usleep(200);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         timer_mod(s->rx_pace_timer,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + step_ns);
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
     } else {
         s->rx_poll_count = 0;
     }
@@ -977,9 +972,8 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo)) {
         s->rx_poll_count++;
         if (s->rx_poll_count >= 4 && !timer_pending(s->rx_pace_timer)) {
-            int64_t step_ns = (s->last_tx_byte == 0x04u) ? 200000 : 1000000;
             timer_mod(s->rx_pace_timer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + step_ns);
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
@@ -1162,8 +1156,7 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_WDATA:
         s->rx_poll_count = 0;
-        s->last_tx_byte = (uint8_t)(val32 & R_WDATA_WDATA_MASK);
-        uart_write_tx_fifo(s, s->last_tx_byte);
+        uart_write_tx_fifo(s, (uint8_t)(val32 & R_WDATA_WDATA_MASK));
         break;
     case R_FIFO_CTRL:
         s->regs[R_FIFO_CTRL] =
@@ -1315,7 +1308,6 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     }
     s->tx_busy = false;
     s->rx_poll_count = 0;
-    s->last_tx_byte = 0;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 
