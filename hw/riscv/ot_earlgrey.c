@@ -186,6 +186,7 @@ enum OtEGSocDevice {
     OT_EG_SOC_DEV_VMAPPER,
     /* IRQ splitters, i.e. 1-to-N signal dispatchers */
     OT_EG_SOC_SPLITTER_LC_HW_DEBUG,
+    OT_EG_SOC_SPLITTER_LC_DFT,
     OT_EG_SOC_SPLITTER_LC_ESCALATE,
     OT_EG_SOC_SPLITTER_LC_SEED_HW_RD,
     OT_EG_SOC_SPLITTER_LC_CREATOR_SEED_SW_RW,
@@ -895,9 +896,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             /* Signals to OTP */
             OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_CHECK_BYP_EN, OTP_CTRL,
                              OT_LC_BROADCAST, OT_OTP_LC_CHECK_BYP_EN),
-            /* Signals to pwrmgr */
-            OT_EG_SOC_SIGNAL(OT_LC_BROADCAST, OT_LC_DFT_EN, PWRMGR,
-                             OT_PWRMGR_LC_DFT_EN, 0)
+            /* Signals to pwrmgr and rv_dm */
+            OT_EG_SOC_D2S(OT_LC_BROADCAST, OT_LC_DFT_EN, LC_DFT)
         ),
         .link = IBEXDEVICELINKDEFS(
             OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
@@ -1555,6 +1555,9 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_DM_CONNECTION(OT_EG_SOC_DEV_DM, 3),
             OT_EG_SOC_GPIO_ALERT(0, 40)
         ),
+        .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL)
+        ),
     },
     [OT_EG_SOC_DEV_DM_LC_CTRL] = {
         .type = TYPE_OT_DM_TL,
@@ -1621,6 +1624,16 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("num-lines", 5u) /* @todo to be changed */
+        )
+    },
+    [OT_EG_SOC_SPLITTER_LC_DFT] = {
+        .type = TYPE_SPLIT_IRQ,
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_S2D(0, PWRMGR, OT_PWRMGR_LC_DFT_EN, 0),
+            OT_EG_SOC_S2D(1, RV_DM, PULP_RV_DM_LC_DFT_EN, 0)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("num-lines", 2u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_ESCALATE] = {

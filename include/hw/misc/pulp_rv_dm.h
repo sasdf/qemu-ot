@@ -37,6 +37,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PulpRVDMState, PULP_RV_DM)
 
 #define PULP_RV_DM_ACK_OUT_LINES  TYPE_PULP_RV_DM ".ack-out"
 #define PULP_RV_DM_LC_HW_DEBUG_EN TYPE_PULP_RV_DM ".lc-hw-debug-en"
+#define PULP_RV_DM_LC_DFT_EN      TYPE_PULP_RV_DM ".lc-dft-en"
 
 /* Configuration */
 #define PULP_RV_DM_NSCRATCH_COUNT        2u
@@ -50,8 +51,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PulpRVDMState, PULP_RV_DM)
 
 /* ROM entry points */
 #define PULP_RV_DM_HALT_OFFSET      0x0000
-#define PULP_RV_DM_RESUME_OFFSET    0x0004
-#define PULP_RV_DM_EXCEPTION_OFFSET 0x0008
+#define PULP_RV_DM_RESUME_OFFSET    0x0008
+#define PULP_RV_DM_EXCEPTION_OFFSET 0x0010
 
 /* Memory regions */
 #define PULP_RV_DM_REGS_BASE 0x0u

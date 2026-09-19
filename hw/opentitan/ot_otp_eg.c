@@ -1039,6 +1039,9 @@ static void ot_otp_eg_pwr_load_hw_cfg(OtOTPEngineState *s)
     hw_cfg->en_csrng_sw_app_read_mb8 =
         s->blk ? pdata1[A_HW_CFG1_EN_CSRNG_SW_APP_READ - pdesc1->offset] :
                  OT_MULTIBITBOOL8_TRUE;
+    hw_cfg->dis_rv_dm_late_debug_mb8 =
+        s->blk ? pdata1[A_HW_CFG1_DIS_RV_DM_LATE_DEBUG - pdesc1->offset] :
+                 OT_MULTIBITBOOL8_FALSE;
 }
 
 static void ot_otp_eg_pwr_load_tokens(OtOTPEngineState *s)

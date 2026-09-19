@@ -41,9 +41,9 @@ OBJECT_DECLARE_TYPE(RISCVDMState, RISCVDMClass, RISCV_DM)
  * should be better defined as yet another configurable properties
  */
 #define RISCV_DM_HALTED_OFFSET    0x100u
-#define RISCV_DM_GOING_OFFSET     0x104u
-#define RISCV_DM_RESUMING_OFFSET  0x108u
-#define RISCV_DM_EXCEPTION_OFFSET 0x10cu
+#define RISCV_DM_GOING_OFFSET     0x108u
+#define RISCV_DM_RESUMING_OFFSET  0x110u
+#define RISCV_DM_EXCEPTION_OFFSET 0x118u
 #define RISCV_DM_FLAGS_OFFSET     0x400u
 
 enum RISCVDMAckInterface {
