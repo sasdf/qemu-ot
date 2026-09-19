@@ -212,6 +212,7 @@ struct OtPinmuxEgState {
     uint32_t dio_in_level;
     uint8_t mio_latched_sleep_mode[PARAM_N_MIO_PADS];
     uint8_t dio_latched_sleep_mode[PARAM_N_DIO_PADS];
+    uint8_t wkup_prev_level[PARAM_N_WKUP_DETECT];
     bool low_power_exit;
     bool host_synced;
 
@@ -434,6 +435,15 @@ uint32_t ot_pinmux_eg_get_mio_pad_attr(OtPinmuxEgState *s, unsigned mio_pad)
     return s->regs->mio_pad_attr[mio_pad];
 }
 
+uint32_t ot_pinmux_eg_get_dio_pad_attr(unsigned dio_pad)
+{
+    OtPinmuxEgState *s = ot_pinmux_eg_instance;
+    if (!s || !s->regs || dio_pad >= PARAM_N_DIO_PADS) {
+        return 0;
+    }
+    return s->regs->dio_pad_attr[dio_pad];
+}
+
 uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
 {
     if (!s || !s->regs) {
@@ -463,7 +473,69 @@ uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in)
     return s->regs->mio_periph_insel[periph_in];
 }
 
-static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
+static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
+{
+    OtPinmuxEgStateRegs *regs = s->regs;
+    for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
+        if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
+            s->wkup_prev_level[i] = 0;
+            continue;
+        }
+        bool det_dio = (bool)(regs->wkup_detector_cfg[i] &
+                              R_WKUP_DETECTOR_CFG_MIODIO_MASK);
+        int level = 0;
+        if (det_dio) {
+            uint32_t dio_pad = regs->wkup_detector_padsel[i];
+            if (dio_pad < PARAM_N_DIO_PADS) {
+                level = (int)((s->dio_in_level >> dio_pad) & 1u);
+            }
+        } else {
+            uint32_t sel = regs->wkup_detector_padsel[i];
+            if (sel == 1u) {
+                level = 1;
+            } else if (sel >= 2u && (sel - 2u) < PARAM_N_MIO_PADS) {
+                unsigned mio_pad = sel - 2u;
+                int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
+                if (mio_in >= 0) {
+                    level = mio_in;
+                } else {
+                    bool pad_inv = (bool)(regs->mio_pad_attr[mio_pad] &
+                                          OT_PINMUX_PAD_ATTR_INVERT_MASK);
+                    int raw = (int)((s->pad_in_level >> mio_pad) & 1u);
+                    level = raw ^ (int)pad_inv;
+                }
+            }
+        }
+        int prev = (int)s->wkup_prev_level[i];
+        s->wkup_prev_level[i] = (uint8_t)level;
+        uint32_t mode = regs->wkup_detector_cfg[i] & 0x7u;
+        bool match = false;
+        switch (mode) {
+        case 0: /* Posedge */
+        default:
+            match = (prev == 0 && level == 1);
+            break;
+        case 1: /* Negedge */
+            match = (prev == 1 && level == 0);
+            break;
+        case 2: /* Edge */
+            match = (prev != level);
+            break;
+        case 3: /* TimedHigh */
+            match = (level == 1);
+            break;
+        case 4: /* TimedLow */
+            match = (level == 0);
+            break;
+        }
+        if (match) {
+            regs->wkup_cause |= (1u << i);
+            ibex_irq_set(&s->wkup, 1);
+        }
+    }
+}
+
+void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
 {
     for (unsigned i = 0; i < 6u; i++) {
         uint32_t sel = s->regs->mio_periph_insel[50u + i];
@@ -471,7 +543,16 @@ static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
         if (sel == 1u) {
             level = 1;
         } else if (sel >= 2u && (sel - 2u) < PARAM_N_MIO_PADS) {
-            level = (int)((s->pad_in_level >> (sel - 2u)) & 1u);
+            unsigned mio_pad = sel - 2u;
+            int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
+            if (mio_in >= 0) {
+                level = mio_in;
+            } else {
+                bool pad_inv = (bool)(s->regs->mio_pad_attr[mio_pad] &
+                                      OT_PINMUX_PAD_ATTR_INVERT_MASK);
+                int raw = (int)((s->pad_in_level >> mio_pad) & 1u);
+                level = raw ^ (int)pad_inv;
+            }
         }
         ibex_irq_set(&s->sysrst_inputs[i], level);
     }
@@ -479,6 +560,7 @@ static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
                  (int)((s->pad_in_level >> 14u) & 1u));
     ibex_irq_set(&s->sysrst_inputs[OT_SYSRST_CTRL_IN_FLASH_WP_L],
                  (int)((s->pad_in_level >> 15u) & 1u));
+    ot_pinmux_eg_eval_wkup_detectors(s);
 }
 
 static void ot_pinmux_eg_update_gpio_inputs(OtPinmuxEgState *s)
@@ -765,12 +847,13 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
         if (val32) {
-            ibex_irq_set(&s->alert, (int)val32);
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
         }
         break;
     case CASE_RANGE(MIO_PERIPH_INSEL_REGWEN, PARAM_N_MIO_PERIPH_IN):
         val32 &= R_MIO_PERIPH_INSEL_REGWEN_EN_MASK;
-        regs->mio_periph_insel_regwen[reg - R_MIO_PERIPH_INSEL_REGWEN] = val32;
+        regs->mio_periph_insel_regwen[reg - R_MIO_PERIPH_INSEL_REGWEN] &= val32;
         break;
     case CASE_RANGE(MIO_PERIPH_INSEL, PARAM_N_MIO_PERIPH_IN):
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_periph_insel, MIO_PERIPH_INSEL)) {
@@ -819,7 +902,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(MIO_OUTSEL_REGWEN, PARAM_N_MIO_PADS):
         val32 &= R_MIO_OUTSEL_REGWEN_EN_MASK;
-        regs->mio_outsel_regwen[reg - R_MIO_OUTSEL_REGWEN] = val32;
+        regs->mio_outsel_regwen[reg - R_MIO_OUTSEL_REGWEN] &= val32;
         break;
     case CASE_RANGE(MIO_OUTSEL, PARAM_N_MIO_PADS):
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_outsel, MIO_OUTSEL)) {
@@ -842,11 +925,11 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(MIO_PAD_ATTR_REGWEN, PARAM_N_MIO_PADS):
         val32 &= R_MIO_PAD_ATTR_REGWEN_EN_MASK;
-        regs->mio_pad_attr_regwen[reg - R_MIO_PAD_ATTR_REGWEN] = val32;
+        regs->mio_pad_attr_regwen[reg - R_MIO_PAD_ATTR_REGWEN] &= val32;
         break;
     case CASE_RANGE(MIO_PAD_ATTR, PARAM_N_MIO_PADS):
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_attr, MIO_PAD_ATTR)) {
-            val32 &= MIO_PAD_ATTR_MASK;
+            val32 &= 0x00000083u;
             unsigned pad_no = reg - R_MIO_PAD_ATTR;
             g_assert(pad_no < R_MIO_PAD_ATTR);
             regs->mio_pad_attr[pad_no] = val32;
@@ -859,15 +942,16 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(DIO_PAD_ATTR_REGWEN, PARAM_N_DIO_PADS):
         val32 &= R_DIO_PAD_ATTR_REGWEN_EN_MASK;
-        regs->dio_pad_attr_regwen[reg - R_DIO_PAD_ATTR_REGWEN] = val32;
+        regs->dio_pad_attr_regwen[reg - R_DIO_PAD_ATTR_REGWEN] &= val32;
         break;
     case CASE_RANGE(DIO_PAD_ATTR, PARAM_N_DIO_PADS):
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_attr, DIO_PAD_ATTR)) {
-            val32 &= DIO_PAD_ATTR_MASK;
             unsigned pad_no = reg - R_DIO_PAD_ATTR;
             g_assert(pad_no < PARAM_N_DIO_PADS);
+            val32 &= (pad_no >= 10u && pad_no <= 13u) ? 0x00000081u : 0x00000083u;
             regs->dio_pad_attr[pad_no] = val32;
             ibex_irq_set(&s->dios[pad_no], PAD_ATTR_TO_IRQ(val32));
+            ot_pinmux_eg_update_sysrst_inputs(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
@@ -885,7 +969,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(MIO_PAD_SLEEP_REGWEN, PARAM_N_MIO_PADS):
         val32 &= R_MIO_PAD_SLEEP_REGWEN_EN_MASK;
-        regs->mio_pad_sleep_regwen[reg - R_MIO_PAD_SLEEP_REGWEN] = val32;
+        regs->mio_pad_sleep_regwen[reg - R_MIO_PAD_SLEEP_REGWEN] &= val32;
         break;
     case CASE_RANGE(MIO_PAD_SLEEP, PARAM_N_MIO_PADS):
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_sleep, MIO_PAD_SLEEP)) {
@@ -897,8 +981,13 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case CASE_RANGE(MIO_PAD_SLEEP_MODE, PARAM_N_MIO_PADS):
-        val32 &= R_MIO_PAD_SLEEP_MODE_OUT_MASK;
-        regs->mio_pad_sleep_mode[reg - R_MIO_PAD_SLEEP_MODE] = val32;
+        if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_sleep, MIO_PAD_SLEEP_MODE)) {
+            val32 &= R_MIO_PAD_SLEEP_MODE_OUT_MASK;
+            regs->mio_pad_sleep_mode[reg - R_MIO_PAD_SLEEP_MODE] = val32;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
+                          __func__, (uint32_t)addr);
+        }
         break;
     case CASE_RANGE(DIO_PAD_SLEEP_STATUS, DIO_SLEEP_STATUS_COUNT):
         val32 &= DIO_PAD_SLEEP_STATUS_MASK;
@@ -911,7 +1000,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case CASE_RANGE(DIO_PAD_SLEEP_REGWEN, PARAM_N_DIO_PADS):
         val32 &= R_DIO_PAD_SLEEP_REGWEN_EN_MASK;
-        regs->dio_pad_sleep_regwen[reg - R_DIO_PAD_SLEEP_REGWEN] = val32;
+        regs->dio_pad_sleep_regwen[reg - R_DIO_PAD_SLEEP_REGWEN] &= val32;
         break;
     case CASE_RANGE(DIO_PAD_SLEEP, PARAM_N_DIO_PADS):
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_sleep, DIO_PAD_SLEEP)) {
@@ -923,12 +1012,17 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case CASE_RANGE(DIO_PAD_SLEEP_MODE, PARAM_N_DIO_PADS):
-        val32 &= R_DIO_PAD_SLEEP_MODE_OUT_MASK;
-        regs->dio_pad_sleep_mode[reg - R_DIO_PAD_SLEEP_MODE] = val32;
+        if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_sleep, DIO_PAD_SLEEP_MODE)) {
+            val32 &= R_DIO_PAD_SLEEP_MODE_OUT_MASK;
+            regs->dio_pad_sleep_mode[reg - R_DIO_PAD_SLEEP_MODE] = val32;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
+                          __func__, (uint32_t)addr);
+        }
         break;
     case CASE_RANGE(WKUP_DETECTOR_REGWEN, PARAM_N_WKUP_DETECT):
         val32 &= R_WKUP_DETECTOR_REGWEN_EN_MASK;
-        regs->wkup_detector_regwen[reg - R_WKUP_DETECTOR_REGWEN] = val32;
+        regs->wkup_detector_regwen[reg - R_WKUP_DETECTOR_REGWEN] &= val32;
         break;
     case CASE_RANGE(WKUP_DETECTOR, PARAM_N_WKUP_DETECT):
         if (OT_PINMUX_EG_IS_REGWEN(reg, wkup_detector, WKUP_DETECTOR)) {
@@ -941,27 +1035,46 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 bql_lock();
             }
             regs->wkup_detector[reg - R_WKUP_DETECTOR] = val32;
+            ot_pinmux_eg_eval_wkup_detectors(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);
         }
         break;
     case CASE_RANGE(WKUP_DETECTOR_CFG, PARAM_N_WKUP_DETECT):
-        val32 &= WKUP_DETECTOR_CFG_MASK;
-        regs->wkup_detector_cfg[reg - R_WKUP_DETECTOR_CFG] = val32;
+        if (OT_PINMUX_EG_IS_REGWEN(reg, wkup_detector, WKUP_DETECTOR_CFG)) {
+            val32 &= WKUP_DETECTOR_CFG_MASK;
+            regs->wkup_detector_cfg[reg - R_WKUP_DETECTOR_CFG] = val32;
+            ot_pinmux_eg_eval_wkup_detectors(s);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
+                          __func__, (uint32_t)addr);
+        }
         break;
     case CASE_RANGE(WKUP_DETECTOR_CNT_TH, PARAM_N_WKUP_DETECT):
-        val32 &= R_WKUP_DETECTOR_CNT_TH_TH_MASK;
-        regs->wkup_detector_cnt_th[reg - R_WKUP_DETECTOR_CNT_TH] = val32;
+        if (OT_PINMUX_EG_IS_REGWEN(reg, wkup_detector, WKUP_DETECTOR_CNT_TH)) {
+            val32 &= R_WKUP_DETECTOR_CNT_TH_TH_MASK;
+            regs->wkup_detector_cnt_th[reg - R_WKUP_DETECTOR_CNT_TH] = val32;
+            ot_pinmux_eg_eval_wkup_detectors(s);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
+                          __func__, (uint32_t)addr);
+        }
         break;
     case CASE_RANGE(WKUP_DETECTOR_PADSEL, PARAM_N_WKUP_DETECT):
-        if (val32 >= PARAM_N_MIO_PADS + 2u) {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x too large: %u\n",
-                          __func__, (unsigned)reg, val32);
-            uint32_t mask = ot_pinmux_eg_sel_mask(PARAM_N_MIO_PADS + 2u);
-            val32 &= mask;
+        if (OT_PINMUX_EG_IS_REGWEN(reg, wkup_detector, WKUP_DETECTOR_PADSEL)) {
+            if (val32 >= PARAM_N_MIO_PADS + 2u) {
+                qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x too large: %u\n",
+                              __func__, (unsigned)reg, val32);
+                uint32_t mask = ot_pinmux_eg_sel_mask(PARAM_N_MIO_PADS + 2u);
+                val32 &= mask;
+            }
+            regs->wkup_detector_padsel[reg - R_WKUP_DETECTOR_PADSEL] = val32;
+            ot_pinmux_eg_eval_wkup_detectors(s);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
+                          __func__, (uint32_t)addr);
         }
-        regs->wkup_detector_padsel[reg - R_WKUP_DETECTOR_PADSEL] = val32;
         break;
     case CASE_SCALAR(WKUP_CAUSE):
         regs->wkup_cause &= (val32 & WKUP_CAUSE_MASK);

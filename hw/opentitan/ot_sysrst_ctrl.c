@@ -30,6 +30,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
+#include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sysrst_ctrl.h"
 #include "hw/qdev-properties.h"
@@ -217,10 +218,22 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     val |= ((raw >> OT_SYSRST_CTRL_IN_LID_OPEN) & 1u) << 4u;
     val |= ((raw >> OT_SYSRST_CTRL_IN_AC_PRESENT) & 1u) << 5u;
 
-    uint32_t ec_in = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & 1u) &
-                     ((out >> 1u) & 1u);
-    uint32_t wp_in = ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & 1u) &
-                     ((out >> 7u) & 1u);
+    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & 1u) &
+                       ((out >> 1u) & 1u);
+    uint32_t wp_wire = ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & 1u) &
+                       ((out >> 7u) & 1u);
+
+    uint32_t ec_attr = ot_pinmux_eg_get_dio_pad_attr(10u);
+    uint32_t wp_attr = ot_pinmux_eg_get_dio_pad_attr(11u);
+
+    uint32_t ec_raw =
+        (ec_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK) ? 0u : ec_wire;
+    uint32_t wp_raw =
+        (wp_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK) ? 0u : wp_wire;
+
+    uint32_t ec_in = ec_raw ^ (ec_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
+    uint32_t wp_in = wp_raw ^ (wp_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
+
     val |= (ec_in << 6u) | (wp_in << 7u);
 
     return val;

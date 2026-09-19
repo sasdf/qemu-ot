@@ -477,6 +477,53 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_irqs(s);
 
     ot_gpio_eg_update_pad_in_lines(s);
+    if (s->pinmux) {
+        ot_pinmux_eg_update_sysrst_inputs(s->pinmux);
+    }
+}
+
+int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
+{
+    OtGpioEgState *s = ot_gpio_eg_instance;
+    if (!s || !s->pinmux || mio_pad >= 47u) {
+        return -1;
+    }
+    uint32_t pad_attr = ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
+    bool pad_inv = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
+    bool pad_in_dis = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK);
+    if (pad_in_dis) {
+        return pad_inv ? 1 : 0;
+    }
+    uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+    if (outsel == 0u) {
+        return 0;
+    }
+    if (outsel == 1u) {
+        return 1;
+    }
+    if (outsel >= 3u && outsel < 35u) {
+        unsigned g_out = outsel - 3u;
+        if ((s->data_oe >> g_out) & 1u) {
+            bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
+            bool od = (bool)(pad_attr &
+                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
+                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
+            if (!(od && (g_out_val ^ pad_inv))) {
+                return g_out_val ? 1 : 0;
+            }
+        }
+    } else if (outsel >= 35u && outsel <= 42u && s->sysrst_ctrl) {
+        return ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
+    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+        return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
+    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+        return ot_pwm_get_channel_level(
+                   s->pwm, outsel - 65u,
+                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
+                   1 :
+                   0;
+    }
+    return -1;
 }
 
 static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
