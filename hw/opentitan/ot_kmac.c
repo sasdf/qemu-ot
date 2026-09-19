@@ -469,6 +469,26 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 #define ot_kmac_change_fsm_state(_s_, _st_) \
     ot_kmac_change_fsm_state_line(_s_, _st_, __LINE__)
 
+static bool ot_kmac_is_non_sw_app_active(const OtKMACState *s)
+{
+    if (s->current_app && s->current_app->cfg.prefix.customstr_len >= 7u &&
+        (!memcmp(s->current_app->cfg.prefix.customstr, "LC_CTRL", 7u) ||
+         !memcmp(s->current_app->cfg.prefix.customstr, "ROM_CTRL", 8u))) {
+        return true;
+    }
+    if (s->pending_apps) {
+        for (unsigned ix = 0; ix < s->num_app; ix++) {
+            if (s->apps[ix].req_pending &&
+                s->apps[ix].cfg.prefix.customstr_len >= 7u &&
+                (!memcmp(s->apps[ix].cfg.prefix.customstr, "LC_CTRL", 7u) ||
+                 !memcmp(s->apps[ix].cfg.prefix.customstr, "ROM_CTRL", 8u))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
     uint32_t pc = first_cpu && first_cpu->cc->get_pc ?
@@ -476,8 +496,8 @@ static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
                       0u;
     bool in_debug_rom =
         (pc >= 0x800u && pc < 0x900u) || (pc >= 0x10800u && pc < 0x10900u);
-    bool hw_app_active = (s->current_app != NULL) || (s->pending_apps != 0u);
-    bool cpu_idle = hw_app_active || !current_cpu || !first_cpu ||
+    bool non_sw_app = ot_kmac_is_non_sw_app_active(s);
+    bool cpu_idle = non_sw_app || !current_cpu || !first_cpu ||
                     first_cpu->disabled || first_cpu->stopped ||
                     first_cpu->halted || in_debug_rom;
     uint64_t rt_delay_ns =
