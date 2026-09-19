@@ -319,7 +319,9 @@ static void ot_otp_engine_set_error(OtOTPEngineState *s, unsigned part_ix,
     case OT_OTP_MACRO_WRITE_BLANK_ERROR:
         break;
     case OT_OTP_ACCESS_ERROR:
-        ic->update_status_error(OT_OTP_IMPL_IF(s), OT_OTP_STATUS_DAI, true);
+        if (part_ix == OTP_ENTRY_DAI(s)) {
+            ic->update_status_error(OT_OTP_IMPL_IF(s), OT_OTP_STATUS_DAI, true);
+        }
         break;
     case OT_OTP_CHECK_FAIL_ERROR:
     case OT_OTP_FSM_STATE_ERROR:
@@ -665,7 +667,7 @@ static bool ot_otp_engine_is_readable(const OtOTPEngineState *s,
         if (pix == part_ix) {
             break;
         }
-        if (pdesc->read_lock_csr) {
+        if (s->part_descs[pix].read_lock_csr) {
             roffset++;
         }
     }
@@ -1011,7 +1013,9 @@ static void ot_otp_engine_dai_set_error(OtOTPEngineState *s, OtOTPError err)
         DAI_CHANGE_STATE(s, OT_OTP_DAI_ERROR);
         break;
     default:
+        s->regs[R_INTR_STATE] |= INTR_OTP_OPERATION_DONE_MASK;
         DAI_CHANGE_STATE(s, OT_OTP_DAI_IDLE);
+        ot_otp_engine_update_irqs(s);
         break;
     }
 }
@@ -1036,6 +1040,8 @@ static void ot_otp_engine_dai_read(OtOTPEngineState *s)
     ot_otp_engine_dai_clear_error(s);
 
     DAI_CHANGE_STATE(s, OT_OTP_DAI_READ);
+    DIRECT_ACCESS_REG(s, RDATA_0) = 0u;
+    DIRECT_ACCESS_REG(s, RDATA_1) = 0u;
 
     unsigned address = DIRECT_ACCESS_REG(s, ADDRESS);
 
@@ -1177,7 +1183,9 @@ static void ot_otp_engine_dai_read(OtOTPEngineState *s)
         timer_mod(s->dai->delay,
                   qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + access_time);
     } else {
+        s->regs[R_INTR_STATE] |= INTR_OTP_OPERATION_DONE_MASK;
         DAI_CHANGE_STATE(s, OT_OTP_DAI_IDLE);
+        ot_otp_engine_update_irqs(s);
     }
 }
 
@@ -1333,6 +1341,9 @@ static void ot_otp_engine_dai_write(OtOTPEngineState *s)
         return;
     }
 
+    DIRECT_ACCESS_REG(s, RDATA_0) = 0u;
+    DIRECT_ACCESS_REG(s, RDATA_1) = 0u;
+
     if (!ot_otp_engine_is_backend_writable(s)) {
         /* OTP backend missing or read-only; reject any write request */
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1447,6 +1458,9 @@ static void ot_otp_engine_dai_digest(OtOTPEngineState *s)
                       __func__, s->ot_id, DAI_STATE_NAME(s->dai->state));
         return;
     }
+
+    DIRECT_ACCESS_REG(s, RDATA_0) = 0u;
+    DIRECT_ACCESS_REG(s, RDATA_1) = 0u;
 
     if (!ot_otp_engine_is_backend_writable(s)) {
         /* OTP backend missing or read-only; reject any write request */
@@ -1622,14 +1636,17 @@ static void ot_otp_engine_dai_complete(void *opaque)
                               (unsigned)s->dai->partition,
                               DIRECT_ACCESS_REG(s, RDATA_0),
                               DIRECT_ACCESS_REG(s, RDATA_1));
+        s->regs[R_INTR_STATE] |= INTR_OTP_OPERATION_DONE_MASK;
         s->dai->partition = -1;
         DAI_CHANGE_STATE(s, OT_OTP_DAI_IDLE);
+        ot_otp_engine_update_irqs(s);
         break;
     case OT_OTP_DAI_WRITE_WAIT:
         g_assert(s->dai->partition >= 0);
         s->regs[R_INTR_STATE] |= INTR_OTP_OPERATION_DONE_MASK;
         s->dai->partition = -1;
         DAI_CHANGE_STATE(s, OT_OTP_DAI_IDLE);
+        ot_otp_engine_update_irqs(s);
         break;
     case OT_OTP_DAI_DIG_WAIT:
         g_assert(s->dai->partition >= 0);

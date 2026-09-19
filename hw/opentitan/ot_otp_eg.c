@@ -492,9 +492,15 @@ static const char *OTP_TOKEN_NAMES[] = {
 
 static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
 {
-    uint32_t status;
+    uint32_t status = s->regs[R_STATUS] & ~0x1fffu;
 
-    status = FIELD_DP32(s->regs[R_STATUS], STATUS, DAI_IDLE,
+    for (unsigned ix = 0; ix <= (R_ERR_CODE_12 - R_ERR_CODE_0); ix++) {
+        if (s->regs[R_ERR_CODE_0 + ix] != 0u) {
+            status |= 1u << ix;
+        }
+    }
+
+    status = FIELD_DP32(status, STATUS, DAI_IDLE,
                         !ot_otp_engine_dai_is_busy(s));
 
     return status;
@@ -514,13 +520,15 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     case R_ERR_CODE_0 ... R_ERR_CODE_12:
     case R_DIRECT_ACCESS_WDATA_0:
     case R_DIRECT_ACCESS_WDATA_1:
-    case R_DIRECT_ACCESS_RDATA_0:
-    case R_DIRECT_ACCESS_RDATA_1:
     case R_DIRECT_ACCESS_ADDRESS:
     case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK:
     case R_CHECK_TRIGGER_REGWEN:
     case R_CHECK_REGWEN:
         val32 = s->regs[reg];
+        break;
+    case R_DIRECT_ACCESS_RDATA_0:
+    case R_DIRECT_ACCESS_RDATA_1:
+        val32 = ot_otp_engine_dai_is_busy(s) ? 0u : s->regs[reg];
         break;
     case R_STATUS:
         val32 = ot_otp_eg_get_status(s);
@@ -593,7 +601,8 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     case R_DIRECT_ACCESS_WDATA_1:
     case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK:
         if (!(s->regs[R_DIRECT_ACCESS_REGWEN] &
-              R_DIRECT_ACCESS_REGWEN_REGWEN_MASK)) {
+              R_DIRECT_ACCESS_REGWEN_REGWEN_MASK) ||
+            ot_otp_engine_dai_is_busy(s)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_DIRECT_ACCESS_REGWEN),
@@ -647,7 +656,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case R_INTR_TEST:
         val32 &= INTR_WMASK;
-        s->regs[R_INTR_STATE] = val32;
+        s->regs[R_INTR_STATE] |= val32;
         c->update_irqs(s);
         break;
     case R_ALERT_TEST:
@@ -688,10 +697,14 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
         val32 &= R_CHECK_REGWEN_REGWEN_MASK;
         s->regs[reg] &= val32; /* RW0C */
         break;
-    case R_CHECK_TRIGGER:
     case R_CHECK_TIMEOUT:
     case R_INTEGRITY_CHECK_PERIOD:
     case R_CONSISTENCY_CHECK_PERIOD:
+        s->regs[reg] = val32;
+        qemu_log_mask(LOG_UNIMP, "%s: %s: %s is not supported\n", __func__,
+                      s->ot_id, REG_NAME(reg));
+        break;
+    case R_CHECK_TRIGGER:
         qemu_log_mask(LOG_UNIMP, "%s: %s: %s is not supported\n", __func__,
                       s->ot_id, REG_NAME(reg));
         break;

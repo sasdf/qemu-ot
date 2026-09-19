@@ -170,6 +170,24 @@ static uint64_t ot_otp_ot_be_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)val32;
 }
 
+#define CSR0_WMASK \
+    (R_CSR0_FIELD0_MASK | R_CSR0_FIELD1_MASK | R_CSR0_FIELD2_MASK | \
+     R_CSR0_FIELD3_MASK | R_CSR0_FIELD4_MASK)
+#define CSR1_WMASK \
+    (R_CSR1_FIELD0_MASK | R_CSR1_FIELD1_MASK | R_CSR1_FIELD2_MASK | \
+     R_CSR1_FIELD3_MASK | R_CSR1_FIELD4_MASK)
+#define CSR2_WMASK R_CSR2_FIELD0_MASK
+#define CSR3_W1C_MASK \
+    (R_CSR3_FIELD0_MASK | R_CSR3_FIELD1_MASK | R_CSR3_FIELD2_MASK)
+#define CSR4_WMASK \
+    (R_CSR4_FIELD0_MASK | R_CSR4_FIELD1_MASK | R_CSR4_FIELD2_MASK | \
+     R_CSR4_FIELD3_MASK)
+#define CSR5_WMASK \
+    (R_CSR5_FIELD0_MASK | R_CSR5_FIELD1_MASK | R_CSR5_FIELD6_MASK)
+#define CSR6_WMASK \
+    (R_CSR6_FIELD0_MASK | R_CSR6_FIELD1_MASK | R_CSR6_FIELD2_MASK | \
+     R_CSR6_FIELD3_MASK)
+
 static void ot_otp_ot_be_write(void *opaque, hwaddr addr, uint64_t value,
                                unsigned size)
 {
@@ -184,14 +202,25 @@ static void ot_otp_ot_be_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (reg) {
     case R_CSR0:
+        s->regs[reg] = val32 & CSR0_WMASK;
+        break;
     case R_CSR1:
+        s->regs[reg] = val32 & CSR1_WMASK;
+        break;
     case R_CSR2:
+        s->regs[reg] = val32 & CSR2_WMASK;
+        break;
     case R_CSR3:
+        s->regs[reg] &= ~(val32 & CSR3_W1C_MASK); /* W1C */
+        break;
     case R_CSR4:
+        s->regs[reg] = val32 & CSR4_WMASK;
+        break;
     case R_CSR5:
+        s->regs[reg] = (s->regs[reg] & ~CSR5_WMASK) | (val32 & CSR5_WMASK);
+        break;
     case R_CSR6:
-        /* TODO: not yet implemented */
-        s->regs[reg] = val32;
+        s->regs[reg] = val32 & CSR6_WMASK;
         break;
     case R_CSR7:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x02%x (%s)\n",
