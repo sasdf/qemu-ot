@@ -1980,7 +1980,7 @@ static void ot_kmac_start_pending_app(OtKMACState *s)
         ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
 
         /* compute app request */
-        if (runstate_is_running()) {
+        if (runstate_is_running() && current_cpu) {
             ot_kmac_trigger_deferred_bh(s);
         } else {
             ot_kmac_process(s);

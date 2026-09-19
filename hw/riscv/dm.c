@@ -1381,6 +1381,22 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
         }
         dm->in_ndmreset = false;
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = false;
+        for (unsigned step = 0; step < 32u; step++) {
+            bool any_disabled = false;
+            for (unsigned ix = 0; ix < dm->hart_count; ix++) {
+                CPUState *cs = CPU(dm->harts[ix].cpu);
+                if (cs && cs->disabled) {
+                    any_disabled = true;
+                    break;
+                }
+            }
+            if (!any_disabled) {
+                break;
+            }
+            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
+            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+            aio_bh_poll(qemu_get_aio_context());
+        }
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
             RISCVDMHartState *hart = &dm->harts[ix];
             uint64_t hartbit = 1u << ix;
@@ -1584,6 +1600,7 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
                     (i < 20 ||
                      ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) ||
                      (cs->interrupt_request & CPU_INTERRUPT_DEBUG))) {
+                    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
                     qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
                     aio_bh_poll(qemu_get_aio_context());
                     if (cs->disabled) {
