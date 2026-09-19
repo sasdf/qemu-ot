@@ -4258,10 +4258,13 @@ foreach target : target_dirs
   if host_os == 'linux'
     target_inc += include_directories('linux-headers', is_system: true)
   endif
+  ot_cov_hw_srcs = []
+  arch_noncov_srcs = []
   if target.endswith('-softmmu')
     target_type='system'
     t = target_system_arch[target_base_arch].apply(config_target, strict: false)
     arch_srcs += t.sources()
+    arch_noncov_srcs += t.sources()
     arch_deps += t.dependencies()
 
     hw_dir = target_name == 'sparc64' ? 'sparc64' : target_base_arch
@@ -4269,6 +4272,14 @@ foreach target : target_dirs
       hw = hw_arch[hw_dir].apply(config_target, strict: false)
       arch_srcs += hw.sources()
       arch_deps += hw.dependencies()
+      foreach f : hw.sources()
+        p = f.full_path()
+        if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+          ot_cov_hw_srcs += f
+        else
+          arch_noncov_srcs += f
+        endif
+      endforeach
     endif
 
     c_args += ['-DCONFIG_DEVICES="@0@-config-devices.h"'.format(target)]
@@ -4319,16 +4330,21 @@ foreach target : target_dirs
                                 command: [feature_to_c, '@INPUT@'],
                                 capture: true)
     arch_srcs += gdbstub_xml
+    arch_noncov_srcs += gdbstub_xml
   endif
 
   if target in config_target_info
     arch_srcs += config_target_info[target]
+    arch_noncov_srcs += config_target_info[target]
   else
-    arch_srcs += files('target-info-stub.c')
+    stub_f = files('target-info-stub.c')
+    arch_srcs += stub_f
+    arch_noncov_srcs += stub_f
   endif
 
   t = target_arch[target_base_arch].apply(config_target, strict: false)
   arch_srcs += t.sources()
+  arch_noncov_srcs += t.sources()
   arch_deps += t.dependencies()
 
   target_common = common_ss.apply(config_target, strict: false)
@@ -4340,10 +4356,22 @@ foreach target : target_dirs
     objects += lib.extract_objects(src.sources())
     arch_deps += src.dependencies()
   endif
+  ot_cov_sys_srcs = []
+  ot_noncov_sys_srcs = []
   if target_type == 'system'
     src = system_ss.apply(config_target, strict: false)
     objects += libsystem.extract_objects(src.sources())
     arch_deps += src.dependencies()
+    if target == 'riscv32-softmmu'
+      foreach f : src.sources()
+        p = f.full_path()
+        if (p.contains('/hw/opentitan/ot_') or p.contains('/hw/misc/pulp_rv_dm.c') or p.contains('/hw/jtag/tap_ctrl_rbb.c') or p.contains('/hw/block/m25p80') or p.contains('/hw/nvram/eeprom_at24c.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+          ot_cov_sys_srcs += f
+        else
+          ot_noncov_sys_srcs += f
+        endif
+      endforeach
+    endif
   endif
   if target_type == 'user'
     src = user_ss.apply(config_target, strict: false)
@@ -4360,6 +4388,14 @@ foreach target : target_dirs
   target_specific = specific_ss.apply(config_target, strict: false)
   arch_srcs += target_specific.sources()
   arch_deps += target_specific.dependencies()
+  foreach f : target_specific.sources()
+    p = f.full_path()
+    if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+      ot_cov_hw_srcs += f
+    else
+      arch_noncov_srcs += f
+    endif
+  endforeach
 
   if have_rust and target_type == 'system'
     target_rust = rust_devices_ss.apply(config_target, strict: false)
@@ -4398,6 +4434,43 @@ foreach target : target_dirs
                  include_directories: target_inc,
                  c_args: c_args,
                  build_by_default: false)
+
+  if target == 'riscv32-softmmu'
+    libsystem_ot_cov = static_library('system-ot-cov',
+                                      ot_cov_sys_srcs + genh,
+                                      c_args: ['-DCONFIG_SOFTMMU',
+                                               '-DCOMPILING_SYSTEM_VS_USER',
+                                               '--coverage'],
+                                      dependencies: system_ss.all_dependencies(),
+                                      build_by_default: false)
+    objects_cov = [common_all.extract_objects(target_common.sources())]
+    if target_base_arch in target_common_arch_libs
+      src_ca = target_common_arch[target_base_arch].apply(config_target, strict: false)
+      objects_cov += target_common_arch_libs[target_base_arch].extract_objects(src_ca.sources())
+    endif
+    objects_cov += libsystem.extract_objects(ot_noncov_sys_srcs)
+    objects_cov += libsystem_ot_cov.extract_all_objects(recursive: true)
+    if target_base_arch in target_common_system_arch_libs
+      src_csa = target_common_system_arch[target_base_arch].apply(config_target, strict: false)
+      objects_cov += target_common_system_arch_libs[target_base_arch].extract_objects(src_csa.sources())
+    endif
+    objects_cov += lib.extract_objects(arch_noncov_srcs)
+    lib_ot_cov = static_library('qemu-' + target + '-ot-cov',
+                   sources: ot_cov_hw_srcs + genh,
+                   dependencies: lib_deps,
+                   objects: objects_cov,
+                   include_directories: target_inc,
+                   c_args: c_args + ['--coverage'],
+                   build_by_default: false)
+    executable('qemu-system-riscv32-cov', files('system/main.c'),
+               install: true,
+               c_args: c_args,
+               dependencies: arch_deps + [sdl],
+               objects: lib_ot_cov.extract_all_objects(recursive: true),
+               link_depends: [block_syms, qemu_syms],
+               link_args: link_args + ['--coverage'],
+               win_subsystem: 'console')
+  endif
 
   if target.endswith('-softmmu')
     execs = [{
