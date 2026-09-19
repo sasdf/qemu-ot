@@ -2070,18 +2070,65 @@ static void ot_usbdev_clock_input(void *opaque, int irq, int level)
     s->pclk = (unsigned)level;
 }
 
-static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
+static uint8_t ot_usbdev_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_USBDEV_INTR_STATE:
+    case R_USBDEV_INTR_ENABLE:
+    case R_USBDEV_INTR_TEST:
+    case R_USBCTRL:
+    case R_RXFIFO:
+    case R_PHY_PINS_SENSE:
+    case R_PHY_PINS_DRIVE:
+        return 0x7u;
+    case R_EP_OUT_ENABLE:
+    case R_EP_IN_ENABLE:
+    case R_RXENABLE_SETUP:
+    case R_RXENABLE_OUT:
+    case R_SET_NAK_OUT:
+    case R_IN_SENT:
+    case R_OUT_STALL:
+    case R_IN_STALL:
+    case R_OUT_ISO:
+    case R_IN_ISO:
+    case R_WAKE_EVENTS:
+        return 0x3u;
+    case R_USBSTAT:
+    case R_CONFIGIN_0 ... R_CONFIGIN_11:
+    case R_OUT_DATA_TOGGLE:
+    case R_IN_DATA_TOGGLE:
+    case R_COUNT_OUT:
+    case R_COUNT_IN:
+    case R_COUNT_NODATA_IN:
+    case R_COUNT_ERRORS:
+        return 0xfu;
+    default:
+        return 0x1u;
+    }
+}
+
+static MemTxResult ot_usbdev_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtUsbdevState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return 0;
+        *data = 0;
+        return MEMTX_OK;
     }
 
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
+    }
+
     switch (reg) {
     /* Reads with no side-effects */
     case R_PHY_CONFIG:
@@ -2096,18 +2143,7 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_IN_SENT:
     case R_OUT_STALL:
     case R_IN_STALL:
-    case R_CONFIGIN_0:
-    case R_CONFIGIN_1:
-    case R_CONFIGIN_2:
-    case R_CONFIGIN_3:
-    case R_CONFIGIN_4:
-    case R_CONFIGIN_5:
-    case R_CONFIGIN_6:
-    case R_CONFIGIN_7:
-    case R_CONFIGIN_8:
-    case R_CONFIGIN_9:
-    case R_CONFIGIN_10:
-    case R_CONFIGIN_11:
+    case R_CONFIGIN_0 ... R_CONFIGIN_11:
     case R_OUT_ISO:
     case R_IN_ISO:
     case R_OUT_DATA_TOGGLE:
@@ -2166,29 +2202,27 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
         val32 = 0u;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        val32 = 0u;
-        break;
+        g_assert_not_reached();
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                 pc);
 
-    return (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
-                            unsigned size)
+static MemTxResult ot_usbdev_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtUsbdevState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return;
+        return MEMTX_OK;
     }
 
     hwaddr reg = R32_OFF(addr);
@@ -2196,6 +2230,20 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                              pc);
+
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
+
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    if ((ot_usbdev_reg_permit(reg) & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s Sub-word write error at 0x%02x (%s, be=0x%x)\n",
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg), reg_be);
+        return MEMTX_ERROR;
+    }
 
     switch (reg) {
     case R_USBDEV_INTR_STATE:
@@ -2291,18 +2339,7 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
             ot_usbdev_update_fifos_status(s);
         }
         break;
-    case R_CONFIGIN_0:
-    case R_CONFIGIN_1:
-    case R_CONFIGIN_2:
-    case R_CONFIGIN_3:
-    case R_CONFIGIN_4:
-    case R_CONFIGIN_5:
-    case R_CONFIGIN_6:
-    case R_CONFIGIN_7:
-    case R_CONFIGIN_8:
-    case R_CONFIGIN_9:
-    case R_CONFIGIN_10:
-    case R_CONFIGIN_11:
+    case R_CONFIGIN_0 ... R_CONFIGIN_11:
         ot_usbdev_write_configin(s, reg, val32);
         break;
     case R_IN_SENT:
@@ -2412,21 +2449,24 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     }
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        break;
+        g_assert_not_reached();
     }
+
+    return MEMTX_OK;
 }
 
-static uint64_t ot_usbdev_buffer_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_usbdev_buffer_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtUsbdevState *s = opaque;
     (void)size;
+    (void)attrs;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
                                               USBDEV_BUFFER_OFFSET + addr);
-        return 0;
+        *data = 0;
+        return MEMTX_OK;
     }
 
     hwaddr word = R32_OFF(addr);
@@ -2435,20 +2475,29 @@ static uint64_t ot_usbdev_buffer_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_buffer_read_out(s->ot_id, (uint32_t)addr, val32, pc);
 
-    return (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
 }
 
-static void ot_usbdev_buffer_write(void *opaque, hwaddr addr, uint64_t val64,
-                                   unsigned size)
+static MemTxResult ot_usbdev_buffer_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtUsbdevState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = val64;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
                                               USBDEV_BUFFER_OFFSET + addr);
-        return;
+        return MEMTX_OK;
+    }
+
+    if (size != 4u || (addr & 3u) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: Sub-word write error on packet buffer at 0x%03x "
+                      "(size=%u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_ERROR;
     }
 
     hwaddr word = R32_OFF(addr);
@@ -2456,6 +2505,8 @@ static void ot_usbdev_buffer_write(void *opaque, hwaddr addr, uint64_t val64,
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_buffer_write(s->ot_id, (uint32_t)addr, val32, pc);
+
+    return MEMTX_OK;
 }
 
 /*
@@ -3140,20 +3191,23 @@ static const Property ot_usbdev_properties[] = {
 };
 
 static const MemoryRegionOps ot_usbdev_ops = {
-    .read = &ot_usbdev_read,
-    .write = &ot_usbdev_write,
+    .read_with_attrs = &ot_usbdev_read_with_attrs,
+    .write_with_attrs = &ot_usbdev_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = sizeof(uint32_t),
+    .impl.min_access_size = 1u,
     .impl.max_access_size = sizeof(uint32_t),
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = sizeof(uint32_t),
 };
 
 static const MemoryRegionOps ot_usbdev_buffer_ops = {
-    .read = &ot_usbdev_buffer_read,
-    .write = &ot_usbdev_buffer_write,
+    .read_with_attrs = &ot_usbdev_buffer_read_with_attrs,
+    .write_with_attrs = &ot_usbdev_buffer_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    /* @todo The RTL probably supports sub-word reads, implement this */
-    .impl.min_access_size = sizeof(uint32_t),
+    .impl.min_access_size = 1u,
     .impl.max_access_size = sizeof(uint32_t),
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = sizeof(uint32_t),
 };
 
 /*
@@ -3330,7 +3384,7 @@ static void ot_usbdev_init(Object *obj)
                        USBDEV_DEVICE_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio.main);
     memory_region_init_io(&s->mmio.regs, obj, &ot_usbdev_ops, s,
-                          TYPE_OT_USBDEV ".reg", USBDEV_REGS_SIZE);
+                          TYPE_OT_USBDEV ".reg", USBDEV_BUFFER_OFFSET);
     memory_region_add_subregion(&s->mmio.main, USBDEV_REGS_OFFSET,
                                 &s->mmio.regs);
     memory_region_init_io(&s->mmio.buffer, obj, &ot_usbdev_buffer_ops, s,
