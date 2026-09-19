@@ -38,6 +38,7 @@
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "exec/memattrs.h"
+#include "system/replay.h"
 #include "hw/boards.h"
 #include "hw/core/cpu.h"
 #include "hw/irq.h"
@@ -387,6 +388,19 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
                  */
                 qemu_set_irq(s->ack_out[ACK_HALTED], (int)val32);
                 s->idle_bm |= (1u << val32);
+            } else if (!s->dmflag_regs[val32] && current_cpu) {
+                /*
+                 * The hart is already halted in the Debug ROM park loop and no
+                 * GO/RESUME flag is pending. Exit the TB and briefly yield the
+                 * BQL so the vCPU thread does not spin at 100% CPU starving the
+                 * I/O thread (e.g. JTAG remote_bitbang and VIRTUAL_RT timers).
+                 */
+                cpu_exit(current_cpu);
+                replay_mutex_unlock();
+                bql_unlock();
+                g_usleep(100);
+                replay_mutex_lock();
+                bql_lock();
             }
         }
         res = MEMTX_OK;

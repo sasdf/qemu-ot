@@ -1798,7 +1798,13 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     case R_STATUS:
         if (ifreq == LC_IF_DMI && s->state != ST_IDLE &&
             s->state != ST_POST_TRANS) {
-            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
+            for (unsigned step = 0;
+                 step < 100u && s->state != ST_IDLE &&
+                 s->state != ST_POST_TRANS;
+                 step++) {
+                g_usleep(100);
+                qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
+            }
         }
         val32 = s->regs[reg];
         break;

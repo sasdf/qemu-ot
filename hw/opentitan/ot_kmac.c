@@ -469,7 +469,7 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
-    bool cpu_idle = !first_cpu || first_cpu->disabled ||
+    bool cpu_idle = s->current_app || !first_cpu || first_cpu->disabled ||
                     first_cpu->stopped || first_cpu->halted;
     uint64_t rt_delay_ns =
         cpu_idle ? BH_TRIGGER_DELAY_NS : (50u * 1000u * 1000u);
