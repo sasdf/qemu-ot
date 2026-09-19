@@ -218,6 +218,8 @@ typedef struct {
     OtFifo32 cmd_gen_fifo; /* "Replay" FIFO to store generate command */
     OtFifo32 cmd_reseed_fifo; /* "Replay" FIFO to store reseed command */
     uint8_t hw_cmd_type; /* type of the last CSRNG HW command */
+    bool hw_boot_mode; /* latched HW_CMD_STS.BOOT_MODE until Idle/done */
+    bool hw_auto_mode; /* latched HW_CMD_STS.AUTO_MODE until Idle/done */
     bool hw_ack; /* last SW command has been completed */
     bool sw_ack; /* last SW command has been completed */
     bool instantiated; /* instantiated state, not yet uninstantiated */
@@ -456,24 +458,12 @@ static bool ot_edn_is_auto_req_mode(const OtEDNState *s)
 
 static bool ot_edn_is_boot_mode(const OtEDNState *s)
 {
-    /* NOLINTNEXTLINE */
-    switch (s->state) {
-    case EDN_BOOT_INS_ACK_WAIT ... EDN_BOOT_UNI_ACK_WAIT:
-        return true;
-    default:
-        return false;
-    }
+    return s->rng.hw_boot_mode;
 }
 
 static bool ot_edn_is_auto_mode(const OtEDNState *s)
 {
-    /* NOLINTNEXTLINE */
-    switch (s->state) {
-    case EDN_AUTO_ACK_WAIT ... EDN_AUTO_SEND_RESEED_CMD:
-        return true;
-    default:
-        return false;
-    }
+    return s->rng.hw_auto_mode;
 }
 
 static bool ot_edn_is_sw_cmd_mode(const OtEDNState *s)
@@ -576,8 +566,12 @@ static void ot_edn_change_state_line(OtEDNState *s, OtEDNFsmState state,
     s->state = state;
 
     switch (s->state) {
+    case EDN_IDLE:
+    case EDN_SW_PORT_MODE:
+        s->rng.hw_boot_mode = false;
+        s->rng.hw_auto_mode = false;
+        break;
     case EDN_ERROR:
-        s->rng.hw_cmd_type = (uint8_t)OT_CSRNG_CMD_NONE;
         ot_edn_manage_error(s);
         break;
     default:
@@ -632,6 +626,9 @@ ot_edn_push_csrng_request(OtEDNState *s, bool auto_mode, uint32_t length)
 
     OtEDNCSRNG *c = &s->rng;
 
+    if (auto_mode) {
+        c->hw_auto_mode = true;
+    }
     c->hw_ack = false;
     c->hw_cmd_status = CSRNG_STATUS_SUCCESS;
 
@@ -691,7 +688,7 @@ static void ot_edn_send_boot_req(OtEDNState *s, unsigned reg)
          */
     }
 
-    if (command == OT_CSRNG_CMD_GENERATE) {
+    if (reg == R_BOOT_GEN_CMD) {
         c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
         xtrace_ot_edn_dinfo(c->appid, "Boot generation w/ packets",
                             c->rem_packet_count);
@@ -704,12 +701,13 @@ static void ot_edn_send_boot_req(OtEDNState *s, unsigned reg)
 
     c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
 
-    switch (command) {
-    case OT_CSRNG_CMD_INSTANTIATE:
+    switch (reg) {
+    case R_BOOT_INS_CMD:
         c->no_fips = false;
+        c->hw_boot_mode = true;
         ot_edn_change_state(s, EDN_BOOT_INS_ACK_WAIT);
         break;
-    case OT_CSRNG_CMD_GENERATE:
+    case R_BOOT_GEN_CMD:
         ot_edn_change_state(s, EDN_BOOT_GEN_ACK_WAIT);
         break;
     default:
@@ -756,6 +754,7 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
 
 
     if (fatal_error) {
+        c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
         ot_edn_change_state(s, EDN_ERROR);
         return;
     }
@@ -807,6 +806,7 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
     }
 
     if (fatal_error) {
+        c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
         ot_edn_change_state(s, EDN_ERROR);
         return;
     }
@@ -896,6 +896,10 @@ static void ot_edn_clean_up(OtEDNState *s, bool discard_requests)
     c->prev_bits_valid = false;
     s->sw_cmd_ready = false;
     c->hw_cmd_type = (uint8_t)OT_CSRNG_CMD_NONE;
+    if (discard_requests) {
+        c->hw_boot_mode = false;
+        c->hw_auto_mode = false;
+    }
     c->hw_cmd_status = CSRNG_STATUS_SUCCESS;
     c->sw_cmd_status = CSRNG_STATUS_SUCCESS;
     c->hw_ack = false;
