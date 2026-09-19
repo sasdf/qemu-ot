@@ -1226,6 +1226,10 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
         if (s->regs[R_EXTCLK_CTRL_REGWEN]) {
             val32 &= R_EXTCLK_CTRL_SEL_MASK | R_EXTCLK_CTRL_HI_SPEED_SEL_MASK;
             s->regs[reg] = val32;
+            uint32_t sel = FIELD_EX32(val32, EXTCLK_CTRL, SEL);
+            s->regs[R_EXTCLK_STATUS] = (sel == OT_MULTIBITBOOL4_TRUE) ?
+                                           OT_MULTIBITBOOL4_TRUE :
+                                           OT_MULTIBITBOOL4_FALSE;
             for (unsigned ix = 0; ix < s->measure_count; ix++) {
                 ot_clkmgr_check_measurement(s, ix);
             }
