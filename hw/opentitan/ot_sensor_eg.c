@@ -314,13 +314,34 @@ void ot_sensor_eg_trigger_recov_event(OtSensorEgState *s, unsigned event_idx)
     ot_sensor_eg_update_alerts(s);
 }
 
-static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
+static uint8_t ot_sensor_eg_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_ALERT_TRIG:
+    case R_FATAL_ALERT_EN:
+    case R_RECOV_ALERT:
+    case R_FATAL_ALERT:
+        return 0x3u;
+    default:
+        return 0x1u;
+    }
+}
+
+static MemTxResult ot_sensor_eg_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtSensorEgState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
+    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -349,29 +370,41 @@ static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = 0;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        val32 = 0;
-        break;
+        g_assert_not_reached();
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
-};
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
+}
 
-static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                                    unsigned size)
+static MemTxResult ot_sensor_eg_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtSensorEgState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
+
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
+
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    if ((ot_sensor_eg_reg_permit(reg) & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Sub-word write error at 0x%02x (%s, be=0x%x)\n",
+                      __func__, (uint32_t)addr, REG_NAME(reg), reg_be);
+        return MEMTX_ERROR;
+    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -458,18 +491,20 @@ static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        break;
+        g_assert_not_reached();
     }
-};
+
+    return MEMTX_OK;
+}
 
 static const MemoryRegionOps ot_sensor_eg_regs_ops = {
-    .read = &ot_sensor_eg_regs_read,
-    .write = &ot_sensor_eg_regs_write,
+    .read_with_attrs = &ot_sensor_eg_regs_read_with_attrs,
+    .write_with_attrs = &ot_sensor_eg_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_sensor_eg_reset_enter(Object *obj, ResetType type)
@@ -510,7 +545,7 @@ static void ot_sensor_eg_init(Object *obj)
     OtSensorEgState *s = OT_SENSOR_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_sensor_eg_regs_ops, s,
-                          TYPE_OT_SENSOR_EG, REGS_SIZE);
+                          TYPE_OT_SENSOR_EG, 0x80u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regs = g_new0(uint32_t, REGS_COUNT);
