@@ -1515,8 +1515,26 @@ static MemTxResult ot_flash_ecc_fault_read_with_attrs(
     return MEMTX_ERROR;
 }
 
+static MemTxResult ot_flash_mem_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)addr;
+    (void)value;
+    (void)size;
+    (void)attrs;
+
+    /*
+     * RTL: flash_ctrl.sv u_tl_adapter_eflash instantiates tlul_adapter_sram
+     * with ErrOnWrite = 1 (tlul_adapter_sram.sv:155-156, 176):
+     * wr_vld_error = (tl_i.a_opcode != Get) -> returns TL-UL D-channel error.
+     */
+    return MEMTX_ERROR;
+}
+
 static const MemoryRegionOps ot_flash_ecc_fault_ops = {
     .read_with_attrs = &ot_flash_ecc_fault_read_with_attrs,
+    .write_with_attrs = &ot_flash_mem_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
@@ -3736,18 +3754,20 @@ static const MemoryRegionOps ot_flash_csrs_ops = {
     .valid.max_access_size = 4u,
 };
 
-#if DATA_PART_USE_IO_OPS
 static const MemoryRegionOps ot_flash_mem_ops = {
+#if DATA_PART_USE_IO_OPS
     .read = &ot_flash_mem_read,
+#endif
+    .write_with_attrs = &ot_flash_mem_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
-#else
-#if LOG_GPR_ON_FLASH_DATA_ACCESS
+#if !DATA_PART_USE_IO_OPS && LOG_GPR_ON_FLASH_DATA_ACCESS
 #warning "Cannot use LOG_GPR_ON_FLASH_DATA_ACCESS w/o DATA_PART_USE_IO_OPS"
 #endif
-#endif /* DATA_PART_USE_IO_OPS */
 
 static void ot_flash_reset_enter(Object *obj, ResetType type)
 {
@@ -3909,6 +3929,10 @@ static void ot_flash_realize(DeviceState *dev, Error **errp)
     memory_region_init_ram_ptr(mr, OBJECT(dev), TYPE_OT_FLASH ".mem", size,
                                (void *)s->flash.data);
     mr->readonly = true;
+    mr->rom_device = true;
+    mr->romd_mode = true;
+    mr->ops = &ot_flash_mem_ops;
+    mr->opaque = s;
 #endif /* DATA_PART_USE_IO_OPS */
 
     sysbus_init_mmio(SYS_BUS_DEVICE(s), mr);
