@@ -244,7 +244,9 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
 
     if (s->init_slot_pos >= s->wsize) {
         /* init has been completed */
-        s->regs[R_STATUS] |= R_STATUS_INIT_DONE_MASK;
+        if (!(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
+            s->regs[R_STATUS] |= R_STATUS_INIT_DONE_MASK;
+        }
         /* enable new request for initialization */
         s->regs[R_CTRL] &= ~R_CTRL_INIT_MASK;
 
@@ -312,6 +314,8 @@ static void ot_sram_ctrl_apply_scr_key(OtSramCtrlState *s, uint32_t new_key)
 
 static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
 {
+    bool escalated = (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) != 0;
+
     s->regs[R_STATUS] &=
         ~(R_STATUS_SCR_KEY_VALID_MASK | R_STATUS_SCR_KEY_SEED_VALID_MASK);
 
@@ -353,7 +357,7 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
                         ot_sram_ctrl_hexdump(s, s->otp_key->nonce,
                                              s->otp_key->nonce_size));
 
-        if (s->otp_key->seed_valid) {
+        if (s->otp_key->seed_valid && !escalated) {
             s->regs[R_STATUS] |= R_STATUS_SCR_KEY_SEED_VALID_MASK;
         }
 
@@ -372,24 +376,29 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
                                  sizeof(uint32_t));
     }
 
-    uint32_t new_key = ot_prng_random_u32(s->prng);
-    if (!new_key || new_key == s->scr_key) {
-        new_key ^= 0xa5a5a5a5u;
-        if (!new_key) {
-            new_key = 1u;
+    if (!escalated) {
+        uint32_t new_key = ot_prng_random_u32(s->prng);
+        if (!new_key || new_key == s->scr_key) {
+            new_key ^= 0xa5a5a5a5u;
+            if (!new_key) {
+                new_key = 1u;
+            }
         }
-    }
-    ot_sram_ctrl_apply_scr_key(s, new_key);
-    if (!s->noinit && s->scr_invalid_bm) {
-        size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
-        memset(s->scr_invalid_bm, 0xff, cell_slot_count * sizeof(uint64_t));
-        s->scr_invalid = true;
-        ot_sram_ctrl_mem_switch_to_init(s);
+        ot_sram_ctrl_apply_scr_key(s, new_key);
+        if (!s->noinit && s->scr_invalid_bm) {
+            size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
+            memset(s->scr_invalid_bm, 0xff, cell_slot_count * sizeof(uint64_t));
+            s->scr_invalid = true;
+            ot_sram_ctrl_mem_switch_to_init(s);
+        }
+
+        s->regs[R_STATUS] |= R_STATUS_SCR_KEY_VALID_MASK;
+        s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_TRUE;
+    } else {
+        s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_FALSE;
     }
 
     s->regs[R_CTRL] &= ~R_CTRL_RENEW_SCR_KEY_MASK;
-    s->regs[R_STATUS] |= R_STATUS_SCR_KEY_VALID_MASK;
-    s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_TRUE;
 }
 
 static void ot_sram_ctrl_start_initialization(OtSramCtrlState *s)
@@ -440,8 +449,10 @@ static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
     if (level) {
         s->regs[R_STATUS] |= R_STATUS_ESCALATED_MASK;
         s->regs[R_STATUS] &= ~(R_STATUS_SCR_KEY_VALID_MASK |
-                               R_STATUS_SCR_KEY_SEED_VALID_MASK);
-        s->scr_key = 0u;
+                               R_STATUS_SCR_KEY_SEED_VALID_MASK |
+                               R_STATUS_INIT_DONE_MASK);
+        s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_FALSE;
+        ot_sram_ctrl_apply_scr_key(s, 0u);
         ot_sram_ctrl_mem_switch_to_init(s);
     }
 }
@@ -494,13 +505,13 @@ static uint64_t ot_sram_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_EXEC_REGWEN:
     case R_EXEC:
     case R_CTRL_REGWEN:
-    case R_CTRL:
     case R_SCR_KEY_ROTATED:
     case R_READBACK_REGWEN:
     case R_READBACK:
         val32 = s->regs[reg];
         break;
     case R_ALERT_TEST:
+    case R_CTRL:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s W/O register 0x%02x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         val32 = 0;
@@ -563,19 +574,18 @@ static void ot_sram_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_CTRL:
         if (s->regs[R_CTRL_REGWEN]) { /* WO */
             val32 &= R_CTRL_INIT_MASK | R_CTRL_RENEW_SCR_KEY_MASK;
-            uint32_t trig = (val32 ^ s->regs[reg]) & val32;
-            /* storing value prevents from trigerring again before completion */
-            s->regs[reg] = val32;
-            if (trig & R_CTRL_RENEW_SCR_KEY_MASK) {
-                ot_sram_ctrl_reseed(s);
-            }
-            if (trig & R_CTRL_INIT_MASK) {
-                if (s->noinit) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                  "%s: %s initialization support disabled\n",
-                                  __func__, s->ot_id);
-                } else {
-                    ot_sram_ctrl_start_initialization(s);
+            if (!s->initializing) {
+                if (val32 & R_CTRL_RENEW_SCR_KEY_MASK) {
+                    ot_sram_ctrl_reseed(s);
+                }
+                if (val32 & R_CTRL_INIT_MASK) {
+                    if (s->noinit) {
+                        qemu_log_mask(LOG_GUEST_ERROR,
+                                      "%s: %s initialization support disabled\n",
+                                      __func__, s->ot_id);
+                    } else {
+                        ot_sram_ctrl_start_initialization(s);
+                    }
                 }
             }
         } else {
@@ -584,11 +594,12 @@ static void ot_sram_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                           s->ot_id);
         }
         break;
-    case R_SCR_KEY_ROTATED:
-        if ((val32 & 0xfu) == OT_MULTIBITBOOL4_TRUE) {
-            s->regs[reg] = OT_MULTIBITBOOL4_FALSE;
-        }
+    case R_SCR_KEY_ROTATED: {
+        uint32_t inv_wd = ~val32 & R_SCR_KEY_ROTATED_SUCCESS_MASK;
+        s->regs[reg] = ((s->regs[reg] & inv_wd) & OT_MULTIBITBOOL4_TRUE) |
+                       ((s->regs[reg] | inv_wd) & OT_MULTIBITBOOL4_FALSE);
         break;
+    }
     case R_READBACK_REGWEN:
         val32 &= R_READBACK_REGWEN_EN_MASK;
         s->regs[reg] &= val32; /* RW0C */
