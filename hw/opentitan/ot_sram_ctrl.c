@@ -260,8 +260,6 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
         memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
         s->scr_invalid = false;
 
-        s->init_slot_bm = g_new0(uint64_t, s->init_slot_count);
-
         if (!s->noswitch && !(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
             /* switch memory to SRAM */
             trace_ot_sram_ctrl_initialization_complete(s->ot_id, "ctrl");
@@ -447,6 +445,9 @@ static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
     g_assert(irq == 0);
 
     if (level) {
+        timer_del(s->init_timer);
+        s->initializing = false;
+        s->init_slot_pos = 0;
         s->regs[R_STATUS] |= R_STATUS_ESCALATED_MASK;
         s->regs[R_STATUS] &= ~(R_STATUS_SCR_KEY_VALID_MASK |
                                R_STATUS_SCR_KEY_SEED_VALID_MASK |
@@ -856,6 +857,8 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
     }
 
     timer_del(s->init_timer);
+    s->initializing = false;
+    s->init_slot_pos = 0;
 
     ot_sram_ctrl_apply_scr_key(s, 0u);
     if (s->scr_invalid_bm) {
@@ -920,7 +923,8 @@ static void ot_sram_ctrl_realize(DeviceState *dev, Error **errp)
 
     if (!s->init_chunk_words) {
         /* somewhat arbitrary */
-        s->init_chunk_words = MAX(s->wsize / 16u, INIT_TIMER_CHUNK_WORDS);
+        s->init_chunk_words =
+            MAX(MIN(s->wsize / 16u, INIT_TIMER_CHUNK_WORDS), 1u);
     } else {
         g_assert(s->init_chunk_words < s->wsize);
     }
