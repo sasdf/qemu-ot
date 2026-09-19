@@ -29,7 +29,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/guest-random.h"
 #include "qemu/log.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
@@ -157,6 +156,8 @@ struct OtASTEgState {
 
     char *cfg_topclocks;
     char *cfg_aonclocks;
+    uint64_t rng_state;
+    uint64_t rng_word;
 };
 
 struct OtASTEgClass {
@@ -263,9 +264,17 @@ static unsigned ot_ast_eg_get_fill_rate(OtNoiseSrcIf *dev)
 static void ot_ast_eg_get_noise(OtNoiseSrcIf *dev, uint8_t *buffer,
                                 size_t length)
 {
-    (void)dev;
+    OtASTEgState *s = OT_AST_EG(dev);
 
-    qemu_guest_getrandom_nofail((void *)buffer, length);
+    for (size_t i = 0; i < length; i++) {
+        if ((i & 7u) == 0u) {
+            uint64_t z = (s->rng_state += 0x9e3779b97f4a7c15ULL);
+            z = (z ^ (z >> 30u)) * 0xbf58476d1ce4e5b9ULL;
+            z = (z ^ (z >> 27u)) * 0x94d049bb133111ebULL;
+            s->rng_word = z ^ (z >> 31u);
+        }
+        buffer[i] = (uint8_t)(s->rng_word >> ((i & 7u) * 8u));
+    }
 }
 
 static void ot_ast_eg_parse_clocks(OtASTEgState *s, Error **errp)
@@ -571,6 +580,7 @@ static void ot_ast_eg_init(Object *obj)
 
     s->regsa = g_new0(uint32_t, REGSA_COUNT);
     s->regsb = g_new0(uint32_t, REGSB_COUNT);
+    s->rng_state = 0x243f6a8885a308d3ULL;
 }
 
 static void ot_ast_eg_class_init(ObjectClass *klass, const void *data)
