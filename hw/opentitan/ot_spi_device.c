@@ -504,6 +504,7 @@ struct OtSPIDeviceState {
     uint32_t *sram;
 
     OtSpiCsbSyncState csb_sync;
+    uint32_t committed_flash_status;
     bool csb_poll_enabled;
     bool last_read_addr_polled;
     bool flash_ever_enabled;
@@ -635,8 +636,8 @@ static const char *TPM_REG_NAMES[TPM_REGS_COUNT] = {
      CMD_INFO_ADDR_SWAP_EN_MASK | CMD_INFO_MBYTE_EN_MASK | \
      CMD_INFO_DUMMY_SIZE_MASK | CMD_INFO_DUMMY_EN_MASK | \
      CMD_INFO_PAYLOAD_EN_MASK | CMD_INFO_PAYLOAD_DIR_MASK | \
-     CMD_INFO_PAYLOAD_SWAP_EN_MASK | CMD_INFO_UPLOAD_MASK | \
-     CMD_INFO_BUSY_MASK | CMD_INFO_VALID_MASK)
+     CMD_INFO_PAYLOAD_SWAP_EN_MASK | CMD_INFO_READ_PIPELINE_MODE_MASK | \
+     CMD_INFO_UPLOAD_MASK | CMD_INFO_BUSY_MASK | CMD_INFO_VALID_MASK)
 #define CMD_INFO_SPC_MASK (CMD_INFO_OPCODE_MASK | CMD_INFO_VALID_MASK)
 #define CFG_MASK \
     (R_CFG_TX_ORDER_MASK | R_CFG_RX_ORDER_MASK | R_CFG_MAILBOX_EN_MASK)
@@ -1048,6 +1049,8 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
         ot_spi_device_flash_pace_spibus_ns(s, SPI_BUS_FLASH_POLL_DELAY_NS);
     }
 
+    s->committed_flash_status = s->spi_regs[R_FLASH_STATUS];
+
     if (update_irq) {
         ot_spi_device_update_irqs(s);
     }
@@ -1069,6 +1072,8 @@ ot_spi_device_flash_match_command_slot(OtSPIDeviceState *s, uint8_t cmd)
     SpiDeviceFlash *f = &s->flash;
 
     g_assert(f->state == SPI_FLASH_IDLE);
+
+    s->spi_regs[R_ADDR_MODE] &= ~R_ADDR_MODE_PENDING_MASK;
 
     /*
      * Find and match the opcode in the CMD_INFO registers. In case of
@@ -1185,9 +1190,9 @@ static void ot_spi_device_flash_decode_addr4_enable(OtSPIDeviceState *s)
     trace_ot_spi_device_flash_exec(s->ot_id, enable ? "EN4B" : "EX4B");
 
     if (enable) {
-        s->spi_regs[R_ADDR_MODE] |= R_ADDR_MODE_ADDR_4B_EN_MASK;
+        s->spi_regs[R_ADDR_MODE] = R_ADDR_MODE_ADDR_4B_EN_MASK;
     } else {
-        s->spi_regs[R_ADDR_MODE] &= ~R_ADDR_MODE_ADDR_4B_EN_MASK;
+        s->spi_regs[R_ADDR_MODE] = 0u;
     }
     FLASH_CHANGE_STATE(s, DONE);
 }
@@ -2052,6 +2057,8 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->spi_regs[reg];
         break;
     case R_FLASH_STATUS:
+        val32 = s->committed_flash_status;
+        break;
     case R_JEDEC_CC:
     case R_JEDEC_ID:
     case R_READ_THRESHOLD:
@@ -2236,6 +2243,8 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
         val32 &= ALERT_TEST_MASK;
         s->spi_regs[reg] = val32;
         ot_spi_device_update_alerts(s);
+        s->spi_regs[reg] = 0u;
+        ot_spi_device_update_alerts(s);
         break;
     case R_CONTROL:
         if (val32 & R_CONTROL_FLASH_STATUS_FIFO_CLR_MASK) {
@@ -2251,6 +2260,7 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
                 /* clear it anyway, with undefined consequences */
             }
             s->spi_regs[R_FLASH_STATUS] = 0x0u; /* reset value */
+            s->committed_flash_status = 0x0u;
         }
         if (val32 & R_CONTROL_FLASH_READ_BUFFER_CLR_MASK) {
             if (s->bus.state != SPI_BUS_IDLE) {
@@ -2299,8 +2309,8 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
         s->spi_regs[reg] = val32;
         break;
     case R_ADDR_MODE:
-        s->spi_regs[reg] &= ~R_ADDR_MODE_ADDR_4B_EN_MASK;
-        s->spi_regs[reg] |= val32 & R_ADDR_MODE_ADDR_4B_EN_MASK; /* RW */
+        s->spi_regs[reg] =
+            (val32 & R_ADDR_MODE_ADDR_4B_EN_MASK) | R_ADDR_MODE_PENDING_MASK;
         break;
     case R_FLASH_STATUS:
         s->spi_regs[reg] &= val32 & FLASH_STATUS_RW0C_MASK; /* RW0C */
@@ -2463,15 +2473,19 @@ static void ot_spi_device_tpm_regs_write(void *opaque, hwaddr addr,
 
     switch (reg) {
     case R_TPM_CFG:
-    case R_TPM_ACCESS_0:
+        s->tpm_regs[reg] = val32 & 0x1fu;
+        break;
     case R_TPM_ACCESS_1:
+    case R_TPM_INT_VECTOR:
+    case R_TPM_RID:
+        s->tpm_regs[reg] = val32 & 0xffu;
+        break;
+    case R_TPM_ACCESS_0:
     case R_TPM_STS:
     case R_TPM_INTF_CAPABILITY:
     case R_TPM_INT_ENABLE:
-    case R_TPM_INT_VECTOR:
     case R_TPM_INT_STATUS:
     case R_TPM_DID_VID:
-    case R_TPM_RID:
         s->tpm_regs[reg] = val32;
         break;
     case R_TPM_STATUS:
@@ -3128,6 +3142,7 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
 
     memset(s->spi_regs, 0u, SPI_REGS_SIZE);
     memset(s->tpm_regs, 0u, TPM_REGS_SIZE);
+    s->committed_flash_status = 0u;
 
     /* not sure if the following FIFOs should be reset on clear_modes instead */
     ot_fifo32_reset(&f->cmd_fifo);
