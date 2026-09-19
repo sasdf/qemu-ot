@@ -902,11 +902,11 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         /*
          * In RTL (prim_sha2.sv:159-160, 396), `clear_digest = hash_start_i |
          * (~sha_en_i & sha_en_q)` zeroes digest_q to 0 ONLY on the falling edge
-         * of sha_en (1 -> 0).
+         * of sha_en (1 -> 0). Note that message_length (hmac.sv:629-650) is NOT
+         * cleared by sha_en 1 -> 0.
          */
         if (prev_sha_en && !(s->regs->cfg & R_CFG_SHA_EN_MASK)) {
             memset(s->regs->digest, 0, sizeof(s->regs->digest));
-            s->regs->msg_length = 0;
         }
         break;
     case R_CMD:
@@ -1143,7 +1143,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         digest_size = ot_hmac_get_digest_size(s->regs->cfg);
-        if (digest_size == HMAC_SHA2_NONE) {
+        if (digest_size == HMAC_SHA2_NONE ||
+            (digest_size == HMAC_SHA2_256 && (reg - R_DIGEST_0) >= 8u)) {
             break;
         }
 
@@ -1166,16 +1167,10 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case R_MSG_LENGTH_LOWER:
-        /* ignore write and report error if engine is not idle */
+        /* ignore write if engine is not idle (hmac.sv:636 `if (!cfg_block)`) */
         if (s->regs->cmd) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Cannot W register 0x%02x (%s) whilst non-idle\n",
-                          __func__, (uint32_t)addr, REG_NAME(reg));
-            break;
-        } else if (s->regs->cfg & R_CFG_SHA_EN_MASK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: Cannot W register 0x%02x (%s) whilst SHA Engine "
-                          "is enabled\n",
                           __func__, (uint32_t)addr, REG_NAME(reg));
             break;
         }
@@ -1183,16 +1178,10 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             (s->regs->msg_length & (0xFFFFFFFFull << 32u)) | val32;
         break;
     case R_MSG_LENGTH_UPPER:
-        /* ignore write and report error if engine is not idle */
+        /* ignore write if engine is not idle (hmac.sv:636 `if (!cfg_block)`) */
         if (s->regs->cmd) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Cannot W register 0x%02x (%s) whilst non-idle\n",
-                          __func__, (uint32_t)addr, REG_NAME(reg));
-            break;
-        } else if (s->regs->cfg & R_CFG_SHA_EN_MASK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: Cannot W register 0x%02x (%s) whilst SHA Engine "
-                          "is enabled\n",
                           __func__, (uint32_t)addr, REG_NAME(reg));
             break;
         }
