@@ -366,7 +366,7 @@ static const OtPwrMgrConfig PWRMGR_CONFIG[OT_PWRMGR_VERSION_COUNT] = {
     (1u << (PWRMGR_CONFIG[(_s_)->version].wakeup_count + 1u))
 #define WAKE_INFO_MASK(_s_) \
     ((1u << (PWRMGR_CONFIG[(_s_)->version].wakeup_count + 2u)) - 1u)
-#define WAKEUP_MASK(_s_) WAKE_INFO_REASONS_MASK(_s_)
+#define WAKEUP_EN_MASK(_s_) WAKE_INFO_REASONS_MASK(_s_)
 #define CONTROL_MASK(_s_) (PWRMGR_CONFIG[(_s_)->version].control_mask)
 #define HW_RESET_WIDTH(_s_) \
     ((PWRMGR_CONFIG[(_s_)->version].wakeup_count) + \
@@ -1148,7 +1148,6 @@ static uint64_t ot_pwrmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_CFG_CDC_SYNC:
     case R_WAKEUP_EN_REGWEN:
     case R_WAKEUP_EN:
-    case R_WAKE_STATUS:
     case R_RESET_EN_REGWEN:
     case R_RESET_EN:
     case R_ESCALATE_RESET_STATUS:
@@ -1156,6 +1155,9 @@ static uint64_t ot_pwrmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_WAKE_INFO:
     case R_FAULT_STATUS:
         val32 = s->regs[reg];
+        break;
+    case R_WAKE_STATUS:
+        val32 = s->regs[reg] & s->slow_regs.wakeup_en;
         break;
     case R_INTR_TEST:
     case R_ALERT_TEST:
@@ -1194,17 +1196,17 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                              pc);
     switch (reg) {
     case R_INTR_STATE:
-        val32 &= WAKEUP_MASK(s);
+        val32 &= WAKEUP_MASK;
         s->regs[R_INTR_STATE] &= ~val32; /* RW1C */
         ot_pwrmgr_update_irq(s);
         break;
     case R_INTR_ENABLE:
-        val32 &= WAKEUP_MASK(s);
+        val32 &= WAKEUP_MASK;
         s->regs[R_INTR_ENABLE] = val32;
         ot_pwrmgr_update_irq(s);
         break;
     case R_INTR_TEST:
-        val32 &= WAKEUP_MASK(s);
+        val32 &= WAKEUP_MASK;
         s->regs[R_INTR_STATE] |= val32;
         ot_pwrmgr_update_irq(s);
         break;
@@ -1216,9 +1218,13 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CONTROL:
-        /* TODO: clear LOW_POWER_HINT on next WFI? */
-        val32 &= CONTROL_MASK(s);
-        s->regs[reg] = val32;
+        if (s->regs[R_CTRL_CFG_REGWEN] & R_CTRL_CFG_REGWEN_EN_MASK) {
+            val32 &= CONTROL_MASK(s);
+            s->regs[reg] = val32;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
+                          __func__, s->ot_id, REG_NAME(reg));
+        }
         break;
     case R_CFG_CDC_SYNC:
         val32 &= R_CFG_CDC_SYNC_SYNC_MASK;
@@ -1234,11 +1240,11 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_WAKEUP_EN_REGWEN:
         val32 &= R_WAKEUP_EN_REGWEN_EN_MASK;
-        s->regs[reg] = val32;
+        s->regs[reg] &= val32; /* RW0C */
         break;
     case R_WAKEUP_EN:
         if (s->regs[R_WAKEUP_EN_REGWEN] & R_WAKEUP_EN_REGWEN_EN_MASK) {
-            val32 &= WAKEUP_MASK(s);
+            val32 &= WAKEUP_EN_MASK(s);
             s->regs[reg] = val32;
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
@@ -1247,7 +1253,7 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_RESET_EN_REGWEN:
         val32 &= R_RESET_EN_REGWEN_EN_MASK;
-        s->regs[reg] = val32;
+        s->regs[reg] &= val32; /* RW0C */
         break;
     case R_RESET_EN:
         if (s->regs[R_RESET_EN_REGWEN] & R_RESET_EN_REGWEN_EN_MASK) {
