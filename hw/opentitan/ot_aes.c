@@ -214,6 +214,8 @@ typedef struct OtAESRegisters {
     DECLARE_BITMAP(data_out_bm, PARAM_NUM_REGS_DATA);
     uint32_t key[PARAM_NUM_REGS_KEY];
     bool data_out_rdy; /* AES output data exist, not yet published */
+    bool keyshare_armed; /* aes_reg_status.sv armed_q for key_init */
+    bool iv_armed; /* aes_reg_status.sv armed_q for iv */
 } OtAESRegisters;
 
 typedef struct OtAESContext {
@@ -281,6 +283,7 @@ struct OtAESState {
     unsigned pclk; /* Current input clock */
     unsigned reseed_count;
     bool fast_mode;
+    bool fatal_fault;
 
     char *ot_id;
     char *clock_name;
@@ -359,11 +362,54 @@ static inline uint32_t ot_aes_get_key_mask(OtAESRegisters *r)
 
 static void ot_aes_update_alert(OtAESState *s)
 {
-    for (unsigned ix = 0; ix < PARAM_NUM_ALERTS; ix++) {
+    if (s->regs->status & (1u << OT_AES_ALERT_STATUS_OFFSET)) {
+        ibex_irq_set(&s->alerts[0], 1);
+        ibex_irq_set(&s->alerts[0], 0);
+    }
+    for (unsigned ix = 1u; ix < PARAM_NUM_ALERTS; ix++) {
         bool level =
             (bool)(s->regs->status & (1u << (ix + OT_AES_ALERT_STATUS_OFFSET)));
         ibex_irq_set(&s->alerts[ix], (int)level);
     }
+}
+
+static uint32_t ot_aes_sanitize_ctrl(uint32_t val)
+{
+    uint32_t op = FIELD_EX32(val, CTRL_SHADOWED, OPERATION);
+    if (op != 0x1u && op != 0x2u) {
+        op = 0x1u;
+    }
+    uint32_t mode = FIELD_EX32(val, CTRL_SHADOWED, MODE);
+    switch (mode) {
+    case 0x01u:
+    case 0x02u:
+    case 0x04u:
+    case 0x08u:
+    case 0x10u:
+    case 0x20u:
+        break;
+    default:
+        mode = 0x20u;
+        break;
+    }
+    uint32_t key_len = FIELD_EX32(val, CTRL_SHADOWED, KEY_LEN);
+    if (key_len != 0x1u && key_len != 0x2u && key_len != 0x4u) {
+        key_len = 0x4u;
+    }
+    uint32_t reseed = FIELD_EX32(val, CTRL_SHADOWED, PRNG_RESEED_RATE);
+    if (reseed != 0x1u && reseed != 0x2u && reseed != 0x4u) {
+        reseed = 0x1u;
+    }
+    uint32_t out = 0u;
+    out = FIELD_DP32(out, CTRL_SHADOWED, OPERATION, op);
+    out = FIELD_DP32(out, CTRL_SHADOWED, MODE, mode);
+    out = FIELD_DP32(out, CTRL_SHADOWED, KEY_LEN, key_len);
+    out = FIELD_DP32(out, CTRL_SHADOWED, SIDELOAD,
+                     FIELD_EX32(val, CTRL_SHADOWED, SIDELOAD));
+    out = FIELD_DP32(out, CTRL_SHADOWED, PRNG_RESEED_RATE, reseed);
+    out = FIELD_DP32(out, CTRL_SHADOWED, MANUAL_OPERATION,
+                     FIELD_EX32(val, CTRL_SHADOWED, MANUAL_OPERATION));
+    return out;
 }
 
 static inline bool ot_aes_is_manual(OtAESRegisters *r)
@@ -374,7 +420,9 @@ static inline bool ot_aes_is_manual(OtAESRegisters *r)
 
 static bool ot_aes_is_idle(OtAESState *s)
 {
-    return s->regs->trigger == 0u &&
+    return !s->fatal_fault &&
+           !(s->regs->status & R_STATUS_ALERT_FATAL_FAULT_MASK) &&
+           s->regs->trigger == 0u &&
            /* retard_timer is never used if fast_mode is enabled */
            (s->fast_mode || !timer_pending(s->retard_timer));
 }
@@ -462,6 +510,7 @@ static void ot_aes_init_keyshare(OtAESState *s, bool randomize)
         trace_ot_aes_init(s->ot_id, "keyshare init (data preserved)");
     }
     bitmap_zero(r->keyshare_bm, (int64_t)(PARAM_NUM_REGS_KEY * 2u));
+    r->keyshare_armed = false;
     c->key_ready = false;
 }
 
@@ -477,6 +526,7 @@ static void ot_aes_init_iv(OtAESState *s, bool randomize)
         trace_ot_aes_init(s->ot_id, "iv init (data preserved)");
     }
     bitmap_zero(r->iv_bm, PARAM_NUM_REGS_IV);
+    r->iv_armed = false;
     c->iv_ready = false;
 }
 
@@ -488,10 +538,14 @@ static void ot_aes_init_data(OtAESState *s, bool io)
         trace_ot_aes_init(s->ot_id, "data_in");
         ot_aes_randomize(s, r->data_in, ARRAY_SIZE(r->data_in));
         bitmap_zero(r->data_in_bm, PARAM_NUM_REGS_DATA);
+        s->ctx->di_full = false;
     } else {
         trace_ot_aes_init(s->ot_id, "data_out");
         ot_aes_randomize(s, r->data_out, ARRAY_SIZE(r->data_out));
         bitmap_zero(r->data_out_bm, PARAM_NUM_REGS_DATA);
+        r->status &= ~R_STATUS_OUTPUT_VALID_MASK;
+        r->data_out_rdy = false;
+        s->ctx->do_full = false;
     }
 }
 
@@ -568,6 +622,7 @@ static void ot_aes_update_key(OtAESState *s)
 
     bool reseed = !c->key_ready && ot_aes_key_touch_force_reseed(r);
     c->key_ready = true;
+    r->keyshare_armed = true;
 
     if (reseed) {
         r->trigger |= R_TRIGGER_PRNG_RESEED_MASK;
@@ -593,6 +648,7 @@ static void ot_aes_update_iv(OtAESState *s)
     }
 
     c->iv_ready = true;
+    r->iv_armed = true;
 }
 
 static inline bool ot_aes_can_process(const OtAESState *s)
@@ -677,8 +733,10 @@ static void ot_aes_handle_trigger(OtAESState *s)
 
     if (r->trigger & R_TRIGGER_START_MASK) {
         if (ot_aes_get_mode(r) == AES_NONE || !ot_aes_is_manual(r)) {
-            /* ignore */
+            /* ignore and clear start bit (aes_control_fsm.sv:328) */
             xtrace_ot_aes_debug(s->ot_id, "start trigger ignored");
+            r->trigger &= ~R_TRIGGER_START_MASK;
+            ibex_irq_set(&s->clock_active, (int)!ot_aes_is_idle(s));
             return;
         }
     }
@@ -840,6 +898,9 @@ static void ot_aes_push(OtAESState *s)
     OtAESRegisters *r = s->regs;
     OtAESContext *c = s->ctx;
 
+    if (r->status & R_STATUS_OUTPUT_VALID_MASK) {
+        r->status |= R_STATUS_OUTPUT_LOST_MASK;
+    }
     memcpy(r->data_out, c->dst, sizeof(c->dst));
     memcpy(r->iv, c->iv, sizeof(c->iv));
     r->data_out_rdy = true;
@@ -943,6 +1004,9 @@ static void ot_aes_process(OtAESState *s)
 static void ot_aes_commit_data_out(OtAESRegisters *r)
 {
     if (r->data_out_rdy) {
+        if (r->status & R_STATUS_OUTPUT_VALID_MASK) {
+            r->status |= R_STATUS_OUTPUT_LOST_MASK;
+        }
         bitmap_fill(r->data_out_bm, PARAM_NUM_REGS_DATA);
         r->status |= R_STATUS_OUTPUT_VALID_MASK;
         r->data_out_rdy = false;
@@ -957,6 +1021,8 @@ static inline void ot_aes_do_process(OtAESState *s)
         r->trigger &= ~R_TRIGGER_START_MASK;
     }
 
+    r->keyshare_armed = true;
+    r->iv_armed = true;
     ot_aes_process(s);
     ot_aes_push(s);
     if (s->reseed_count) {
@@ -998,9 +1064,8 @@ static void ot_aes_process_cond(OtAESState *s)
                 /*
                  * if fast mode is enabled, vCPU cannot resume execution before
                  * the AES round is completed, which increase throughput and
-                 * reduce latency for AES compution, but may fail time-sensitive
-                 * OpenTitan library that expect the real CPU to execute code
-                 * while AES is performing in HW.
+                 * translates to deterministic behavior, at the expense of
+                 * accuracy.
                  */
                 ot_aes_do_process(s);
             }
@@ -1012,7 +1077,7 @@ static void ot_aes_process_cond(OtAESState *s)
 
 static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
 {
-    /* called from EDN */
+    (void)bits;
     (void)fips;
 
     OtAESState *s = opaque;
@@ -1091,6 +1156,25 @@ static void ot_aes_clock_input(void *opaque, int irq, int level)
     s->pclk = (unsigned)level;
 
     /* TODO: disable AES execution when PCLK is 0 */
+}
+
+static void ot_aes_lc_escalate(void *opaque, int irq, int level)
+{
+    OtAESState *s = opaque;
+
+    g_assert(irq == 0);
+
+    if (level) {
+        s->fatal_fault = true;
+        timer_del(s->retard_timer);
+        qemu_bh_cancel(s->process_bh);
+        s->edn.scheduled = false;
+        s->edn.pending_words = 0u;
+        s->regs->status = R_STATUS_ALERT_FATAL_FAULT_MASK;
+        s->regs->trigger = 0u;
+        ibex_irq_set(&s->alerts[ALERT_FATAL_FAULT_SHIFT], 1);
+        ibex_irq_set(&s->clock_active, 0);
+    }
 }
 
 static void ot_aes_push_key(OtKeySinkIf *ifd, const uint8_t *share0,
@@ -1184,6 +1268,10 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
         val32 = r->ctrl_aux_regwen;
         break;
     case R_STATUS:
+        if (s->fatal_fault || (r->status & R_STATUS_ALERT_FATAL_FAULT_MASK)) {
+            val32 = R_STATUS_ALERT_FATAL_FAULT_MASK;
+            break;
+        }
         val32 = r->status;
         if (ot_aes_is_idle(s)) {
             val32 |= R_STATUS_IDLE_MASK;
@@ -1266,10 +1354,18 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         if (ot_aes_is_idle(s) ||
             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
+            if (r->keyshare_armed) {
+                bitmap_zero(r->keyshare_bm, (int64_t)(PARAM_NUM_REGS_KEY * 2u));
+                s->ctx->key_ready = false;
+                r->keyshare_armed = false;
+            }
             r->keyshare[reg - R_KEY_SHARE0_0] = val32;
             set_bit((int64_t)(reg - R_KEY_SHARE0_0), r->keyshare_bm);
             ot_aes_update_key(s);
             ot_aes_update_config(s);
+            if (!ot_aes_is_manual(r)) {
+                ot_aes_process_cond(s);
+            }
         }
         break;
     case R_IV_0:
@@ -1278,10 +1374,18 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IV_3:
         if (ot_aes_is_idle(s) ||
             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u) {
+            if (r->iv_armed) {
+                bitmap_zero(r->iv_bm, PARAM_NUM_REGS_IV);
+                s->ctx->iv_ready = false;
+                r->iv_armed = false;
+            }
             r->iv[reg - R_IV_0] = val32;
             set_bit((int64_t)(reg - R_IV_0), r->iv_bm);
             ot_aes_update_iv(s);
             ot_aes_update_config(s);
+            if (!ot_aes_is_manual(r)) {
+                ot_aes_process_cond(s);
+            }
         }
         break;
     case R_DATA_IN_0:
@@ -1302,14 +1406,13 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         if (!ot_aes_is_idle(s)) {
             break;
         }
-        val32 &= R_CTRL_SHADOWED_OPERATION_MASK | R_CTRL_SHADOWED_MODE_MASK |
-                 R_CTRL_SHADOWED_KEY_LEN_MASK | R_CTRL_SHADOWED_SIDELOAD_MASK |
-                 R_CTRL_SHADOWED_PRNG_RESEED_RATE_MASK |
-                 R_CTRL_SHADOWED_MANUAL_OPERATION_MASK |
-                 R_CTRL_SHADOWED_FORCE_ZERO_MASKS_MASK;
+        val32 = ot_aes_sanitize_ctrl(val32);
         OtAESMode prev_mode = ot_aes_get_mode(s->regs);
         switch (ot_shadow_reg_write(&r->ctrl, val32)) {
         case OT_SHADOW_REG_STAGED:
+            r->status &= ~(R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK |
+                           R_STATUS_OUTPUT_LOST_MASK |
+                           R_STATUS_OUTPUT_VALID_MASK);
             break;
         case OT_SHADOW_REG_COMMITTED:
             /*
@@ -1317,9 +1420,15 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
              * of a new message. Hence, software needs to provide new key,
              * IV and input data afterwards."
              */
+            r->status &= ~(R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK |
+                           R_STATUS_OUTPUT_LOST_MASK |
+                           R_STATUS_OUTPUT_VALID_MASK);
             ot_aes_finalize(s, prev_mode);
             ot_aes_init_keyshare(s, false);
             ot_aes_init_iv(s, false);
+            bitmap_zero(r->data_in_bm, PARAM_NUM_REGS_DATA);
+            bitmap_zero(r->data_out_bm, PARAM_NUM_REGS_DATA);
+            r->data_out_rdy = false;
             ot_aes_load_reseed_rate(s);
             break;
         case OT_SHADOW_REG_ERROR:
@@ -1351,7 +1460,7 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_CTRL_AUX_REGWEN:
         val32 &= R_CTRL_AUX_REGWEN_CTRL_AUX_REGWEN_MASK;
-        r->ctrl_aux_regwen = val32;
+        r->ctrl_aux_regwen &= val32;
         break;
     case R_TRIGGER:
         val32 &= R_TRIGGER_START_MASK | R_TRIGGER_KEY_IV_DATA_IN_CLEAR_MASK |
@@ -1412,6 +1521,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     r->trigger = 0xeu;
     r->status = 0u;
     r->data_out_rdy = false;
+    s->fatal_fault = false;
     e->scheduled = false;
     e->pending_words = 0u;
     ot_aes_load_reseed_rate(s);
@@ -1473,6 +1583,8 @@ static void ot_aes_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_aes_clock_input, OT_AES_CLOCK_INPUT,
                             1);
+    qdev_init_gpio_in_named(DEVICE(s), &ot_aes_lc_escalate,
+                            OT_AES_LC_ESCALATE_EN, 1);
 
     s->prng = ot_prng_allocate();
 }
