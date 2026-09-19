@@ -2445,6 +2445,8 @@ static CmdErr riscv_dm_access_register(RISCVDMState *dm, uint32_t value)
         return res;
     }
 
+    riscv_dm_ensure_running(dm);
+
     return CMD_ERR_NONE;
 }
 

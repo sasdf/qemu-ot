@@ -439,16 +439,13 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
             } else if (!s->dmflag_regs[val32] && current_cpu) {
                 /*
                  * The hart is already halted in the Debug ROM park loop and no
-                 * GO/RESUME flag is pending. Exit the TB and briefly yield the
-                 * BQL so the vCPU thread does not spin at 100% CPU starving the
-                 * I/O thread (e.g. JTAG remote_bitbang and VIRTUAL_RT timers).
+                 * GO/RESUME flag is pending. Park the vCPU so it becomes idle
+                 * (allowing the icount warp timer to advance QEMU_CLOCK_VIRTUAL
+                 * and leaving BQL/replay_mutex uncontended for JTAG and
+                 * VIRTUAL_RT timers) until a DM flag or reset wakes it.
                  */
+                current_cpu->stopped = true;
                 cpu_exit(current_cpu);
-                replay_mutex_unlock();
-                bql_unlock();
-                g_usleep(100);
-                replay_mutex_lock();
-                bql_lock();
             }
         }
         res = MEMTX_OK;
@@ -570,6 +567,10 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
             (attrs.requester_id == PULP_RV_DM_REQUESTER_ID)) {
             /* dm_access */
             s->dmflag_regs[reg - R_FLAGS_0] = val32;
+            if (val32 && first_cpu && first_cpu->stopped &&
+                !first_cpu->disabled) {
+                cpu_resume(first_cpu);
+            }
         } else {
             /* other (hart...) access */
             qemu_log_mask(LOG_GUEST_ERROR,

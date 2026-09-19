@@ -516,7 +516,7 @@ static void tap_ctrl_rbb_update_pace(TapCtrlRbbState *tap)
     if (!tap->pace_timer) {
         return;
     }
-    if (first_cpu && first_cpu->halted) {
+    if (first_cpu && (first_cpu->halted || first_cpu->stopped)) {
         tap->halt_seen = true;
     }
     if (!tap->wait_cpu_halt || !tap->enabled ||
@@ -534,7 +534,7 @@ static void tap_ctrl_rbb_update_pace(TapCtrlRbbState *tap)
 static void tap_ctrl_rbb_pace_cb(void *opaque)
 {
     TapCtrlRbbState *tap = opaque;
-    if (first_cpu && first_cpu->halted) {
+    if (first_cpu && (first_cpu->halted || first_cpu->stopped)) {
         tap->halt_seen = true;
         return;
     }
