@@ -65,6 +65,7 @@
 #include "hw/riscv/dtm.h"
 #include "hw/riscv/ibex_irq.h"
 #include "system/hw_accel.h"
+#include "system/replay.h"
 #include "system/runstate.h"
 #include "target/riscv/cpu.h"
 #include "trace.h"
@@ -1693,6 +1694,20 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
             /* clear the unavailability flag and resume w/ "regular" states */
             dm->unavailable_bm &= ~mask;
         }
+        if (!cs->disabled && !hart->halted &&
+            (cs->interrupt_request & CPU_INTERRUPT_DEBUG) &&
+            runstate_is_running()) {
+            riscv_dm_ensure_running(dm);
+            replay_mutex_unlock();
+            bql_unlock();
+            for (unsigned wait = 0;
+                 wait < 200u && !hart->halted && !cs->disabled; wait++) {
+                qemu_cpu_kick(cs);
+                g_usleep(100);
+            }
+            replay_mutex_lock();
+            bql_lock();
+        }
         if (hart->resumed) {
             resumeack += 1;
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "resumed");
@@ -2572,7 +2587,6 @@ static void riscv_dm_halt_hart(RISCVDMState *dm, unsigned hartsel)
 
     /* Note: NMI are not yet supported */
     cpu_exit(cs);
-    dm->haltreq_bm &= ~hartbit;
     /* not sure if the real HW clear this flag on halt */
     hart->resumed = false;
     hart->resuming = false;
@@ -2714,7 +2728,7 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
 
-    if (dm->in_ndmreset) {
+    if (dm->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
         return;
     }
 
@@ -2767,13 +2781,24 @@ static void riscv_dm_reset_exit(Object *obj, ResetType type)
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
 
-    if (dm->in_ndmreset) {
+    if (dm->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
             RISCVDMHartState *hart = &dm->harts[ix];
+            uint64_t hartbit = 1u << ix;
             hart->have_reset = true;
             hart->halted = false;
             hart->resumed = false;
-            dm->unavailable_bm |= 1u << ix;
+            hart->resuming = false;
+            dm->unavailable_bm |= hartbit;
+            if ((dm->haltreq_bm | dm->resethaltreq_bm) & hartbit) {
+                CPUState *cs = CPU(hart->cpu);
+                riscv_cpu_store_debug_cause(
+                    cs, (dm->resethaltreq_bm & hartbit) ?
+                            DCSR_CAUSE_RESETHALTREQ :
+                            DCSR_CAUSE_HALTREQ);
+                cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
+                riscv_dm_set_cs(dm, true);
+            }
         }
         return;
     }
