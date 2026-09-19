@@ -1804,6 +1804,8 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
                  step++) {
                 g_usleep(100);
                 qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
+                qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+                aio_bh_poll(qemu_get_aio_context());
             }
         }
         val32 = s->regs[reg];

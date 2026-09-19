@@ -867,8 +867,9 @@ static void ot_kmac_process(void *opaque)
         switch (s->state) {
         case KMAC_ST_PROCESSING:
         case KMAC_ST_SQUEEZING:
-            if ((!s->current_app && s->edn_pending) ||
-                (s->entropy_configured && !s->entropy_seeded)) {
+            if (!s->current_app &&
+                (s->edn_pending ||
+                 (s->entropy_configured && !s->entropy_seeded))) {
                 /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
