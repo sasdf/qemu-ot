@@ -3928,6 +3928,7 @@ static void ot_flash_realize(DeviceState *dev, Error **errp)
     /* there is no "memory_region_init_rom_ptr" - use ram_ptr variant and r/o */
     memory_region_init_ram_ptr(mr, OBJECT(dev), TYPE_OT_FLASH ".mem", size,
                                (void *)s->flash.data);
+    mr->ram = false;
     mr->readonly = true;
     mr->rom_device = true;
     mr->romd_mode = true;
