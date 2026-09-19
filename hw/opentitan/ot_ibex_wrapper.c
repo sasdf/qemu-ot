@@ -306,6 +306,9 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
     if (s->regs.sw_fatal_err != OT_MULTIBITBOOL4_FALSE) {
         level |= ALERT_FATAL_SW_MASK;
     }
+    if (s->regs.sw_recov_err != OT_MULTIBITBOOL4_FALSE) {
+        level |= ALERT_RECOV_SW_MASK;
+    }
     if (s->regs.err_status & (ERR_STATUS_REG_INTG_MASK |
                               ERR_STATUS_FATAL_INTG_MASK |
                               ERR_STATUS_FATAL_CORE_MASK)) {
@@ -1298,7 +1301,7 @@ static void ot_ibex_wrapper_write_dv_sim_log(OtIbexWrapperState *s,
     g_assert(reg < ARRAY_SIZE(((OtIbexWrapperRegs *)0)->dv_sim_win));
     /* NOLINTNEXTLINE */
     switch (reg) {
-    case 0u:
+    case DV_SIM_LOG:
         ot_ibex_wrapper_log_handle(s, value);
         break;
     default:
@@ -1425,7 +1428,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_read_rnd_data;
     s->access_table[R32_DYN_POS(s, rnd_status)].read =
         &ot_ibex_wrapper_read_rnd_status;
-    s->access_table[R32_DYN_POS(s, dv_sim_win[0u])].read =
+    s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].read =
         &ot_ibex_wrapper_read_zero;
 
     /* assign writers */
@@ -1474,7 +1477,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
-            s->access_table[base + mix].mask = UINT32_MAX;
+            s->access_table[base + mix].mask = ADDR_EN_MASK;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
@@ -1584,10 +1587,13 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->regs.sw_recov_err = OT_MULTIBITBOOL4_FALSE;
     s->regs.sw_fatal_err = OT_MULTIBITBOOL4_FALSE;
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
+        memset(s->regs.remap[aix], 0,
+               (size_t)s->num_regions * sizeof(OtIbexRemap));
         for (unsigned rix = 0; rix < (unsigned)s->num_regions; rix++) {
             s->regs.remap[aix][rix].regwen = 0x1u;
         }
     }
+    ot_ibex_wrapper_update_alerts(s);
 
     /* 'QMU_' in LE, _ is the QEMU version stored in the MSB */
     s->regs.fpga_info = 0x00554d51u + (((uint32_t)s->qemu_version) << 24u);
