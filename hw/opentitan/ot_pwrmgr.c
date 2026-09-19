@@ -621,6 +621,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 /* FastPwrStateNvmIdleChk: abort low power entry if flash busy */
                 if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
                       R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+                    s->wake_info_recording = true;
                     s->regs[R_WAKE_INFO] |= WAKE_INFO_ABORT_MASK_MASK(s);
                 }
                 s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
@@ -672,6 +673,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         "", TYPE_OT_AON_TIMER, NULL);
                 if (aon && !ot_aon_timer_is_active(aon)) {
                     s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
+                    ibex_irq_set(&s->alert, 1);
                     ot_pwrmgr_set_low_power(s, false);
                     s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                     s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
@@ -746,6 +748,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                     "", TYPE_OT_AON_TIMER, NULL);
             if (aon && !ot_aon_timer_is_active(aon)) {
                 s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
+                ibex_irq_set(&s->alert, 1);
                 ibex_irq_set(&s->cpu_enable, (int)false);
                 ibex_irq_set(&s->reset_req,
                              OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
@@ -1296,6 +1299,11 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         val32 &= WAKE_INFO_MASK(s);
         s->regs[reg] &= ~val32; /* RW1C */
+        if (s->wake_info_recording &&
+            !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+              R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+            s->regs[reg] |= (s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en);
+        }
         break;
     case R_CTRL_CFG_REGWEN:
     case R_WAKE_STATUS:
@@ -1400,7 +1408,7 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     ibex_irq_set(&s->cpu_enable, 0);
     ibex_irq_set(&s->pwr_otp_req, 0);
     ibex_irq_set(&s->pwr_lc_req, 0);
-    ibex_irq_set(&s->alert, 0);
+    ibex_irq_set(&s->alert, (int)(s->regs[R_FAULT_STATUS] != 0u));
     ibex_irq_set(&s->reset_req, 0);
     ibex_irq_set(&s->boot_st, s->boot_status.i32);
 }
