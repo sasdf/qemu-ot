@@ -2343,32 +2343,209 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     }
 };
 
+static const uint8_t ENTROPY_SRC_LO_PERMIT[REGS_LO_COUNT] = {
+    [R_INTR_STATE] = 0x1u,
+    [R_INTR_ENABLE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_ME_REGWEN] = 0x1u,
+    [R_SW_REGUPD] = 0x1u,
+    [R_REGWEN] = 0x1u,
+};
+
+static const uint8_t ENTROPY_SRC_REV_PERMIT[REGS_REV_COUNT] = {
+    [R_REV] = 0x7u,
+};
+
+static const uint8_t ENTROPY_SRC_HI_PERMIT[REGS_HI_COUNT] = {
+    [R_MODULE_ENABLE] = 0x1u,
+    [R_CONF] = 0xfu,
+    [R_ENTROPY_CONTROL] = 0x1u,
+    [R_ENTROPY_DATA] = 0xfu,
+    [R_HEALTH_TEST_WINDOWS] = 0xfu,
+    [R_REPCNT_THRESHOLDS] = 0xfu,
+    [R_REPCNTS_THRESHOLDS] = 0xfu,
+    [R_ADAPTP_HI_THRESHOLDS] = 0xfu,
+    [R_ADAPTP_LO_THRESHOLDS] = 0xfu,
+    [R_BUCKET_THRESHOLDS] = 0xfu,
+    [R_MARKOV_HI_THRESHOLDS] = 0xfu,
+    [R_MARKOV_LO_THRESHOLDS] = 0xfu,
+    [R_EXTHT_HI_THRESHOLDS] = 0xfu,
+    [R_EXTHT_LO_THRESHOLDS] = 0xfu,
+    [R_REPCNT_HI_WATERMARKS] = 0xfu,
+    [R_REPCNTS_HI_WATERMARKS] = 0xfu,
+    [R_ADAPTP_HI_WATERMARKS] = 0xfu,
+    [R_ADAPTP_LO_WATERMARKS] = 0xfu,
+    [R_EXTHT_HI_WATERMARKS] = 0xfu,
+    [R_EXTHT_LO_WATERMARKS] = 0xfu,
+    [R_BUCKET_HI_WATERMARKS] = 0xfu,
+    [R_MARKOV_HI_WATERMARKS] = 0xfu,
+    [R_MARKOV_LO_WATERMARKS] = 0xfu,
+    [R_REPCNT_TOTAL_FAILS] = 0xfu,
+    [R_REPCNTS_TOTAL_FAILS] = 0xfu,
+    [R_ADAPTP_HI_TOTAL_FAILS] = 0xfu,
+    [R_ADAPTP_LO_TOTAL_FAILS] = 0xfu,
+    [R_BUCKET_TOTAL_FAILS] = 0xfu,
+    [R_MARKOV_HI_TOTAL_FAILS] = 0xfu,
+    [R_MARKOV_LO_TOTAL_FAILS] = 0xfu,
+    [R_EXTHT_HI_TOTAL_FAILS] = 0xfu,
+    [R_EXTHT_LO_TOTAL_FAILS] = 0xfu,
+    [R_ALERT_THRESHOLD] = 0xfu,
+    [R_ALERT_SUMMARY_FAIL_COUNTS] = 0x3u,
+    [R_ALERT_FAIL_COUNTS] = 0xfu,
+    [R_EXTHT_FAIL_COUNTS] = 0x1u,
+    [R_FW_OV_CONTROL] = 0x1u,
+    [R_FW_OV_SHA3_START] = 0x1u,
+    [R_FW_OV_WR_FIFO_FULL] = 0x1u,
+    [R_FW_OV_RD_FIFO_OVERFLOW] = 0x1u,
+    [R_FW_OV_RD_DATA] = 0xfu,
+    [R_FW_OV_WR_DATA] = 0xfu,
+    [R_OBSERVE_FIFO_THRESH] = 0x1u,
+    [R_OBSERVE_FIFO_DEPTH] = 0x1u,
+    [R_DEBUG_STATUS] = 0x7u,
+    [R_RECOV_ALERT_STS] = 0xfu,
+    [R_ERR_CODE] = 0xfu,
+    [R_ERR_CODE_TEST] = 0x1u,
+    [R_MAIN_SM_STATE] = 0x3u,
+};
+
+static MemTxResult ot_entropy_src_lo_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_LO_COUNT) {
+        *data = 0u;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t val64 = ot_entropy_src_lo_regs_read(opaque, addr & ~3ULL, 4u);
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val64 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_entropy_src_lo_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_LO_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((ENTROPY_SRC_LO_PERMIT[reg] & ~byte_mask) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    ot_entropy_src_lo_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_entropy_src_rev_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_REV_COUNT) {
+        *data = 0u;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t val64 = ot_entropy_src_rev_regs_read(opaque, addr & ~3ULL, 4u);
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val64 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_entropy_src_rev_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_REV_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((ENTROPY_SRC_REV_PERMIT[reg] & ~byte_mask) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    ot_entropy_src_rev_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_entropy_src_hi_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_HI_COUNT) {
+        *data = 0u;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t val64 = ot_entropy_src_hi_regs_read(opaque, addr & ~3ULL, 4u);
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *data = (val64 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_entropy_src_hi_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_HI_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((ENTROPY_SRC_HI_PERMIT[reg] & ~byte_mask) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3u) * 8u);
+    ot_entropy_src_hi_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_entropy_src_lo_ops = {
-    .read = &ot_entropy_src_lo_regs_read,
-    .write = &ot_entropy_src_lo_regs_write,
+    .read_with_attrs = &ot_entropy_src_lo_regs_read_with_attrs,
+    .write_with_attrs = &ot_entropy_src_lo_regs_write_with_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
     .impl = {
-        .min_access_size = 4u,
+        .min_access_size = 1u,
         .max_access_size = 4u,
     },
 };
 
 static const MemoryRegionOps ot_entropy_src_rev_ops = {
-    .read = &ot_entropy_src_rev_regs_read,
-    .write = &ot_entropy_src_rev_regs_write,
+    .read_with_attrs = &ot_entropy_src_rev_regs_read_with_attrs,
+    .write_with_attrs = &ot_entropy_src_rev_regs_write_with_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
     .impl = {
-        .min_access_size = 4u,
+        .min_access_size = 1u,
         .max_access_size = 4u,
     },
 };
 
 static const MemoryRegionOps ot_entropy_src_hi_ops = {
-    .read = &ot_entropy_src_hi_regs_read,
-    .write = &ot_entropy_src_hi_regs_write,
+    .read_with_attrs = &ot_entropy_src_hi_regs_read_with_attrs,
+    .write_with_attrs = &ot_entropy_src_hi_regs_write_with_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
     .impl = {
-        .min_access_size = 4u,
+        .min_access_size = 1u,
         .max_access_size = 4u,
     },
 };
