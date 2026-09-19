@@ -183,6 +183,7 @@ typedef struct {
     uint32_t mask; /* the mask to apply to the written value */
     uint16_t protect; /* not 0 if write protected by another register */
     uint8_t wpost; /* whether to perform post-write action */
+    uint8_t permit; /* ALERT_HANDLER_PERMIT byte-enable mask (0x1, 0x3, 0xf) */
 } OtAlertAccess;
 
 typedef struct {
@@ -281,7 +282,9 @@ static const char *ST_NAMES[] = {
     .write = &ot_alert_reg_ ## _w_, \
     .mask = (_m_), \
     .protect = (_p_), \
-    .wpost = (_u_) \
+    .wpost = (_u_), \
+    .permit = ((uint32_t)(_m_) > 0xffffu ? 0xfu : \
+               ((uint32_t)(_m_) > 0xffu ? 0x3u : 0x1u)) \
 }
 /* clang-format on */
 #define R_ACC_MP(_r_, _w_, _m_, _p_) R_ACC_MPA(_r_, _w_, _m_, _p_, 0)
@@ -948,10 +951,12 @@ static void ot_alert_clock_input(void *opaque, int irq, int level)
     /* TODO: reinitialize timers on PCLK change */
 }
 
-static uint64_t ot_alert_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_alert_regs_read_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t *val64, unsigned size,
+                                                 MemTxAttrs attrs)
 {
     OtAlertState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -959,7 +964,8 @@ static uint64_t ot_alert_regs_read(void *opaque, hwaddr addr, unsigned size)
     if (reg >= s->reg_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid register 0x%03x\n",
                       __func__, (uint32_t)addr);
-        return 0;
+        *val64 = 0u;
+        return MEMTX_ERROR;
     }
 
     val32 = (*s->access_table[reg].read)(s, reg);
@@ -968,14 +974,21 @@ static uint64_t ot_alert_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_alert_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(s, reg),
                                val32, pc);
 
-    return (uint64_t)val32;
-};
+    unsigned byte_off = (unsigned)(addr & 3u);
+    val32 >>= (byte_off * 8u);
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
+    *val64 = (uint64_t)val32;
+    return MEMTX_OK;
+}
 
-static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                                unsigned size)
+static MemTxResult ot_alert_regs_write_with_attrs(void *opaque, hwaddr addr,
+                                                  uint64_t val64, unsigned size,
+                                                  MemTxAttrs attrs)
 {
     OtAlertState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
@@ -987,7 +1000,20 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     if (reg >= s->reg_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid register 0x%03x\n",
                       __func__, (uint32_t)addr);
-        return;
+        return MEMTX_ERROR;
+    }
+
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    if ((s->access_table[reg].permit & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: sub-word write wr_err at 0x%03x (%s, be=0x%x)\n",
+                      __func__, (uint32_t)addr, REG_NAME(s, reg), reg_be);
+        return MEMTX_ERROR;
+    }
+
+    if (size < 4u) {
+        val32 = (val32 & ((1u << (size * 8u)) - 1u)) << (byte_off * 8u);
     }
 
     bool was_staged = s->regs.shadow[reg].staged_p;
@@ -1006,7 +1032,9 @@ static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             ot_alert_clear_alert(s, nclass);
         }
     }
-};
+
+    return MEMTX_OK;
+}
 
 static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
 {
@@ -1179,7 +1207,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
                       clr_regwen, BIT(PWA_CLEAR_ALERT));
 
         /* CLASS_ACCUM_CNT */
-        table[offset++] = R_ACC(direct_read, read_only);
+        table[offset++] = R_ACC_M(direct_read, read_only, CLASS_ACCUM_CNT_MASK);
 
         /* CLASS_ACCUM_THRESH_SHADOWED */
         table[offset++] =
@@ -1211,7 +1239,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
         table[offset++] = R_ACC(esc_count_read, read_only);
 
         /* CLASS_STATE */
-        table[offset++] = R_ACC(direct_read, read_only);
+        table[offset++] = R_ACC_M(direct_read, read_only, 0x7u);
     }
 
     g_assert(offset == s->reg_count);
@@ -1233,10 +1261,12 @@ static const Property ot_alert_properties[] = {
 };
 
 static const MemoryRegionOps ot_alert_regs_ops = {
-    .read = &ot_alert_regs_read,
-    .write = &ot_alert_regs_write,
+    .read_with_attrs = &ot_alert_regs_read_with_attrs,
+    .write_with_attrs = &ot_alert_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
