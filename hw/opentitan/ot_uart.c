@@ -193,6 +193,7 @@ struct OtUARTState {
     QEMUTimer *rx_timer;
     Fifo8 rx_staging_fifo;
     int64_t rx_next_ns;
+    int64_t last_rx_ns;
     QEMUTimer *rx_pace_timer;
     QEMUTimer *rx_timeout_timer;
     uint32_t rx_poll_count;
@@ -663,6 +664,7 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
     }
 
     int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    s->last_rx_ns = now;
     bool was_empty = fifo8_is_empty(&s->rx_staging_fifo);
 
     for (int i = 0; i < size; i++) {
@@ -928,17 +930,43 @@ static void ot_uart_clock_input(void *opaque, int irq, int level)
     ot_uart_check_baudrate(s);
 }
 
+static int64_t ot_uart_rx_pace_step_ns(const OtUARTState *s, int64_t now_ns,
+                                       unsigned *sleep_us)
+{
+    /*
+     * When the UART RX channel has recently received host input (within 1.5s
+     * of virtual time), pace empty-FIFO status polling at >= 1x wall-clock
+     * time (150 us virtual / 200 us sleep) so host tools with 1s silence
+     * timers (e.g. lrzsz rx) do not race ahead of virtual timeouts. When the
+     * RX line has been idle, advance virtual time faster (1 ms virtual /
+     * 120 us sleep) so multi-second inactivity timeouts complete well within
+     * host console timeouts.
+     */
+    if (s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL) {
+        if (sleep_us) {
+            *sleep_us = 200u;
+        }
+        return 150000;
+    }
+    if (sleep_us) {
+        *sleep_us = 120u;
+    }
+    return 1000000;
+}
+
 static void ot_uart_rx_pace_timer_cb(void *opaque)
 {
     OtUARTState *s = opaque;
 
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2) {
+        int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        unsigned sleep_us = 0;
+        int64_t step_ns = ot_uart_rx_pace_step_ns(s, now_ns, &sleep_us);
         s->rx_poll_count = 1;
-        g_usleep(200);
+        g_usleep(sleep_us);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        timer_mod(s->rx_pace_timer,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
+        timer_mod(s->rx_pace_timer, now_ns + step_ns);
     } else {
         s->rx_poll_count = 0;
     }
@@ -972,8 +1000,9 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo)) {
         s->rx_poll_count++;
         if (s->rx_poll_count >= 4 && !timer_pending(s->rx_pace_timer)) {
-            timer_mod(s->rx_pace_timer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 200000);
+            int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            int64_t step_ns = ot_uart_rx_pace_step_ns(s, now_ns, NULL);
+            timer_mod(s->rx_pace_timer, now_ns + step_ns);
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
@@ -1308,6 +1337,7 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     }
     s->tx_busy = false;
     s->rx_poll_count = 0;
+    s->last_rx_ns = 0;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 
