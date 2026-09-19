@@ -214,6 +214,7 @@ typedef struct {
     ot_ibex_wrapper_reg_read_fn read;
     ot_ibex_wrapper_reg_write_fn write;
     uint32_t mask; /* the mask to apply to the written value */
+    uint8_t permit; /* RV_CORE_IBEX_CFG_PERMIT byte-enable mask (0 = unmapped) */
 } OtIbexWrapperAccess;
 
 struct OtIbexWrapperState {
@@ -1310,36 +1311,41 @@ static void ot_ibex_wrapper_write_dv_sim_log(OtIbexWrapperState *s,
     }
 }
 
-static uint64_t
-ot_ibex_wrapper_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_ibex_wrapper_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtIbexWrapperState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
 
-    if (reg >= s->reg_count) {
+    if (reg >= s->reg_count || s->access_table[reg].permit == 0u) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Invalid register 0x%03x\n",
                       __func__, s->ot_id, (uint32_t)addr);
-        return 0;
+        return MEMTX_DECODE_ERROR;
     }
 
     g_assert(s->access_table[reg].read);
     val32 = (*s->access_table[reg].read)(s, reg);
 
+    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    val32 = (val32 >> shift) & size_mask;
+
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ibex_wrapper_io_read_out(s->ot_id, (uint32_t)addr,
                                       REG_NAME(s, reg), val32, pc);
 
-    return (uint64_t)val32;
-};
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
+}
 
-static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
-                                       uint64_t val64, unsigned size)
+static MemTxResult ot_ibex_wrapper_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtIbexWrapperState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
@@ -1348,17 +1354,26 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
     trace_ot_ibex_wrapper_io_write(s->ot_id, (uint32_t)addr, REG_NAME(s, reg),
                                    val32, pc);
 
-    if (reg >= s->reg_count) {
+    if (reg >= s->reg_count || s->access_table[reg].permit == 0u) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Invalid register 0x%03x\n",
                       __func__, s->ot_id, (uint32_t)addr);
-        return;
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    if ((s->access_table[reg].permit & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: Sub-word write error at 0x%03x (size=%u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
+        return MEMTX_DECODE_ERROR;
     }
 
     val32 &= s->access_table[reg].mask;
 
     g_assert(s->access_table[reg].write);
     (*s->access_table[reg].write)(s, reg, val32);
-};
+    return MEMTX_OK;
+}
 
 static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
 {
@@ -1431,10 +1446,15 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].read =
         &ot_ibex_wrapper_read_zero;
 
-    /* assign writers */
+    /* assign writers and default permits */
     for (rix = 0; rix < s->reg_count; rix++) {
         s->access_table[rix].write = &ot_ibex_wrapper_write_reg;
         s->access_table[rix].mask = UINT32_MAX;
+        s->access_table[rix].permit = 0xfu;
+    }
+    for (rix = R32_DYN_POS(s, _reserved[0]);
+         rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
+        s->access_table[rix].permit = 0u;
     }
 
     s->access_table[R32_DYN_POS(s, alert_test)].write =
@@ -1460,34 +1480,47 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_write_dv_sim_log;
 
     s->access_table[R32_DYN_POS(s, alert_test)].mask = ALERT_MASK;
+    s->access_table[R32_DYN_POS(s, alert_test)].permit = 0x1u;
     s->access_table[R32_DYN_POS(s, sw_recov_err)].mask =
         R_SW_RECOV_ERR_VAL_MASK;
+    s->access_table[R32_DYN_POS(s, sw_recov_err)].permit = 0x1u;
     /* this register is extended in QEMU, HW mask is applied in HW handler */
     s->access_table[R32_DYN_POS(s, sw_fatal_err)].mask = UINT32_MAX;
+    s->access_table[R32_DYN_POS(s, sw_fatal_err)].permit = 0x1u;
     s->access_table[R32_DYN_POS(s, nmi_enable)].mask = NMI_MASK;
+    s->access_table[R32_DYN_POS(s, nmi_enable)].permit = 0x1u;
     s->access_table[R32_DYN_POS(s, nmi_state)].mask = NMI_MASK;
+    s->access_table[R32_DYN_POS(s, nmi_state)].permit = 0x1u;
     s->access_table[R32_DYN_POS(s, err_status)].mask = ERR_STATUS_MASK;
+    s->access_table[R32_DYN_POS(s, err_status)].permit = 0x3u;
+    s->access_table[R32_DYN_POS(s, rnd_data)].permit = 0xfu;
+    s->access_table[R32_DYN_POS(s, rnd_status)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, fpga_info)].permit = 0xfu;
 
     unsigned base = FIRST_REMAP_REG_POS;
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_regwen;
             s->access_table[base + mix].mask = REGWEN_EN_MASK;
+            s->access_table[base + mix].permit = 0x1u;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = ADDR_EN_MASK;
+            s->access_table[base + mix].permit = 0x1u;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = UINT32_MAX;
+            s->access_table[base + mix].permit = 0xfu;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = UINT32_MAX;
+            s->access_table[base + mix].permit = 0xfu;
         }
         base += s->num_regions;
     }
@@ -1522,10 +1555,12 @@ static const Property ot_ibex_wrapper_properties[] = {
 };
 
 static const MemoryRegionOps ot_ibex_wrapper_regs_ops = {
-    .read = &ot_ibex_wrapper_regs_read,
-    .write = &ot_ibex_wrapper_regs_write,
+    .read_with_attrs = &ot_ibex_wrapper_regs_read_with_attrs,
+    .write_with_attrs = &ot_ibex_wrapper_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
@@ -1591,6 +1626,10 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
                (size_t)s->num_regions * sizeof(OtIbexRemap));
         for (unsigned rix = 0; rix < (unsigned)s->num_regions; rix++) {
             s->regs.remap[aix][rix].regwen = 0x1u;
+            if (!s->alias_mode && s->vmapper) {
+                ot_ibex_wrapper_update_remap_vmap(s, (OtIbexRemapAccess)aix,
+                                                  rix);
+            }
         }
     }
     ot_ibex_wrapper_update_alerts(s);
@@ -1648,7 +1687,7 @@ static void ot_ibex_wrapper_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_io(&s->mmio, OBJECT(dev), &ot_ibex_wrapper_regs_ops, s,
                           TYPE_OT_IBEX_WRAPPER,
-                          s->reg_count * sizeof(uint32_t));
+                          MAX(s->reg_count * sizeof(uint32_t), 0x100u));
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->remappers = g_new0(MemoryRegion, s->num_regions);

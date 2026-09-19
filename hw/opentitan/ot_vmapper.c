@@ -811,10 +811,10 @@ static void ot_vmapper_translate(OtVMapperState *s, bool insn, unsigned slot,
                                  hwaddr src, hwaddr dst, size_t size)
 {
     g_assert(slot < s->trans_count);
-    g_assert(src < UINT32_MAX);
-    g_assert(dst < UINT32_MAX);
-    g_assert(src + size <= UINT32_MAX);
-    g_assert(dst + size <= UINT32_MAX);
+    g_assert(src <= UINT32_MAX);
+    g_assert(dst <= UINT32_MAX);
+    g_assert(src + size <= (hwaddr)UINT32_MAX + 1u);
+    g_assert(dst + size <= (hwaddr)UINT32_MAX + 1u);
 
     /*
      * QEMU virtual address implementation is built around the size of a small
@@ -1026,8 +1026,8 @@ static void ot_vmapper_reset_enter(Object *obj, ResetType type)
     s->show = false;
     s->silent_align = false;
 
-    ot_vmapper_flush_tree(s, s->dtree);
-    ot_vmapper_flush_tree(s, s->itree);
+    ot_vmapper_flush_tree(s, false);
+    ot_vmapper_flush_tree(s, true);
 
     s->cpu = ot_vmapper_retrieve_cpu(s);
 }
