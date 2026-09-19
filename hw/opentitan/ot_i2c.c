@@ -1769,11 +1769,81 @@ static const TypeInfo ot_i2c_target_info = {
     .class_size = sizeof(I2CSlaveClass),
 };
 
+static const uint8_t I2C_PERMIT[REGS_COUNT] = {
+    [R_INTR_STATE] = 0x3u,
+    [R_INTR_ENABLE] = 0x3u,
+    [R_INTR_TEST] = 0x3u,
+    [R_ALERT_TEST] = 0x1u,
+    [R_CTRL] = 0x1u,
+    [R_STATUS] = 0x3u,
+    [R_RDATA] = 0x1u,
+    [R_FDATA] = 0x3u,
+    [R_FIFO_CTRL] = 0x3u,
+    [R_HOST_FIFO_CONFIG] = 0xfu,
+    [R_TARGET_FIFO_CONFIG] = 0xfu,
+    [R_HOST_FIFO_STATUS] = 0xfu,
+    [R_TARGET_FIFO_STATUS] = 0xfu,
+    [R_OVRD] = 0x1u,
+    [R_VAL] = 0xfu,
+    [R_TIMING0] = 0xfu,
+    [R_TIMING1] = 0xfu,
+    [R_TIMING2] = 0xfu,
+    [R_TIMING3] = 0xfu,
+    [R_TIMING4] = 0xfu,
+    [R_TIMEOUT_CTRL] = 0xfu,
+    [R_TARGET_ID] = 0xfu,
+    [R_ACQDATA] = 0x3u,
+    [R_TXDATA] = 0x1u,
+    [R_HOST_TIMEOUT_CTRL] = 0x7u,
+    [R_TARGET_TIMEOUT_CTRL] = 0xfu,
+    [R_TARGET_NACK_COUNT] = 0x1u,
+    [R_TARGET_ACK_CTRL] = 0xfu,
+    [R_ACQ_FIFO_NEXT_DATA] = 0x1u,
+    [R_HOST_NACK_HANDLER_TIMEOUT] = 0xfu,
+    [R_CONTROLLER_EVENTS] = 0x1u,
+    [R_TARGET_EVENTS] = 0x1u,
+};
+
+static MemTxResult ot_i2c_read_with_attrs(void *opaque, hwaddr addr,
+                                          uint64_t *val64, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    if ((aligned_addr >> 2u) >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint64_t val32 = ot_i2c_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (val32 >> shift) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_i2c_write_with_attrs(void *opaque, hwaddr addr,
+                                           uint64_t val64, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    (void)attrs;
+    uint32_t reg = (uint32_t)(addr >> 2u);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_ERROR;
+    }
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    if ((I2C_PERMIT[reg] & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
+    ot_i2c_write(opaque, addr & ~3ULL, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_i2c_ops = {
-    .read = &ot_i2c_read,
-    .write = &ot_i2c_write,
+    .read_with_attrs = &ot_i2c_read_with_attrs,
+    .write_with_attrs = &ot_i2c_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
+    .impl.min_access_size = 1,
     .impl.max_access_size = 4,
 };
 
