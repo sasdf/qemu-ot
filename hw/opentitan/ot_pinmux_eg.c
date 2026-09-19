@@ -426,6 +426,14 @@ uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad)
     return s->regs->mio_outsel[mio_pad];
 }
 
+uint32_t ot_pinmux_eg_get_mio_pad_attr(OtPinmuxEgState *s, unsigned mio_pad)
+{
+    if (!s || !s->regs || mio_pad >= PARAM_N_MIO_PADS) {
+        return 0;
+    }
+    return s->regs->mio_pad_attr[mio_pad];
+}
+
 uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
 {
     if (!s || !s->regs) {
@@ -476,26 +484,9 @@ static void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
 static void ot_pinmux_eg_update_gpio_inputs(OtPinmuxEgState *s)
 {
     for (unsigned i = 0; i < 32u; i++) {
-        uint32_t insel = s->regs->mio_periph_insel[i];
-        int level = -1;
-        if (insel == 1u) {
-            level = 1;
-        } else if (insel >= 2u && (insel - 2u) < PARAM_N_MIO_PADS) {
-            unsigned pad = insel - 2u;
-            uint32_t outsel = s->regs->mio_outsel[pad];
-            if (outsel == 0u) {
-                level = 0;
-            } else if (outsel == 1u) {
-                level = 1;
-            } else if (outsel >= 3u && outsel < 3u + 32u) {
-                unsigned g = outsel - 3u;
-                if (g != i) {
-                    level = (int)((s->pad_in_level >> g) & 1u);
-                }
-            }
-        }
-        ibex_irq_set(&s->gpio_inputs[i], level);
+        ibex_irq_set(&s->gpio_inputs[i], -1);
     }
+    ot_gpio_eg_notify_sysrst_change();
 }
 
 static void ot_pinmux_eg_check_wkup_detectors(OtPinmuxEgState *s, bool is_dio,
@@ -860,6 +851,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             g_assert(pad_no < R_MIO_PAD_ATTR);
             regs->mio_pad_attr[pad_no] = val32;
             ot_pinmux_eg_update_pads(s);
+            ot_gpio_eg_notify_sysrst_change();
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: 0x%03x access is disabled\n",
                           __func__, (uint32_t)addr);

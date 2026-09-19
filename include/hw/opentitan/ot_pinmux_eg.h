@@ -39,6 +39,7 @@ int ot_pinmux_eg_mio_to_host_pin(unsigned pad);
 int ot_pinmux_eg_host_pin_to_gpio(OtPinmuxEgState *s, unsigned host_pin);
 int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad);
 uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad);
+uint32_t ot_pinmux_eg_get_mio_pad_attr(OtPinmuxEgState *s, unsigned mio_pad);
 uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin);
 uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in);
 bool ot_pinmux_eg_trigger_mio_wkup(unsigned mio_pad);

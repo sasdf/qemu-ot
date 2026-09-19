@@ -295,6 +295,8 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CTRL:
+        val32 &= 0xffu;
+        /* fall through */
     case R_PREDIV_CH0:
     case R_PREDIV_CH1:
     case R_DATA_CH0_0:
@@ -305,6 +307,7 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
         uint32_t old_ctrl = s->regs[R_CTRL];
         s->regs[reg] = val32;
         bool schedule_timer = false;
+        uint64_t max_duration_ns = 0;
 
         for (unsigned c = 0; c < PARAM_NUM_CHANNELS; c++) {
             bool was_en = (bool)((old_ctrl >> c) & 1u);
@@ -319,6 +322,18 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
                 ot_pattgen_latch_channel(s, c);
                 s->chan[c].pending_start = true;
                 schedule_timer = true;
+                uint64_t total_steps = 2ULL * ((uint64_t)s->chan[c].len + 1ULL) *
+                                       ((uint64_t)s->chan[c].reps + 1ULL);
+                uint64_t dur_ns =
+                    (total_steps * ((uint64_t)s->chan[c].prediv + 1ULL) *
+                     1000000000ULL) /
+                    6000000ULL;
+                if (dur_ns < 1000ULL) {
+                    dur_ns = 1000ULL;
+                }
+                if (dur_ns > max_duration_ns) {
+                    max_duration_ns = dur_ns;
+                }
             }
         }
 
@@ -328,7 +343,8 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
 
         if (schedule_timer) {
             timer_mod_ns(s->timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 2000000LL);
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                             (int64_t)max_duration_ns);
         }
         break;
     }

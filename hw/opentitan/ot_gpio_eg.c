@@ -279,6 +279,14 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
             } else if (outsel >= 35u && outsel <= 42u && s->sysrst_ctrl) {
                 driven_by_dev = true;
                 level = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
+            } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+                driven_by_dev = true;
+                level = (int)ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
+            } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+                driven_by_dev = true;
+                level = (int)ot_pwm_get_channel_level(
+                    s->pwm, outsel - 65u,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
             }
             if (!driven_by_dev) {
                 if (p == 14u || p == 15u) {
@@ -375,7 +383,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     uint32_t data_ib = routed_ib & bi_mask;
     uint32_t pull_in =
         ((s->pull_en & s->pull_sel) | (~s->pull_en & routed_hp)) & pi_mask;
-    uint32_t data_in = data_ii | data_ib | pull_in;
+    uint32_t ext_in = data_ii | data_ib | pull_in;
 
     trace_ot_gpio_in_ignore(s->ot_id, s->connected, s->data_gi, s->data_bi,
                             s->data_oe);
@@ -383,15 +391,85 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     trace_ot_gpio_in_backend(s->ot_id, s->data_ib, bi_mask, data_ib);
     trace_ot_gpio_in_pull(s->ot_id, s->pull_en, s->pull_sel, pi_mask, pull_in);
 
-    /* apply inversion if any */
-    data_in ^= s->invert;
+    uint32_t data_mix = 0;
+    if (s->pinmux) {
+        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
+            uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
+            bool in_o = false;
+            if (insel == 0u) {
+                in_o = false;
+            } else if (insel == 1u) {
+                in_o = true;
+            } else if (insel >= 2u && (insel - 2u) < 47u) {
+                unsigned mio_pad = insel - 2u;
+                uint32_t pad_attr =
+                    ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
+                bool pad_inv =
+                    (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
+                bool pad_in_dis =
+                    (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK);
+                if (pad_in_dis) {
+                    in_o = pad_inv;
+                } else {
+                    uint32_t outsel =
+                        ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+                    bool pad_driven = false;
+                    bool out_core = false;
+                    if (outsel == 0u) {
+                        pad_driven = true;
+                        out_core = false;
+                    } else if (outsel == 1u) {
+                        pad_driven = true;
+                        out_core = true;
+                    } else if (outsel >= 3u && outsel < 35u) {
+                        unsigned g_out = outsel - 3u;
+                        if ((s->data_oe >> g_out) & 1u) {
+                            bool g_out_val =
+                                (bool)((s->data_out >> g_out) & 1u);
+                            bool od = (bool)(pad_attr &
+                                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
+                                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
+                            if (!(od && (g_out_val ^ pad_inv))) {
+                                pad_driven = true;
+                                out_core = g_out_val;
+                            }
+                        }
+                    } else if (outsel >= 35u && outsel <= 42u &&
+                               s->sysrst_ctrl) {
+                        pad_driven = true;
+                        out_core = (bool)ot_sysrst_ctrl_get_outsel_level(
+                            s->sysrst_ctrl, outsel);
+                    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+                        pad_driven = true;
+                        out_core = ot_pattgen_get_pin_level(s->pattgen,
+                                                            outsel - 49u);
+                    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+                        pad_driven = true;
+                        out_core = ot_pwm_get_channel_level(
+                            s->pwm, outsel - 65u, now_ns);
+                    }
 
-    /* inject back output pin values into input only for non-muxed pins */
-    uint32_t data_mix = data_in | (s->data_out & eff_oe & ~s->connected);
+                    if (pad_driven) {
+                        in_o = out_core;
+                    } else {
+                        bool raw = ((ext_in >> g) & 1u) != 0;
+                        in_o = raw ^ pad_inv;
+                    }
+                }
+            }
+            if (in_o) {
+                data_mix |= (1u << g);
+            }
+        }
+    } else {
+        uint32_t data_in = ext_in ^ s->invert;
+        data_mix = data_in | (s->data_out & eff_oe & ~s->connected);
+    }
 
     s->regs[R_DATA_IN] = data_mix;
 
-    trace_ot_gpio_in_update(s->ot_id, s->invert, data_in, s->data_out,
+    trace_ot_gpio_in_update(s->ot_id, s->invert, ext_in, s->data_out,
                             data_mix);
 
     ot_gpio_eg_update_intr_level(s);
@@ -626,6 +704,7 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (reg) {
     case R_INTR_STATE:
         s->regs[reg] &= ~val32; /* RW1C */
+        ot_gpio_eg_update_intr_level(s);
         ot_gpio_eg_update_irqs(s);
         break;
     case R_INTR_ENABLE:
@@ -638,7 +717,10 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_ALERT_TEST:
         val32 &= ALERT_TEST_MASK;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     case R_DIRECT_OUT:
         s->regs[reg] = val32;
@@ -1511,6 +1593,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
 void ot_gpio_eg_notify_pattgen_change(OtGpioEgState *s)
 {
     if (s) {
+        ot_gpio_eg_update_data_in(s);
         ot_gpio_eg_update_backend(s, false);
     }
 }
