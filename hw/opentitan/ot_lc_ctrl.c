@@ -406,6 +406,8 @@ struct OtLcCtrlState {
     bool force_raw; /* survivability mode */
     uint8_t volatile_raw_unlock_bm; /* volatile raw unlock enabled */
     uint8_t state_invalid_error_bm; /* error bitmap */
+    uint8_t claim_if[2]; /* SW and DMI CLAIM_TRANSITION_IF mubi8 values */
+    uint8_t claim_if_regwen[2]; /* SW and DMI CLAIM_TRANSITION_IF_REGWEN */
     char *hexstr;
 
     /* properties */
@@ -735,21 +737,31 @@ ot_lc_ctrl_change_state_line(OtLcCtrlState *s, OtLcCtrlFsmState state, int line)
 
 static void ot_lc_ctrl_update_alerts(OtLcCtrlState *s)
 {
-    uint32_t level = s->regs[R_ALERT_TEST];
+    uint32_t fatal_level = 0;
 
     if (s->regs[R_STATUS] & R_STATUS_OTP_ERROR_MASK) {
-        level |= ALERT_FATAL_PROG_ERROR_MASK;
+        fatal_level |= ALERT_FATAL_PROG_ERROR_MASK;
     }
     if (s->regs[R_STATUS] &
         (R_STATUS_STATE_ERROR_MASK | R_STATUS_OTP_PARTITION_ERROR_MASK)) {
-        level |= ALERT_FATAL_STATE_ERROR_MASK;
+        fatal_level |= ALERT_FATAL_STATE_ERROR_MASK;
     }
     if (s->regs[R_STATUS] & R_STATUS_BUS_INTEG_ERROR_MASK) {
-        level |= ALERT_FATAL_BUS_INTEG_ERROR_MASK;
+        fatal_level |= ALERT_FATAL_BUS_INTEG_ERROR_MASK;
     }
+
+    uint32_t level = fatal_level | s->regs[R_ALERT_TEST];
 
     for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
+    }
+
+    if (s->regs[R_ALERT_TEST]) {
+        /* In RTL (lc_ctrl.sv:573-606), alert_test is a transient 1-cycle pulse */
+        s->regs[R_ALERT_TEST] = 0u;
+        for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
+            ibex_irq_set(&s->alerts[ix], (int)((fatal_level >> ix) & 0x1u));
+        }
     }
 }
 
@@ -918,22 +930,6 @@ ot_lc_ctrl_is_hw_mutex_owner(const OtLcCtrlState *s, OtLcCtrlIf owner)
     return s->owner == owner;
 }
 
-static bool ot_lc_ctrl_lock_hw_mutex(OtLcCtrlState *s, OtLcCtrlIf owner)
-{
-    if (s->owner != LC_IF_NONE) {
-        return ot_lc_ctrl_is_hw_mutex_owner(s, owner);
-    }
-
-    s->owner = owner;
-
-    return true;
-}
-
-static void ot_lc_ctrl_release_hw_mutex(OtLcCtrlState *s)
-{
-    s->owner = LC_IF_NONE;
-}
-
 static bool
 ot_lc_ctrl_is_transition_en(const OtLcCtrlState *s, OtLcCtrlIf owner)
 {
@@ -970,26 +966,26 @@ static bool ot_lc_ctrl_is_known_state(uint32_t state)
     }
 }
 
-static bool ot_lc_ctrl_is_vendor_test_state(uint32_t state)
+static bool ot_lc_ctrl_is_vendor_test_state(OtLcState state)
 {
     switch (state) {
-    case LC_ENC_STATE_RAW:
-    case LC_ENC_STATE_TESTUNLOCKED0:
-    case LC_ENC_STATE_TESTLOCKED0:
-    case LC_ENC_STATE_TESTUNLOCKED1:
-    case LC_ENC_STATE_TESTLOCKED1:
-    case LC_ENC_STATE_TESTUNLOCKED2:
-    case LC_ENC_STATE_TESTLOCKED2:
-    case LC_ENC_STATE_TESTUNLOCKED3:
-    case LC_ENC_STATE_TESTLOCKED3:
-    case LC_ENC_STATE_TESTUNLOCKED4:
-    case LC_ENC_STATE_TESTLOCKED4:
-    case LC_ENC_STATE_TESTUNLOCKED5:
-    case LC_ENC_STATE_TESTLOCKED5:
-    case LC_ENC_STATE_TESTUNLOCKED6:
-    case LC_ENC_STATE_TESTLOCKED6:
-    case LC_ENC_STATE_TESTUNLOCKED7:
-    case LC_ENC_STATE_RMA:
+    case LC_STATE_RAW:
+    case LC_STATE_TESTUNLOCKED0:
+    case LC_STATE_TESTLOCKED0:
+    case LC_STATE_TESTUNLOCKED1:
+    case LC_STATE_TESTLOCKED1:
+    case LC_STATE_TESTUNLOCKED2:
+    case LC_STATE_TESTLOCKED2:
+    case LC_STATE_TESTUNLOCKED3:
+    case LC_STATE_TESTLOCKED3:
+    case LC_STATE_TESTUNLOCKED4:
+    case LC_STATE_TESTLOCKED4:
+    case LC_STATE_TESTUNLOCKED5:
+    case LC_STATE_TESTLOCKED5:
+    case LC_STATE_TESTUNLOCKED6:
+    case LC_STATE_TESTLOCKED6:
+    case LC_STATE_TESTUNLOCKED7:
+    case LC_STATE_RMA:
         return true;
     default:
         return false;
@@ -1648,6 +1644,7 @@ static void ot_lc_ctrl_initialize(OtLcCtrlState *s)
     } else {
         s->regs[R_STATUS] |= R_STATUS_STATE_ERROR_MASK;
         ot_lc_ctrl_update_alerts(s);
+        s->lc_state = LC_STATE_INVALID;
         LC_FSM_CHANGE_STATE(s, ST_INVALID);
     }
 
@@ -1700,6 +1697,7 @@ static void ot_lc_ctrl_escalate_bh(void *opaque)
 {
     OtLcCtrlState *s = opaque;
 
+    s->lc_state = LC_STATE_ESCALATE;
     LC_FSM_CHANGE_STATE(s, ST_ESCALATE);
 
     ot_lc_ctrl_update_broadcast(s);
@@ -1734,13 +1732,21 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
+    unsigned if_ix = (ifreq == LC_IF_DMI) ? 1u : 0u;
+    bool is_terminal_fsm =
+        (s->state == ST_RESET || s->state == ST_ESCALATE ||
+         s->state == ST_POST_TRANS || s->state == ST_INVALID ||
+         s->state == ST_SCRAP);
 
     switch (reg) {
     case R_LC_TRANSITION_CNT:
-        /* TODO: >= 24 -> state == SCRAP */
-
-        /* Error: should be 31 */
-        val32 = s->lc_tcount;
+        /*
+         * In RTL (lc_ctrl_state_decode.sv:53,57-65,101-129), dec_lc_cnt_o is
+         * 5'd31 (0x1f) in terminal FSM states or when lc_cnt_i > 24.
+         */
+        val32 = (is_terminal_fsm || s->lc_tcount > LC_TRANSITION_COUNT_MAX) ?
+                    R_LC_TRANSITION_CNT_CNT_MASK :
+                    s->lc_tcount;
         break;
     case R_LC_STATE:
         val32 = LC_ENCODE_STATE(s->lc_state);
@@ -1754,10 +1760,15 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     case R_OTP_VENDOR_TEST_CTRL:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ? s->regs[reg] : 0u;
         break;
+    case R_CLAIM_TRANSITION_IF_REGWEN:
+        val32 = s->claim_if_regwen[if_ix];
+        break;
     case R_CLAIM_TRANSITION_IF:
-        val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ?
-                    OT_MULTIBITBOOL8_TRUE :
-                    OT_MULTIBITBOOL8_FALSE;
+        /*
+         * In RTL (lc_ctrl.sv:344-345), reading CLAIM_TRANSITION_IF returns
+         * the raw 8-bit mubi8_t value stored in sw/tap_claim_transition_if_q.
+         */
+        val32 = s->claim_if[if_ix];
         break;
     case R_TRANSITION_CTRL:
         val32 = 0;
@@ -1791,9 +1802,15 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         }
         val32 = s->regs[reg];
         break;
-    case R_TRANSITION_CMD:
-    case R_CLAIM_TRANSITION_IF_REGWEN:
     case R_LC_ID_STATE:
+        /*
+         * In RTL (lc_ctrl_state_decode.sv:54,57-65), dec_lc_id_state_o defaults
+         * to DecLcIdInvalid (0xaaaaaaaa) in ResetSt, EscalateSt, PostTransSt,
+         * InvalidSt, and ScrapSt.
+         */
+        val32 = is_terminal_fsm ? LC_ID_STATE_INVALID : s->regs[reg];
+        break;
+    case R_TRANSITION_CMD:
     case R_HW_REVISION0:
     case R_HW_REVISION1:
     case R_DEVICE_ID_0:
@@ -1862,6 +1879,8 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                                   OtLcCtrlIf ifreq)
 {
     hwaddr reg = R32_OFF(addr);
+    unsigned if_ix = (ifreq == LC_IF_DMI) ? 1u : 0u;
+    unsigned other_ix = 1u - if_ix;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_lc_ctrl_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -1875,21 +1894,31 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         break;
     case R_CLAIM_TRANSITION_IF_REGWEN:
         val32 &= R_CLAIM_TRANSITION_IF_REGWEN_EN_MASK;
-        s->regs[reg] &= val32; /* rw0c */
+        s->claim_if_regwen[if_ix] &= (uint8_t)val32; /* rw0c */
+        s->regs[reg] = s->claim_if_regwen[0];
         break;
     case R_CLAIM_TRANSITION_IF:
-        if (!(s->regs[R_CLAIM_TRANSITION_IF_REGWEN] &
-              R_CLAIM_TRANSITION_IF_REGWEN_EN_MASK)) {
+        if (!s->claim_if_regwen[if_ix]) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: CLAIM_TRANSITION_IF disabled\n", __func__,
                           s->ot_id);
             break;
         }
         val32 &= R_CLAIM_TRANSITION_IF_MUTEX_MASK;
-        if (val32 == OT_MULTIBITBOOL8_TRUE) {
-            ot_lc_ctrl_lock_hw_mutex(s, ifreq);
-        } else {
-            ot_lc_ctrl_release_hw_mutex(s);
+        /*
+         * In RTL (lc_ctrl.sv:380-387), an interface can update its
+         * claim_transition_if_q register iff mubi8_test_false_loose(other_q)
+         * is true (i.e. the other interface does not hold MuBi8True).
+         */
+        if (s->claim_if[other_ix] != OT_MULTIBITBOOL8_TRUE) {
+            s->claim_if[if_ix] = (uint8_t)val32;
+            if (s->claim_if[1] == OT_MULTIBITBOOL8_TRUE) {
+                s->owner = LC_IF_DMI;
+            } else if (s->claim_if[0] == OT_MULTIBITBOOL8_TRUE) {
+                s->owner = LC_IF_SW;
+            } else {
+                s->owner = LC_IF_NONE;
+            }
         }
         break;
     case R_TRANSITION_CMD:
@@ -1911,6 +1940,10 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         }
         if (val32 & R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK) {
             s->ext_clock_en = true; /* rw1s */
+            if (s->state == ST_IDLE &&
+                ot_lc_ctrl_is_vendor_test_state(s->lc_state)) {
+                s->regs[R_STATUS] |= R_STATUS_EXT_CLOCK_SWITCHED_MASK;
+            }
         }
         if (s->volatile_raw_unlock) {
             if (val32 & R_TRANSITION_CTRL_VOLATILE_RAW_UNLOCK_MASK) {
@@ -1937,10 +1970,13 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                           __func__, s->ot_id);
             break;
         }
+        /*
+         * In RTL (lc_ctrl.sv:359, 451-456), transition_target_q stores any
+         * 30-bit value when TRANSITION_REGWEN == 1; validity is checked when
+         * a transition is triggered.
+         */
         val32 &= R_TRANSITION_TARGET_STATE_MASK;
-        if (ot_lc_ctrl_is_known_state(val32)) {
-            s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
-        }
+        s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
         break;
     case R_OTP_VENDOR_TEST_CTRL:
         if (!ot_lc_ctrl_is_transition_en(s, ifreq)) {
@@ -2315,6 +2351,10 @@ static void ot_lc_ctrl_reset_enter(Object *obj, ResetType type)
     s->kmac_state = ST_KMAC_IDLE;
     s->regs[R_CLAIM_TRANSITION_IF] = OT_MULTIBITBOOL8_FALSE;
     s->regs[R_CLAIM_TRANSITION_IF_REGWEN] = 1u;
+    s->claim_if[0] = OT_MULTIBITBOOL8_FALSE;
+    s->claim_if[1] = OT_MULTIBITBOOL8_FALSE;
+    s->claim_if_regwen[0] = 1u;
+    s->claim_if_regwen[1] = 1u;
     s->ext_clock_en = false;
     s->volatile_unlocked = false;
     s->force_raw = false;
