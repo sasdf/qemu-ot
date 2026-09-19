@@ -948,7 +948,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_attr, DIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_DIO_PAD_ATTR;
             g_assert(pad_no < PARAM_N_DIO_PADS);
-            val32 &= (pad_no >= 10u && pad_no <= 13u) ? 0x00000081u : 0x00000083u;
+            val32 &= (pad_no == 12u || pad_no == 13u) ? 0x00000081u : 0x00000083u;
             regs->dio_pad_attr[pad_no] = val32;
             ibex_irq_set(&s->dios[pad_no], PAD_ATTR_TO_IRQ(val32));
             ot_pinmux_eg_update_sysrst_inputs(s);

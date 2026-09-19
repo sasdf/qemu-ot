@@ -477,9 +477,6 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_irqs(s);
 
     ot_gpio_eg_update_pad_in_lines(s);
-    if (s->pinmux) {
-        ot_pinmux_eg_update_sysrst_inputs(s->pinmux);
-    }
 }
 
 int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
@@ -546,6 +543,9 @@ static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
 
     trace_ot_gpio_out_update(s->ot_id, outv, 0, 0);
     ot_gpio_eg_update_pad_in_lines(s);
+    if (s->pinmux) {
+        ot_pinmux_eg_update_sysrst_inputs(s->pinmux);
+    }
 }
 
 static void ot_gpio_eg_in_change(void *opaque, int no, int level)

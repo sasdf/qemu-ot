@@ -111,13 +111,17 @@ struct OtSysrstCtrlState {
     uint32_t regs[REGS_COUNT];
     uint32_t pin_in_raw;
     uint32_t last_pin_in_val;
+    uint32_t last_key_invert_ctl;
     uint32_t last_read_pin_in;
     uint32_t poll_count;
+    bool combo_precond_valid[4];
+    bool ulp_ac_latched;
     bool bat_disable_hw;
     bool ec_rst_l_hw;
     bool z3_wakeup_hw;
     QEMUTimer *ec_rst_timer;
     QEMUTimer *combo_pace_timer;
+    QEMUTimer *ulp_timer;
 
     char *ot_id;
 };
@@ -239,13 +243,11 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     return val;
 }
 
-static void ot_sysrst_ctrl_get_inverted(const OtSysrstCtrlState *s,
-                                        uint32_t pin_in_val,
+static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val,
+                                        uint32_t inv,
                                         uint32_t *combo_in,
                                         uint32_t *key_intr_in)
 {
-    uint32_t inv = s->regs[R_KEY_INVERT_CTL];
-
     uint32_t pwrb = ((pin_in_val >> 0u) & 1u) ^ ((inv >> 6u) & 1u);
     uint32_t key0 = ((pin_in_val >> 1u) & 1u) ^ ((inv >> 0u) & 1u);
     uint32_t key1 = ((pin_in_val >> 2u) & 1u) ^ ((inv >> 2u) & 1u);
@@ -332,52 +334,103 @@ static void ot_sysrst_ctrl_ec_rst_timer_cb(void *opaque)
     ot_sysrst_ctrl_update_outputs(s);
 }
 
+static void ot_sysrst_ctrl_ulp_timer_cb(void *opaque)
+{
+    OtSysrstCtrlState *s = opaque;
+    if (!(s->regs[R_ULP_CTL] & 1u) || s->ulp_ac_latched) {
+        return;
+    }
+    s->ulp_ac_latched = true;
+    s->z3_wakeup_hw = true;
+    s->regs[R_ULP_STATUS] |= 1u;
+    s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
+    ot_sysrst_ctrl_update_outputs(s);
+}
+
 static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
 {
     uint32_t prev_pin_val = s->last_pin_in_val;
+    uint32_t prev_inv = s->last_key_invert_ctl;
     uint32_t curr_pin_val = ot_sysrst_ctrl_get_pin_in_value(s);
+    uint32_t curr_inv = s->regs[R_KEY_INVERT_CTL];
     s->last_pin_in_val = curr_pin_val;
+    s->last_key_invert_ctl = curr_inv;
 
     uint32_t prev_combo_in = 0;
     uint32_t curr_combo_in = 0;
     uint32_t prev_key_in = 0;
     uint32_t curr_key_in = 0;
 
-    ot_sysrst_ctrl_get_inverted(s, prev_pin_val, &prev_combo_in, &prev_key_in);
-    ot_sysrst_ctrl_get_inverted(s, curr_pin_val, &curr_combo_in, &curr_key_in);
+    ot_sysrst_ctrl_get_inverted(prev_pin_val, prev_inv, &prev_combo_in,
+                                &prev_key_in);
+    ot_sysrst_ctrl_get_inverted(curr_pin_val, curr_inv, &curr_combo_in,
+                                &curr_key_in);
 
     if (s->regs[R_ULP_CTL] & 1u) {
-        uint32_t inv = s->regs[R_KEY_INVERT_CTL];
-        uint32_t prev_pwrb = ((prev_pin_val >> 0u) & 1u) ^ ((inv >> 6u) & 1u);
-        uint32_t curr_pwrb = ((curr_pin_val >> 0u) & 1u) ^ ((inv >> 6u) & 1u);
-        uint32_t prev_lid = ((prev_pin_val >> 4u) & 1u) ^ ((inv >> 10u) & 1u);
-        uint32_t curr_lid = ((curr_pin_val >> 4u) & 1u) ^ ((inv >> 10u) & 1u);
-        uint32_t curr_ac = ((curr_pin_val >> 5u) & 1u) ^ ((inv >> 8u) & 1u);
+        uint32_t prev_pwrb = ((prev_pin_val >> 0u) & 1u) ^ ((prev_inv >> 6u) & 1u);
+        uint32_t curr_pwrb = ((curr_pin_val >> 0u) & 1u) ^ ((curr_inv >> 6u) & 1u);
+        uint32_t prev_lid = ((prev_pin_val >> 4u) & 1u) ^ ((prev_inv >> 10u) & 1u);
+        uint32_t curr_lid = ((curr_pin_val >> 4u) & 1u) ^ ((curr_inv >> 10u) & 1u);
+        uint32_t curr_ac = ((curr_pin_val >> 5u) & 1u) ^ ((curr_inv >> 8u) & 1u);
 
         bool pwrb_h2l = (prev_pwrb == 1u && curr_pwrb == 0u);
         bool lid_l2h = (prev_lid == 0u && curr_lid == 1u);
         bool ac_high = (curr_ac == 1u);
 
-        if (pwrb_h2l || lid_l2h || ac_high) {
+        if (pwrb_h2l || lid_l2h) {
+            s->ulp_ac_latched = true;
             s->z3_wakeup_hw = true;
             s->regs[R_ULP_STATUS] |= 1u;
             s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
+        } else if (ac_high) {
+            if (!s->ulp_ac_latched && s->ulp_timer &&
+                !timer_pending(s->ulp_timer)) {
+                uint32_t debounce = s->regs[R_ULP_AC_DEBOUNCE_CTL] & 0xffffu;
+                if (debounce == 0u) {
+                    s->ulp_ac_latched = true;
+                    s->z3_wakeup_hw = true;
+                    s->regs[R_ULP_STATUS] |= 1u;
+                    s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
+                } else {
+                    timer_mod_ns(s->ulp_timer,
+                                 qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                     (int64_t)(debounce + 1u) * 5000LL);
+                }
+            }
+        } else {
+            if (!s->ulp_ac_latched && s->ulp_timer) {
+                timer_del(s->ulp_timer);
+            }
         }
     }
 
-    if (prev_pin_val == curr_pin_val) {
+    if (prev_combo_in == curr_combo_in && prev_key_in == curr_key_in) {
         ot_sysrst_ctrl_update_outputs(s);
         return;
     }
 
     bool trigger_rst = false;
     for (unsigned k = 0; k < 4u; k++) {
+        uint32_t pre_sel = s->regs[R_COM_PRE_SEL_CTL_0 + k] & 0x1fu;
         uint32_t sel = s->regs[R_COM_SEL_CTL_0 + k] & 0x1fu;
         if (!sel) {
+            s->combo_precond_valid[k] = false;
             continue;
         }
-        bool prev_trig = ((prev_combo_in & sel) == 0);
-        bool curr_trig = ((curr_combo_in & sel) == 0);
+        bool prev_pre_valid = (pre_sel == 0u) || s->combo_precond_valid[k];
+        if (pre_sel != 0u) {
+            if ((curr_combo_in & pre_sel) != 0u) {
+                s->combo_precond_valid[k] = false;
+            } else if ((prev_combo_in & sel) != 0u) {
+                s->combo_precond_valid[k] = true;
+            }
+        } else {
+            s->combo_precond_valid[k] = true;
+        }
+        bool curr_pre_valid = s->combo_precond_valid[k];
+
+        bool prev_trig = prev_pre_valid && ((prev_combo_in & sel) == 0u);
+        bool curr_trig = curr_pre_valid && ((curr_combo_in & sel) == 0u);
         uint32_t out_ctl = s->regs[R_COM_OUT_CTL_0 + k];
         if (!prev_trig && curr_trig) {
             if (out_ctl & R_COM_OUT_CTL_0_BAT_DISABLE_MASK) {
@@ -459,6 +512,47 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
     }
 
     ot_sysrst_ctrl_check_events(s);
+}
+
+static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
+{
+    switch (reg) {
+    case R_ULP_AC_DEBOUNCE_CTL:
+    case R_ULP_LID_DEBOUNCE_CTL:
+    case R_ULP_PWRB_DEBOUNCE_CTL:
+    case R_PIN_ALLOWED_CTL:
+    case R_KEY_INTR_DEBOUNCE_CTL:
+        return 0x0000ffffu;
+    case R_KEY_INVERT_CTL:
+        return 0x00000fffu;
+    case R_PIN_OUT_CTL:
+    case R_PIN_OUT_VALUE:
+        return 0x000000ffu;
+    case R_KEY_INTR_CTL:
+    case R_KEY_INTR_STATUS:
+        return 0x00003fffu;
+    case R_AUTO_BLOCK_DEBOUNCE_CTL:
+        return 0x0001ffffu;
+    case R_AUTO_BLOCK_OUT_CTL:
+        return 0x00000077u;
+    case R_COM_PRE_SEL_CTL_0:
+    case R_COM_PRE_SEL_CTL_1:
+    case R_COM_PRE_SEL_CTL_2:
+    case R_COM_PRE_SEL_CTL_3:
+    case R_COM_SEL_CTL_0:
+    case R_COM_SEL_CTL_1:
+    case R_COM_SEL_CTL_2:
+    case R_COM_SEL_CTL_3:
+        return 0x0000001fu;
+    case R_COM_OUT_CTL_0:
+    case R_COM_OUT_CTL_1:
+    case R_COM_OUT_CTL_2:
+    case R_COM_OUT_CTL_3:
+    case R_COMBO_INTR_STATUS:
+        return 0x0000000fu;
+    default:
+        return 0xffffffffu;
+    }
 }
 
 static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
@@ -552,13 +646,25 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[R_ULP_CTL] = val32 & 1u;
         if (!(val32 & 1u)) {
             s->z3_wakeup_hw = false;
+            s->ulp_ac_latched = false;
+            if (s->ulp_timer) {
+                timer_del(s->ulp_timer);
+            }
         }
         ot_sysrst_ctrl_check_events(s);
         break;
+    case R_PIN_OUT_CTL:
+    case R_PIN_OUT_VALUE:
+        s->regs[reg] = val32 & ot_sysrst_ctrl_reg_mask(reg);
+        ot_sysrst_ctrl_check_events(s);
+        break;
     case R_ULP_STATUS:
+        s->regs[reg] &= ~(val32 & 1u);
+        ot_sysrst_ctrl_update_outputs(s);
+        break;
     case R_COMBO_INTR_STATUS:
     case R_KEY_INTR_STATUS:
-        s->regs[reg] &= ~val32;
+        s->regs[reg] &= ~(val32 & ot_sysrst_ctrl_reg_mask(reg));
         ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_WKUP_STATUS:
@@ -569,7 +675,7 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     default:
         if (s->regs[R_REGWEN] & 1u) {
-            s->regs[reg] = val32;
+            s->regs[reg] = val32 & ot_sysrst_ctrl_reg_mask(reg);
             ot_sysrst_ctrl_check_events(s);
         }
         break;
@@ -615,10 +721,15 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
     if (s->combo_pace_timer) {
         timer_del(s->combo_pace_timer);
     }
+    if (s->ulp_timer) {
+        timer_del(s->ulp_timer);
+    }
 
     s->bat_disable_hw = false;
     s->ec_rst_l_hw = true;
     s->z3_wakeup_hw = false;
+    s->ulp_ac_latched = false;
+    memset(s->combo_precond_valid, 0, sizeof(s->combo_precond_valid));
     s->poll_count = 0;
 
     memset(s->regs, 0, sizeof(s->regs));
@@ -633,6 +744,7 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
     s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] = 2000u;
 
     s->last_pin_in_val = ot_sysrst_ctrl_get_pin_in_value(s);
+    s->last_key_invert_ctl = 0u;
 
     ibex_irq_set(&s->rst_req, 0);
     ibex_irq_set(&s->alert, 0);
@@ -659,6 +771,8 @@ static void ot_sysrst_ctrl_init(Object *obj)
                                    &ot_sysrst_ctrl_ec_rst_timer_cb, s);
     s->combo_pace_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
                                        &ot_sysrst_ctrl_combo_pace_timer_cb, s);
+    s->ulp_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
+                                &ot_sysrst_ctrl_ulp_timer_cb, s);
 
     qdev_init_gpio_in_named(DEVICE(obj), &ot_sysrst_ctrl_input_change,
                             OT_SYSRST_CTRL_INPUT, OT_SYSRST_CTRL_IN_COUNT);
