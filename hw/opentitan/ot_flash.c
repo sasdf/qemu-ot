@@ -2467,10 +2467,13 @@ static void ot_flash_init_complete(void *opaque)
     }
 }
 
-static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t *val64, unsigned size,
+                                                 MemTxAttrs attrs)
 {
     OtFlashState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -2588,6 +2591,16 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->mp_bank_cfg);
         break;
     case R_RD_FIFO:
+        if (ot_flash_is_disabled(s) ||
+            (ot_fifo32_is_empty(&s->rd_fifo) &&
+             !(s->op.kind == OP_READ && !s->op.hw))) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: Read RD_FIFO when empty with no active SW "
+                          "read op or disabled\n",
+                          __func__, s->ot_id);
+            *val64 = 0u;
+            return MEMTX_ERROR;
+        }
         if (!ot_fifo32_is_empty(&s->rd_fifo)) {
             val32 = ot_fifo32_pop(&s->rd_fifo);
             s->regs[R_STATUS] &= ~R_STATUS_RD_FULL_MASK;
@@ -2601,20 +2614,6 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
                 ot_flash_op_execute(s);
             }
         } else {
-            /**
-             * @todo: technically, the hardware appears to stall the bus read
-             * from the read FIFO until there is valid data to read; this is
-             * fine in QEMU for most cases as we complete synchronously, except
-             * for initialisation, where we cannot trivially stall for
-             * completion to avoid blocking the main IO thread.
-             *
-             * For now, the initialization delay is set sufficiently small so
-             * as to make it unlikely that this case will be hit in OT testing;
-             * a better long term solution might be removing the initialisation
-             * delay entirely, or introducing some logic here to cancel the
-             * timer and complete init, though this would need to be careful
-             * with races and incomplete operations.
-             */
             if (!ot_flash_is_initialized(s)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "%s: %s: Bus stalling on reads from uninit FIFO "
@@ -2635,30 +2634,38 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_INTR_TEST:
     case R_ALERT_TEST:
-    case R_PROG_FIFO:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%03x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         val32 = 0;
         break;
+    case R_PROG_FIFO:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: W/O FIFO window 0x%03x (%s) ErrOnRead\n",
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
+        *val64 = 0u;
+        return MEMTX_ERROR;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        val32 = 0;
-        break;
+        *val64 = 0u;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_flash_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
-    return (uint64_t)val32;
-};
+    *val64 = (uint64_t)val32;
+    return MEMTX_OK;
+}
 
-static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                                unsigned size)
+static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
+                                                  uint64_t val64, unsigned size,
+                                                  MemTxAttrs attrs)
 {
     OtFlashState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
@@ -2968,6 +2975,12 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_PROG_FIFO:
+        if (ot_flash_is_disabled(s)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: write prog fifo when flash is disabled\n",
+                          __func__, s->ot_id);
+            return MEMTX_ERROR;
+        }
         if (s->op.kind != OP_PROG || s->op.hw) {
             /*
              * "This FIFO can only be programmed by software after a program
@@ -3015,7 +3028,6 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_CTRL_REGWEN:
     case R_STATUS:
     case R_DEBUG_STATE:
-    case R_RD_FIFO:
     case R_STD_FAULT_STATUS:
     case R_ERR_ADDR:
     case R_ECC_SINGLE_ERR_ADDR_0:
@@ -3025,12 +3037,19 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%03x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
+    case R_RD_FIFO:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: R/O FIFO window 0x%03x (%s) ErrOnWrite\n",
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
+        return MEMTX_ERROR;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        break;
+        return MEMTX_ERROR;
     }
-};
+
+    return MEMTX_OK;
+}
 
 static uint64_t ot_flash_csrs_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -3574,8 +3593,8 @@ static const Property ot_flash_properties[] = {
 };
 
 static const MemoryRegionOps ot_flash_regs_ops = {
-    .read = &ot_flash_regs_read,
-    .write = &ot_flash_regs_write,
+    .read_with_attrs = &ot_flash_regs_read_with_attrs,
+    .write_with_attrs = &ot_flash_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
