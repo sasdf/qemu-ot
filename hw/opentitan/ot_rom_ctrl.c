@@ -442,7 +442,9 @@ static void ot_rom_ctrl_unscramble(OtRomCtrlState *s, const uint64_t *src,
     for (unsigned wix = 0u; wix < ROM_DIGEST_WORDS; wix++, log_addr++) {
         unsigned phy_addr = ot_rom_ctrl_addr_sp_enc(s, log_addr);
         g_assert(phy_addr < dword_count);
-        s->regs[R_EXP_DIGEST_0 + wix] = (uint32_t)src[phy_addr];
+        uint64_t scrdata = src[phy_addr];
+        s->regs[R_EXP_DIGEST_0 + wix] = (uint32_t)scrdata;
+        dst[log_addr] = (uint32_t)ot_rom_ctrl_unscramble_word(s, log_addr, scrdata);
         /* note: ECC is not used for DIGEST words */
     }
 }
@@ -450,13 +452,18 @@ static void ot_rom_ctrl_unscramble(OtRomCtrlState *s, const uint64_t *src,
 static void ot_rom_ctrl_scramble(OtRomCtrlState *s, const uint32_t *src,
                                  uint64_t *dst)
 {
+    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
+    memset(&dst[scr_word_size], 0, ROM_DIGEST_WORDS * sizeof(uint64_t));
+
     if (!s->key_xstr || !s->nonce_xstr) {
         trace_ot_rom_ctrl_missing(s->ot_id,
                                   "missing key/nonce to fake scrambling");
+        for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
+            dst[log_addr] = ot_rom_ctrl_add_ecc_39_32_u64(src[log_addr]);
+        }
         return;
     }
 
-    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
     for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
         uint64_t clrdata = src[log_addr];
         uint64_t eclrdata = ot_rom_ctrl_add_ecc_39_32_u64(clrdata);
@@ -646,9 +653,10 @@ static void ot_rom_ctrl_load_binary(OtRomCtrlState *s, const OtRomImg *ri)
     ot_rom_ctrl_spawn_hash_calculation(s, tmpptr, true);
 }
 
-static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri)
+static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri,
+                                        bool scrambled_n_ecc)
 {
-    if (!s->key_xstr || !s->nonce_xstr) {
+    if (scrambled_n_ecc && (!s->key_xstr || !s->nonce_xstr)) {
         error_setg(&error_fatal,
                    "%s: %s: cannot unscrambled ROM '%s' w/o key and nonce\n",
                    __func__, ri->filename, s->ot_id);
@@ -681,7 +689,7 @@ static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri)
 static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
                                   bool scrambled_n_ecc)
 {
-    char *buffer = ot_rom_ctrl_read_text_file(s, ri);
+    char *buffer = ot_rom_ctrl_read_text_file(s, ri, scrambled_n_ecc);
     if (!buffer) {
         return;
     }
@@ -808,7 +816,7 @@ static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
 
 static void ot_rom_ctrl_load_hex(OtRomCtrlState *s, const OtRomImg *ri)
 {
-    char *buffer = ot_rom_ctrl_read_text_file(s, ri);
+    char *buffer = ot_rom_ctrl_read_text_file(s, ri, true);
     if (!buffer) {
         return;
     }
@@ -1014,8 +1022,10 @@ static void ot_rom_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (reg) {
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_ERROR_MASK;
-        s->regs[reg] = val32;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, (int)(bool)s->regs[R_FATAL_ALERT_CAUSE]);
+        }
         break;
     case R_FATAL_ALERT_CAUSE:
     case R_DIGEST_0:
@@ -1167,6 +1177,11 @@ static void ot_rom_ctrl_reset_hold(Object *obj, ResetType type)
     }
 
     s->loaded = false;
+    if (s->scrambled.buffer) {
+        qemu_vfree(s->scrambled.buffer);
+        s->scrambled.buffer = NULL;
+        s->scrambled.word_count = 0u;
+    }
 
     /* reset all registers on first reset, otherwise keep digests */
     if (s->first_reset) {
@@ -1179,6 +1194,7 @@ static void ot_rom_ctrl_reset_hold(Object *obj, ResetType type)
 
     ibex_irq_set(&s->pwrmgr_good, false);
     ibex_irq_set(&s->pwrmgr_done, false);
+    ibex_irq_set(&s->alert, false);
 
     /* connect to KMAC */
     OtKMACClass *kc = OT_KMAC_GET_CLASS(s->kmac);
