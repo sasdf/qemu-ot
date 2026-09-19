@@ -376,8 +376,12 @@ static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_REGA35:
     case R_REGA36:
     case R_REGA37:
-    case R_REGAL:
         val32 = s->regsa[reg];
+        break;
+    case R_REGAL:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is write-only\n", __func__,
+                      REG_NAME(reg));
+        val32 = 0;
         break;
     case R_REGB0:
     case R_REGB1:
@@ -414,6 +418,10 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (reg) {
     case R_REGA0:
     case R_REGA1:
+    case R_REGA28:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is read-only\n", __func__,
+                      REG_NAME(reg));
+        break;
     case R_REGA2:
     case R_REGA3:
     case R_REGA4:
@@ -440,7 +448,6 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_REGA25:
     case R_REGA26:
     case R_REGA27:
-    case R_REGA28:
     case R_REGA29:
     case R_REGA30:
     case R_REGA31:
@@ -451,7 +458,7 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_REGA36:
     case R_REGA37:
     case R_REGAL:
-        s->regsa[reg] = val32 & 0xffu;
+        s->regsa[reg] = val32;
         break;
     case R_REGB0:
     case R_REGB1:
