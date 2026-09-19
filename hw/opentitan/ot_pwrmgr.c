@@ -1320,6 +1320,81 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
+static inline uint32_t ot_pwrmgr_byte_mask(hwaddr addr, unsigned size)
+{
+    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
+    return (mask << (addr & 3u)) & 0xfu;
+}
+
+static uint32_t ot_pwrmgr_reg_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_CONTROL:
+        return 0x3u;
+    case R_INTR_STATE:
+    case R_INTR_ENABLE:
+    case R_INTR_TEST:
+    case R_ALERT_TEST:
+    case R_CTRL_CFG_REGWEN:
+    case R_CFG_CDC_SYNC:
+    case R_WAKEUP_EN_REGWEN:
+    case R_WAKEUP_EN:
+    case R_WAKE_STATUS:
+    case R_RESET_EN_REGWEN:
+    case R_RESET_EN:
+    case R_RESET_STATUS:
+    case R_ESCALATE_RESET_STATUS:
+    case R_WAKE_INFO_CAPTURE_DIS:
+    case R_WAKE_INFO:
+    case R_FAULT_STATUS:
+        return 0x1u;
+    default:
+        return 0u;
+    }
+}
+
+static MemTxResult ot_pwrmgr_regs_read_with_attrs(void *opaque, hwaddr addr,
+                                                  uint64_t *data, unsigned size,
+                                                  MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        *data = 0xffffffffu;
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t val32 = (uint32_t)ot_pwrmgr_regs_read(opaque, addr & ~3ull, 4u);
+    val32 >>= (addr & 3u) * 8u;
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
+    *data = (uint64_t)val32;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_pwrmgr_regs_write_with_attrs(void *opaque, hwaddr addr,
+                                                   uint64_t val64,
+                                                   unsigned size,
+                                                   MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint32_t be = ot_pwrmgr_byte_mask(addr, size);
+    uint32_t permit = ot_pwrmgr_reg_permit(reg);
+    if ((permit & ~be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t shift = (addr & 3u) * 8u;
+    uint32_t mask =
+        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
+    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
+    ot_pwrmgr_regs_write(opaque, addr & ~3ull, val32, 4u);
+    return MEMTX_OK;
+}
+
 static const Property ot_pwrmgr_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtPwrMgrState, ot_id),
     DEFINE_PROP_STRING("clocks", OtPwrMgrState, cfg_clocks),
@@ -1332,11 +1407,13 @@ static const Property ot_pwrmgr_properties[] = {
 };
 
 static const MemoryRegionOps ot_pwrmgr_regs_ops = {
-    .read = &ot_pwrmgr_regs_read,
-    .write = &ot_pwrmgr_regs_write,
+    .read_with_attrs = &ot_pwrmgr_regs_read_with_attrs,
+    .write_with_attrs = &ot_pwrmgr_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
