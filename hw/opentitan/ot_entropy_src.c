@@ -644,8 +644,16 @@ static int ot_entropy_src_get_entropy(
 
     bool fips_capable = ot_entropy_src_is_fips_capable(ess);
 
-    /* note: fips compliancy is only simulated here for now */
-    *fips = fips_compliant && fips_capable;
+    /*
+     * In Earlgrey RTL (entropy_src_core.sv:2956), fips_compliance is strictly
+     * es_enable_fo[13] && fips_flag_pfe.
+     */
+    if (ess->version < 3) {
+        *fips = ot_entropy_src_is_module_enabled(ess) &&
+                REG_MB4_IS_TRUE(ess, hi, CONF, FIPS_FLAG);
+    } else {
+        *fips = fips_compliant && fips_capable;
+    }
 
     trace_ot_entropy_src_get_random_fips(
         ess->ot_id, STATE_NAME(ess->state), ot_entropy_src_is_fips_enabled(ess),
@@ -1054,7 +1062,9 @@ ot_entropy_src_push_entropy_to_conditioner(OtEntropySrcState *s, uint32_t word)
     if (s->cond_word == 0) {
         res = sha3_384_init(&s->sha3_state);
         g_assert(res == CRYPT_OK);
-        if (s->state == ENTROPY_SRC_CONT_HT_START) {
+        if (s->state == ENTROPY_SRC_STARTUP_HT_START) {
+            ot_entropy_src_change_state(s, ENTROPY_SRC_STARTUP_PHASE1);
+        } else if (s->state == ENTROPY_SRC_CONT_HT_START) {
             ot_entropy_src_change_state(s, ENTROPY_SRC_CONT_HT_RUNNING);
         }
     }
@@ -1391,11 +1401,19 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
         if (s->ht_symbol_count >= window_symbols) {
             s->ht_symbol_count = 0u;
             bool ht_fail = ot_entropy_src_eval_health_tests(s, window_symbols);
+            bool is_startup = (s->state == ENTROPY_SRC_STARTUP_HT_START ||
+                               s->state == ENTROPY_SRC_STARTUP_PHASE1 ||
+                               s->state == ENTROPY_SRC_STARTUP_PASS1 ||
+                               s->state == ENTROPY_SRC_STARTUP_FAIL1);
             if (ht_fail) {
                 s->last_ht_failed = true;
                 ot_fifo32_reset(&s->bypass_fifo);
                 ot_fifo32_reset(&s->precon_fifo);
                 s->cond_word = 0u;
+                if (!bypass) {
+                    int res = sha3_384_init(&s->sha3_state);
+                    g_assert(res == CRYPT_OK);
+                }
 
                 unsigned alert_thresh = FIELD_EX32(
                     s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD, VAL);
@@ -1405,18 +1423,16 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] += 1u;
                 }
 
-                if ((alert_thresh != 0 &&
-                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] >= alert_thresh) ||
-                    s->state == ENTROPY_SRC_STARTUP_FAIL1) {
+                if (s->state == ENTROPY_SRC_STARTUP_FAIL1 ||
+                    (!is_startup && alert_thresh != 0 &&
+                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] >= alert_thresh)) {
                     s->regs_lo[R_INTR_STATE] |= INTR_ES_HEALTH_TEST_FAILED_MASK;
                     ot_entropy_src_update_irqs(s);
                     ot_entropy_src_trigger_recov_alert(
                         s, R_RECOV_ALERT_STS_ES_MAIN_SM_ALERT_MASK);
                     ot_entropy_src_change_state(s, ENTROPY_SRC_ALERT_STATE);
                     ot_entropy_src_change_state(s, ENTROPY_SRC_ALERT_HANG);
-                } else if (s->state == ENTROPY_SRC_STARTUP_HT_START ||
-                           s->state == ENTROPY_SRC_STARTUP_PHASE1 ||
-                           s->state == ENTROPY_SRC_STARTUP_PASS1) {
+                } else if (is_startup) {
                     ot_entropy_src_change_state(s, ENTROPY_SRC_STARTUP_FAIL1);
                 }
             } else {
@@ -1442,6 +1458,10 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
                         ot_entropy_src_change_state(
                             s, ENTROPY_SRC_BOOT_PHASE_DONE);
                     }
+                } else if (s->state == ENTROPY_SRC_STARTUP_HT_START ||
+                           s->state == ENTROPY_SRC_STARTUP_PHASE1 ||
+                           s->state == ENTROPY_SRC_STARTUP_FAIL1) {
+                    ot_entropy_src_change_state(s, ENTROPY_SRC_STARTUP_PASS1);
                 } else {
                     if (ot_fifo32_is_empty(&s->precon_fifo)) {
                         ot_entropy_src_perform_hash(s);
