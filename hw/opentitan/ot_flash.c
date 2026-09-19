@@ -1154,7 +1154,18 @@ static void ot_flash_set_error(OtFlashState *s, uint32_t ebit, uint32_t eaddr)
             s->regs[R_FAULT_STATUS] |= ebit;
         } else {
             s->regs[R_OP_STATUS] |= R_OP_STATUS_ERR_MASK;
-            s->regs[R_ERR_ADDR] = FIELD_DP32(0, ERR_ADDR, ERR_ADDR, eaddr);
+            uint32_t addr_err_mask = R_ERR_CODE_MP_ERR_MASK |
+                                     R_ERR_CODE_RD_ERR_MASK |
+                                     R_ERR_CODE_PROG_ERR_MASK;
+            if (ebit & addr_err_mask) {
+                if (s->op.kind == OP_ERASE) {
+                    uint32_t align_mask = (s->op.erase_sel == ERASE_SEL_BANK) ?
+                                              ~(BYTES_PER_BANK - 1u) :
+                                              ~(BYTES_PER_PAGE - 1u);
+                    eaddr = s->op.address & align_mask;
+                }
+                s->regs[R_ERR_ADDR] = FIELD_DP32(0, ERR_ADDR, ERR_ADDR, eaddr);
+            }
             s->regs[R_ERR_CODE] |= ebit;
             s->regs[R_ALERT_TEST] |= ALERT_RECOV_ERR_MASK;
             ot_flash_update_irqs(s);
@@ -2332,7 +2343,6 @@ static bool ot_flash_check_program_resolution(OtFlashState *s)
                       __func__, s->ot_id, s->op.address, s->op.count,
                       start_window, end_window);
         ot_flash_set_error(s, R_ERR_CODE_PROG_WIN_ERR_MASK, s->op.address);
-        ot_flash_op_complete(s);
         return false;
     }
     return true;
@@ -2350,7 +2360,6 @@ static bool ot_flash_check_program_type(OtFlashState *s)
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: program type not enabled: %s\n",
                       __func__, s->ot_id, PROGRAM_NAME(s->op.prog_sel));
         ot_flash_set_error(s, R_ERR_CODE_PROG_TYPE_ERR_MASK, s->op.address);
-        ot_flash_op_complete(s);
         return false;
     }
     return true;
@@ -2372,6 +2381,7 @@ static void ot_flash_process_control_op(OtFlashState *s)
     unsigned num = (unsigned)FIELD_EX32(ctrl, CONTROL, NUM);
 
     s->op.hw = false;
+    s->op.failed = false;
 
     /*
      * If the flash controller is disabled by software, then (a) the flash
@@ -2397,7 +2407,7 @@ static void ot_flash_process_control_op(OtFlashState *s)
         xtrace_ot_flash_info(s->ot_id, "Read from", s->op.address);
         s->op.count = num + 1u;
         break;
-    case CONTROL_OP_PROG:
+    case CONTROL_OP_PROG: {
         s->op.kind = OP_PROG;
         s->op.address = WORD_ALIGN_ADDR(s->regs[R_ADDR]);
         s->op.info_part = part_sel;
@@ -2405,15 +2415,17 @@ static void ot_flash_process_control_op(OtFlashState *s)
         s->op.prog_sel = (bool)prog_sel;
         s->op.count = num + 1u;
         /*
-         * On encountering either a program resolution error or program type
-         * error, do not start the transaction.
+         * In RTL (flash_ctrl_prog.sv:164-178), both prog_win_err and
+         * prog_type_err are evaluated in parallel on op_start_i, and
+         * flash_ctrl_prog enters StErr to drain op_num_words_i + 1 words
+         * from PROG_FIFO before asserting op_done_o.
          */
-        if (!ot_flash_check_program_resolution(s) ||
-            !ot_flash_check_program_type(s)) {
-            return;
-        }
+        bool res_ok = ot_flash_check_program_resolution(s);
+        bool type_ok = ot_flash_check_program_type(s);
+        s->op.failed = !(res_ok && type_ok);
         xtrace_ot_flash_info(s->ot_id, "Write to", s->op.address);
         break;
+    }
     case CONTROL_OP_ERASE:
         s->op.kind = OP_ERASE;
         s->op.address = WORD_ALIGN_ADDR(s->regs[R_ADDR]);
@@ -2431,7 +2443,6 @@ static void ot_flash_process_control_op(OtFlashState *s)
         ot_flash_op_complete(s);
         return;
     }
-    s->op.failed = false;
     s->op.remaining = s->op.count;
     ot_flash_op_start(s);
 }
