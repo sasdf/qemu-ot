@@ -1727,18 +1727,16 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_entropy_src_get_entropy_data(s);
         break;
     case R_FW_OV_WR_FIFO_FULL: {
-        bool can_write;
+        bool is_full = false;
         if (ot_entropy_src_is_fw_ov_mode(s) &&
             ot_entropy_src_is_fw_ov_entropy_insert(s)) {
             if (ot_entropy_src_is_bypass_mode(s)) {
-                can_write = ot_entropy_src_can_bypass_entropy(s);
+                is_full = !ot_entropy_src_can_bypass_entropy(s);
             } else {
-                can_write = ot_entropy_src_can_condition_entropy(s);
+                is_full = !ot_entropy_src_can_condition_entropy(s);
             }
-        } else {
-            can_write = false;
         }
-        val32 = can_write ? 0u : R_FW_OV_WR_FIFO_FULL_VAL_MASK;
+        val32 = is_full ? R_FW_OV_WR_FIFO_FULL_VAL_MASK : 0u;
     } break;
     case R_FW_OV_RD_DATA:
         if (ot_entropy_src_is_fw_ov_mode(s)) {
@@ -2053,16 +2051,26 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
         }
         break;
-    case R_FW_OV_SHA3_START:
-        if (!ot_entropy_src_is_module_enabled(s)) {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: module not enabled\n",
-                          __func__);
-            break;
-        }
+    case R_FW_OV_SHA3_START: {
+        bool old_start =
+            REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START);
         val32 &= R_FW_OV_SHA3_START_FW_OV_INSERT_START_MASK;
         s->regs_hi[reg] = val32;
         CHECK_MULTIBOOT(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START);
-        if (REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START)) {
+        bool new_start =
+            REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START);
+        if (old_start && !new_start && ot_entropy_src_is_fw_ov_mode(s) &&
+            ot_entropy_src_is_fw_ov_entropy_insert(s) &&
+            !ot_entropy_src_is_bypass_mode(s) &&
+            (!ot_entropy_src_can_condition_entropy(s) ||
+             !ot_fifo32_is_empty(&s->precon_fifo))) {
+            ot_entropy_src_trigger_recov_alert(
+                s, R_RECOV_ALERT_STS_ES_FW_OV_DISABLE_ALERT_MASK);
+        }
+        if (!ot_entropy_src_is_module_enabled(s)) {
+            break;
+        }
+        if (new_start) {
             if (ot_entropy_src_is_bypass_mode(s)) {
                 ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
             } else {
@@ -2100,7 +2108,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                 ot_entropy_src_change_state(s, new_state);
             }
         }
-        break;
+    } break;
     case R_FW_OV_RD_FIFO_OVERFLOW:
         val32 &= R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK;
         s->regs_hi[reg] &= val32; /* RW0C */
@@ -2141,6 +2149,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                 }
             }
             if (!can_write) {
+                ot_entropy_src_trigger_recov_alert(
+                    s, R_RECOV_ALERT_STS_ES_FW_OV_WR_ALERT_MASK);
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: FW override: FIFO full\n",
                               __func__);
             }
