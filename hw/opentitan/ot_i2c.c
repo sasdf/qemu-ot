@@ -545,15 +545,20 @@ static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
 
 static uint32_t ot_i2c_get_fmt_depth(const OtI2CState *s)
 {
+    uint32_t queued = ot_fifo32_num_used(&s->host_tx_fifo);
+    if (!ot_i2c_host_enabled(s)) {
+        return queued;
+    }
     uint64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     if (s->fmt_finish_ns <= now) {
-        return 0;
+        return queued;
     }
     uint64_t byte_ns = ot_i2c_get_byte_ns(s);
     if (byte_ns == 0) {
-        return 0;
+        return queued;
     }
-    uint64_t depth = (s->fmt_finish_ns - now + byte_ns - 1ULL) / byte_ns;
+    uint64_t depth =
+        queued + (s->fmt_finish_ns - now + byte_ns - 1ULL) / byte_ns;
     return depth > OT_I2C_FIFO_SIZE ? OT_I2C_FIFO_SIZE : (uint32_t)depth;
 }
 
@@ -712,10 +717,6 @@ static uint32_t ot_i2c_target_read_rx_fifo(OtI2CState *s)
 
 static void ot_i2c_target_write_tx_fifo(OtI2CState *s, uint8_t val)
 {
-    if (!ot_i2c_target_enabled(s)) {
-        return;
-    }
-
     /* Handle a full FIFO. */
     if (fifo8_is_full(&s->target_tx_fifo)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Target TX FIFO overflow\n",
@@ -990,10 +991,13 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
     case R_TIMING3:
     case R_TIMING4:
     case R_TARGET_TIMEOUT_CTRL:
-    case R_TARGET_NACK_COUNT:
     case R_TARGET_ACK_CTRL:
     case R_HOST_NACK_HANDLER_TIMEOUT:
         val32 = s->regs[reg];
+        break;
+    case R_TARGET_NACK_COUNT:
+        val32 = s->regs[reg] & R_TARGET_NACK_COUNT_TARGET_NACK_COUNT_MASK;
+        s->regs[reg] = 0u;
         break;
     case R_ACQ_FIFO_NEXT_DATA:
         val32 = s->acq_fifo_next_data & 0xffu;
@@ -1073,9 +1077,10 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
     bool nakok = FIELD_EX32(fdata, FDATA, NAKOK);
 
     if (!ot_i2c_host_enabled(s)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: I2C host not enabled, no write issued\n",
-                      __func__, s->ot_id);
+        if (!ot_fifo32_is_full(&s->host_tx_fifo)) {
+            ot_fifo32_push(&s->host_tx_fifo, fdata);
+        }
+        ot_i2c_update_fmt_threshold(s);
         return;
     }
 
@@ -1227,12 +1232,16 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
         s->regs[reg] = val32;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
+        break;
+    case R_HOST_TIMEOUT_CTRL:
+        s->regs[reg] = val32 & R_HOST_TIMEOUT_CTRL_HOST_TIMEOUT_CTRL_MASK;
         break;
     case R_TIMEOUT_CTRL:
-    case R_HOST_TIMEOUT_CTRL:
     case R_TARGET_TIMEOUT_CTRL:
-    case R_TARGET_NACK_COUNT:
     case R_HOST_NACK_HANDLER_TIMEOUT:
         s->regs[reg] = val32;
         break;
@@ -1250,7 +1259,8 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             i2c_slave_set_address(s->target, address);
         }
         break;
-    case R_CTRL:
+    case R_CTRL: {
+        bool was_host_enabled = ot_i2c_host_enabled(s);
         if (FIELD_EX32(val32, CTRL, LLPBK)) {
             qemu_log_mask(LOG_UNIMP, "%s: %s: Loopback mode not supported.\n",
                           __func__, s->ot_id);
@@ -1271,6 +1281,16 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             if (i2c_bus_busy(s->bus)) {
                 i2c_end_transfer(s->bus);
             }
+        } else if (!was_host_enabled && !ot_fifo32_is_empty(&s->host_tx_fifo)) {
+            uint32_t queued_fdata[OT_I2C_FIFO_SIZE];
+            uint32_t n_queued = 0;
+            while (!ot_fifo32_is_empty(&s->host_tx_fifo) &&
+                   n_queued < OT_I2C_FIFO_SIZE) {
+                queued_fdata[n_queued++] = ot_fifo32_pop(&s->host_tx_fifo);
+            }
+            for (uint32_t i = 0; i < n_queued; i++) {
+                ot_i2c_write_fdata(s, queued_fdata[i]);
+            }
         }
         if (s->regs[reg]) {
             /* check timings once, each time one or more timings are updated */
@@ -1280,6 +1300,7 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             }
         }
         break;
+    }
     case R_FDATA:
         ot_i2c_write_fdata(s, val32);
         break;
@@ -1434,6 +1455,7 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_TARGET_FIFO_STATUS:
     case R_VAL:
     case R_ACQDATA:
+    case R_TARGET_NACK_COUNT:
     case R_ACQ_FIFO_NEXT_DATA:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
@@ -1449,6 +1471,13 @@ static void ot_i2c_target_set_acqdata(OtI2CState *s, uint32_t data,
                                       OtI2CSignal signal)
 {
     uint32_t val32 = 0;
+
+    if (signal == SIGNAL_NACK || signal == SIGNAL_NACK_START ||
+        signal == SIGNAL_NACK_STOP) {
+        if (s->regs[R_TARGET_NACK_COUNT] < 0xffu) {
+            s->regs[R_TARGET_NACK_COUNT]++;
+        }
+    }
 
     if (ot_fifo32_is_full(&s->target_rx_fifo)) {
         i2c_end_transfer(s->bus);
