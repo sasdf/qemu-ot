@@ -1847,6 +1847,10 @@ static void ot_flash_op_prog(OtFlashState *s)
         xtrace_ot_flash_error(s->ot_id, "prog while prog FIFO empty");
         return;
     }
+    if (ot_fifo32_num_used(&s->prog_fifo) < s->op.remaining &&
+        !ot_fifo32_is_full(&s->prog_fifo)) {
+        return;
+    }
 
     OtFlashStorage *storage = &s->flash;
     uint32_t *dest = s->op.info_part ? storage->info : storage->data;
@@ -2395,7 +2399,7 @@ static void ot_flash_process_control_op(OtFlashState *s)
          */
         if (!ot_flash_check_program_resolution(s) ||
             !ot_flash_check_program_type(s)) {
-            break;
+            return;
         }
         xtrace_ot_flash_info(s->ot_id, "Write to", s->op.address);
         break;
