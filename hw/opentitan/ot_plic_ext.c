@@ -199,7 +199,10 @@ static void ot_plic_ext_alert_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (reg) {
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
@@ -237,6 +240,7 @@ static void ot_plic_ext_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    memset(s->msip_regs, 0, sizeof(s->msip_regs));
     ibex_irq_set(&s->irq, 0);
     ibex_irq_set(&s->alert, 0);
 }
