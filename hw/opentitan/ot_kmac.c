@@ -1826,27 +1826,34 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)val32;
 }
 
-static void ot_kmac_state_write(void *opaque, hwaddr addr, uint64_t value,
-                                unsigned size)
+static MemTxResult ot_kmac_state_write(void *opaque, hwaddr addr,
+                                       uint64_t value, unsigned size,
+                                       MemTxAttrs attrs)
 {
     OtKMACState *s = OT_KMAC(opaque);
     (void)addr;
     (void)value;
     (void)size;
-    /* on real hardware, writes to STATE are ignored */
+    (void)attrs;
+    /* kmac_staterd.sv:56 instantiates u_tlul_adapter with .ErrOnWrite(1) */
     qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: STATE is read only\n", __func__,
                   s->ot_id);
+    return MEMTX_ERROR;
 }
 
-static uint64_t ot_kmac_msgfifo_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_kmac_msgfifo_read(void *opaque, hwaddr addr,
+                                        uint64_t *data, unsigned size,
+                                        MemTxAttrs attrs)
 {
     OtKMACState *s = OT_KMAC(opaque);
     (void)addr;
     (void)size;
-    /* on real hardware, writes to FIFO will block. Let's just return 0. */
+    (void)attrs;
+    /* kmac.sv:999 instantiates u_tlul_adapter_msgfifo with .ErrOnRead(1) */
     qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: MSG_FIFO is write only\n", __func__,
                   s->ot_id);
-    return 0;
+    *data = 0;
+    return MEMTX_ERROR;
 }
 
 static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
@@ -2050,7 +2057,7 @@ static const MemoryRegionOps ot_kmac_regs_ops = {
 
 static const MemoryRegionOps ot_kmac_state_ops = {
     .read = &ot_kmac_state_read,
-    .write = &ot_kmac_state_write,
+    .write_with_attrs = &ot_kmac_state_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
@@ -2059,7 +2066,7 @@ static const MemoryRegionOps ot_kmac_state_ops = {
 };
 
 static const MemoryRegionOps ot_kmac_msgfifo_ops = {
-    .read = &ot_kmac_msgfifo_read,
+    .read_with_attrs = &ot_kmac_msgfifo_read,
     .write = &ot_kmac_msgfifo_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
