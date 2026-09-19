@@ -164,34 +164,46 @@ static void sifive_plic_update(SiFivePLICState *plic)
     }
 }
 
-static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult sifive_plic_read_with_attrs(void *opaque, hwaddr addr,
+                                               uint64_t *data, unsigned size,
+                                               MemTxAttrs attrs)
 {
     SiFivePLICState *plic = opaque;
+    (void)attrs;
+    hwaddr word_addr = addr & ~(hwaddr)3u;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint32_t val32 = 0;
 
-    if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
-        uint32_t irq = (addr - plic->priority_base) >> 2;
+    if (addr_between(word_addr, plic->priority_base, plic->num_sources << 2)) {
+        uint32_t irq = (word_addr - plic->priority_base) >> 2;
 
-        return plic->source_priority[irq];
-    } else if (addr_between(addr, plic->pending_base,
-                            (plic->num_sources + 31) >> 3)) {
-        uint32_t word = (addr - plic->pending_base) >> 2;
+        val32 = plic->source_priority[irq];
+    } else if (addr_between(word_addr, plic->pending_base,
+                            plic->bitfield_words << 2)) {
+        uint32_t word = (word_addr - plic->pending_base) >> 2;
 
-        return plic->pending[word];
-    } else if (addr_between(addr, plic->enable_base,
+        val32 = plic->pending[word];
+    } else if (addr_between(word_addr, plic->enable_base,
                             plic->num_addrs * plic->enable_stride)) {
-        uint32_t addrid = (addr - plic->enable_base) / plic->enable_stride;
-        uint32_t wordid = (addr & (plic->enable_stride - 1)) >> 2;
+        uint32_t addrid = (word_addr - plic->enable_base) / plic->enable_stride;
+        uint32_t wordid = (word_addr & (plic->enable_stride - 1)) >> 2;
 
         if (wordid < plic->bitfield_words) {
-            return plic->enable[addrid * plic->bitfield_words + wordid];
+            val32 = plic->enable[addrid * plic->bitfield_words + wordid];
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: Invalid enable read 0x%" HWADDR_PRIx "\n",
+                          __func__, addr);
+            return MEMTX_DECODE_ERROR;
         }
-    } else if (addr_between(addr, plic->context_base,
+    } else if (addr_between(word_addr, plic->context_base,
                             plic->num_addrs * plic->context_stride)) {
-        uint32_t addrid = (addr - plic->context_base) / plic->context_stride;
-        uint32_t contextid = (addr & (plic->context_stride - 1));
+        uint32_t addrid =
+            (word_addr - plic->context_base) / plic->context_stride;
+        uint32_t contextid = (word_addr & (plic->context_stride - 1));
 
         if (contextid == 0) {
-            return plic->target_priority[addrid];
+            val32 = plic->target_priority[addrid];
         } else if (contextid == 4) {
             uint32_t max_irq = sifive_plic_claimed(plic, addrid, true);
 
@@ -201,109 +213,167 @@ static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
             }
 
             sifive_plic_update(plic);
-            return max_irq;
+            val32 = max_irq;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: Invalid context read 0x%" HWADDR_PRIx "\n",
+                          __func__, addr);
+            return MEMTX_DECODE_ERROR;
         }
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Invalid register read 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return MEMTX_DECODE_ERROR;
     }
 
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "%s: Invalid register read 0x%" HWADDR_PRIx "\n",
-                  __func__, addr);
-    return 0;
+    uint32_t mask = (size >= 4u) ? 0xffffffffu : ((1u << (size * 8u)) - 1u);
+    *data = (val32 >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
 }
 
-static void sifive_plic_write(void *opaque, hwaddr addr, uint64_t value,
-        unsigned size)
+static MemTxResult sifive_plic_write_with_attrs(void *opaque, hwaddr addr,
+                                                uint64_t value, unsigned size,
+                                                MemTxAttrs attrs)
 {
     SiFivePLICState *plic = opaque;
+    (void)attrs;
+    hwaddr word_addr = addr & ~(hwaddr)3u;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint32_t wdata32 = (uint32_t)(value << (byte_off * 8u));
 
-    if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
-        uint32_t irq = (addr - plic->priority_base) >> 2;
+    if (addr_between(word_addr, plic->priority_base, plic->num_sources << 2)) {
+        /* RV_PLIC_PERMIT[0..185] = 4'b0001 */
+        if (0x1u & ~reg_be) {
+            return MEMTX_DECODE_ERROR;
+        }
+        uint32_t irq = (word_addr - plic->priority_base) >> 2;
         if (((plic->num_priorities + 1) & plic->num_priorities) == 0) {
             /*
              * if "num_priorities + 1" is power-of-2, make each register bit of
              * interrupt priority WARL (Write-Any-Read-Legal). Just filter
              * out the access to unsupported priority bits.
              */
-            plic->source_priority[irq] = value % (plic->num_priorities + 1);
+            plic->source_priority[irq] = wdata32 % (plic->num_priorities + 1);
             trace_sifive_plic_set_priority(irq, plic->source_priority[irq]);
             sifive_plic_update(plic);
-        } else if (value <= plic->num_priorities) {
-            plic->source_priority[irq] = value;
+        } else if (wdata32 <= plic->num_priorities) {
+            plic->source_priority[irq] = wdata32;
             trace_sifive_plic_set_priority(irq, plic->source_priority[irq]);
             sifive_plic_update(plic);
         }
-    } else if (addr_between(addr, plic->pending_base,
-                            (plic->num_sources + 31) >> 3)) {
+        return MEMTX_OK;
+    } else if (addr_between(word_addr, plic->pending_base,
+                            plic->bitfield_words << 2)) {
+        /* RV_PLIC_PERMIT[186..191] (IP_0..IP_5) = 4'b1111 */
+        if (0xfu & ~reg_be) {
+            return MEMTX_DECODE_ERROR;
+        }
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: invalid pending write: 0x%" HWADDR_PRIx "",
                       __func__, addr);
-    } else if (addr_between(addr, plic->enable_base,
+        return MEMTX_OK;
+    } else if (addr_between(word_addr, plic->enable_base,
                             plic->num_addrs * plic->enable_stride)) {
-        uint32_t addrid = (addr - plic->enable_base) / plic->enable_stride;
-        uint32_t wordid = (addr & (plic->enable_stride - 1)) >> 2;
+        uint32_t addrid = (word_addr - plic->enable_base) / plic->enable_stride;
+        uint32_t wordid = (word_addr & (plic->enable_stride - 1)) >> 2;
 
         if (wordid < plic->bitfield_words) {
+            /* RV_PLIC_PERMIT[192..197] (IE0_0..IE0_5) = 4'b1111 */
+            if (0xfu & ~reg_be) {
+                return MEMTX_DECODE_ERROR;
+            }
             if (wordid == (plic->bitfield_words - 1) &&
                 (plic->num_sources & 31)) {
-                value &= (1u << (plic->num_sources & 31)) - 1u;
+                wdata32 &= (1u << (plic->num_sources & 31)) - 1u;
             }
-            plic->enable[addrid * plic->bitfield_words + wordid] = value;
+            plic->enable[addrid * plic->bitfield_words + wordid] = wdata32;
             sifive_plic_update(plic);
+            return MEMTX_OK;
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Invalid enable write 0x%" HWADDR_PRIx "\n",
                           __func__, addr);
+            return MEMTX_DECODE_ERROR;
         }
-    } else if (addr_between(addr, plic->context_base,
+    } else if (addr_between(word_addr, plic->context_base,
                             plic->num_addrs * plic->context_stride)) {
-        uint32_t addrid = (addr - plic->context_base) / plic->context_stride;
-        uint32_t contextid = (addr & (plic->context_stride - 1));
+        uint32_t addrid =
+            (word_addr - plic->context_base) / plic->context_stride;
+        uint32_t contextid = (word_addr & (plic->context_stride - 1));
 
         if (contextid == 0) {
+            /* RV_PLIC_PERMIT[198] (THRESHOLD0) = 4'b0001 */
+            if (0x1u & ~reg_be) {
+                return MEMTX_DECODE_ERROR;
+            }
             if (((plic->num_priorities + 1) & plic->num_priorities) == 0) {
                 /*
                  * if "num_priorities + 1" is power-of-2, each register bit of
                  * interrupt priority is WARL (Write-Any-Read-Legal). Just
                  * filter out the access to unsupported priority bits.
                  */
-                plic->target_priority[addrid] = value %
+                plic->target_priority[addrid] = wdata32 %
                                                 (plic->num_priorities + 1);
                 sifive_plic_update(plic);
-            } else if (value <= plic->num_priorities) {
-                plic->target_priority[addrid] = value;
+            } else if (wdata32 <= plic->num_priorities) {
+                plic->target_priority[addrid] = wdata32;
                 sifive_plic_update(plic);
             }
+            return MEMTX_OK;
         } else if (contextid == 4) {
-            if (value < plic->num_sources) {
-                if (sifive_plic_is_claimed(plic, value)) {
-                    sifive_plic_set_claimed(plic, value, false);
+            /* RV_PLIC_PERMIT[199] (CC0) = 4'b0001 */
+            if (0x1u & ~reg_be) {
+                return MEMTX_DECODE_ERROR;
+            }
+            /*
+             * In rv_plic.sv / rv_plic_reg_top.sv (u_cc0), CC0 is SRCW =
+             * $clog2(NumSrc) bits wide (cc0_wd = reg_wdata[SRCW-1:0]).
+             */
+            uint32_t src_bits = (plic->num_sources > 1u) ?
+                                    (32u - clz32(plic->num_sources - 1u)) :
+                                    1u;
+            uint32_t src_mask =
+                (src_bits >= 32u) ? 0xffffffffu : ((1u << src_bits) - 1u);
+            uint32_t irq = wdata32 & src_mask;
+            if (irq < plic->num_sources) {
+                if (sifive_plic_is_claimed(plic, irq)) {
+                    sifive_plic_set_claimed(plic, irq, false);
                     if (!plic->edge_triggered &&
-                        sifive_plic_get_level(plic, value)) {
-                        sifive_plic_set_pending(plic, value, true);
+                        sifive_plic_get_level(plic, irq)) {
+                        sifive_plic_set_pending(plic, irq, true);
                     }
                     sifive_plic_update(plic);
                 }
             }
+            return MEMTX_OK;
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Invalid context write 0x%" HWADDR_PRIx "\n",
                           __func__, addr);
+            return MEMTX_DECODE_ERROR;
         }
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Invalid register write 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
+        return MEMTX_DECODE_ERROR;
     }
 }
 
 static const MemoryRegionOps sifive_plic_ops = {
-    .read = sifive_plic_read,
-    .write = sifive_plic_write,
+    .read_with_attrs = sifive_plic_read_with_attrs,
+    .write_with_attrs = sifive_plic_write_with_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 4,
-        .max_access_size = 4
-    }
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+    .impl = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
 };
 
 static void sifive_plic_reset(DeviceState *dev)

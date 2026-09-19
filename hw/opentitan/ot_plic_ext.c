@@ -99,12 +99,13 @@ static const char *ALERT_REG_NAMES[ALERT_REGS_COUNT] = {
 };
 #undef REG_NAME_ENTRY
 
-static uint64_t ot_plic_ext_msip_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_plic_ext_msip_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtPlicExtState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32;
-
+    unsigned byte_off = (unsigned)(addr & 3u);
     hwaddr reg = R32_OFF(addr);
 
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
@@ -115,24 +116,26 @@ static uint64_t ot_plic_ext_msip_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        val32 = 0;
-        break;
+        return MEMTX_DECODE_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_plic_ext_io_msip_read_out(s->ot_id, (uint32_t)addr,
                                        MSIP_REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    uint32_t mask = (size >= 4u) ? 0xffffffffu : ((1u << (size * 8u)) - 1u);
+    *val64 = (val32 >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
 }
 
-static void ot_plic_ext_msip_write(void *opaque, hwaddr addr, uint64_t val64,
-                                   unsigned size)
+static MemTxResult ot_plic_ext_msip_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtPlicExtState *s = opaque;
-    uint32_t val32 = (uint32_t)val64;
-    (void)size;
-
+    (void)attrs;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -142,23 +145,28 @@ static void ot_plic_ext_msip_write(void *opaque, hwaddr addr, uint64_t val64,
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
     switch (reg) {
     case R_MSIP0:
+        /* RV_PLIC_PERMIT[200] (MSIP0) = 4'b0001 */
+        if (0x1u & ~reg_be) {
+            return MEMTX_DECODE_ERROR;
+        }
         val32 &= R_MSIP0_EN_MASK;
         s->msip_regs[reg] = val32;
         ibex_irq_set(&s->irq, (int)(bool)val32);
-        break;
+        return MEMTX_OK;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        break;
+        return MEMTX_DECODE_ERROR;
     }
 }
 
-static uint64_t ot_plic_ext_alert_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_plic_ext_alert_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtPlicExtState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
-
     hwaddr reg = R32_OFF(addr);
 
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
@@ -171,24 +179,25 @@ static uint64_t ot_plic_ext_alert_read(void *opaque, hwaddr addr, unsigned size)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        val32 = 0;
-        break;
+        return MEMTX_DECODE_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_plic_ext_io_alert_read_out(s->ot_id, (uint32_t)addr,
                                         ALERT_REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    *val64 = 0;
+    return MEMTX_OK;
 }
 
-static void ot_plic_ext_alert_write(void *opaque, hwaddr addr, uint64_t val64,
-                                    unsigned size)
+static MemTxResult ot_plic_ext_alert_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtPlicExtState *s = opaque;
-    uint32_t val32 = (uint32_t)val64;
-    (void)size;
-
+    (void)attrs;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -198,16 +207,20 @@ static void ot_plic_ext_alert_write(void *opaque, hwaddr addr, uint64_t val64,
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
     switch (reg) {
     case R_ALERT_TEST:
+        /* RV_PLIC_PERMIT[201] (ALERT_TEST) = 4'b0001 */
+        if (0x1u & ~reg_be) {
+            return MEMTX_DECODE_ERROR;
+        }
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
         if (val32) {
             ibex_irq_set(&s->alert, 1);
             ibex_irq_set(&s->alert, 0);
         }
-        break;
+        return MEMTX_OK;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        break;
+        return MEMTX_DECODE_ERROR;
     }
 }
 
@@ -216,18 +229,22 @@ static const Property ot_plic_ext_properties[] = {
 };
 
 static const MemoryRegionOps ot_plic_ext_msip_ops = {
-    .read = &ot_plic_ext_msip_read,
-    .write = &ot_plic_ext_msip_write,
+    .read_with_attrs = &ot_plic_ext_msip_read_with_attrs,
+    .write_with_attrs = &ot_plic_ext_msip_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_plic_ext_alert_ops = {
-    .read = &ot_plic_ext_alert_read,
-    .write = &ot_plic_ext_alert_write,
+    .read_with_attrs = &ot_plic_ext_alert_read_with_attrs,
+    .write_with_attrs = &ot_plic_ext_alert_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
