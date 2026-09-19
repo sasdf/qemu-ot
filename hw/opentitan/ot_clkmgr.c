@@ -1394,24 +1394,38 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    uint32_t recov_err_code =
-        ot_rstmgr_is_low_power_exit() ? s->regs[R_RECOV_ERR_CODE] : 0u;
-    memset(s->regs, 0, sizeof(s->regs));
-    s->regs[R_RECOV_ERR_CODE] = recov_err_code;
+    if (ot_rstmgr_is_low_power_exit()) {
+        /*
+         * In top_earlgrey.sv (u_clkmgr_aon), all clkmgr resets belong to
+         * DomainAonSel, which is not asserted on low-power exit. However,
+         * AST drops calib_rdy_i (ast_init_done) to MuBi4False during deep
+         * sleep, which sets MEASURE_CTRL_REGWEN=1 (clkmgr.sv:555-558) and
+         * clears any enabled *_MEAS_CTRL_EN to MuBi4False
+         * (clkmgr_meas_chk.sv:81-85).
+         */
+        s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
+        for (unsigned ix = 0; ix < s->measure_count; ix++) {
+            if (s->measure_regs[ix].ctrl_en != OT_MULTIBITBOOL4_FALSE) {
+                s->measure_regs[ix].ctrl_en = OT_MULTIBITBOOL4_FALSE;
+            }
+        }
+    } else {
+        memset(s->regs, 0, sizeof(s->regs));
 
-    s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
-    s->regs[R_EXTCLK_CTRL] = 0x99u;
-    s->regs[R_EXTCLK_STATUS] = 0x9u;
-    s->regs[R_JITTER_REGWEN] = 0x1u;
-    s->regs[R_JITTER_ENABLE] = 0x9u;
-    s->regs[R_CLK_ENABLES] = 0xfu;
-    s->regs[R_CLK_HINTS] = 0xfu;
-    s->regs[R_CLK_HINTS_STATUS] = 0xfu;
-    s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
+        s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
+        s->regs[R_EXTCLK_CTRL] = 0x99u;
+        s->regs[R_EXTCLK_STATUS] = 0x9u;
+        s->regs[R_JITTER_REGWEN] = 0x1u;
+        s->regs[R_JITTER_ENABLE] = 0x9u;
+        s->regs[R_CLK_ENABLES] = 0xfu;
+        s->regs[R_CLK_HINTS] = 0xfu;
+        s->regs[R_CLK_HINTS_STATUS] = 0xfu;
+        s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
+
+        ot_clkmgr_reset_measure_regs(s);
+    }
 
     ot_clkmgr_update_swcg(s, (1u << s->swcg_count) - 1u);
-
-    ot_clkmgr_reset_measure_regs(s);
 
     ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
     ot_clkmgr_update_alerts(s);
