@@ -682,11 +682,75 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 }
 
+static uint8_t ot_sysrst_ctrl_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_COM_PRE_DET_CTL_0:
+    case R_COM_PRE_DET_CTL_1:
+    case R_COM_PRE_DET_CTL_2:
+    case R_COM_PRE_DET_CTL_3:
+    case R_COM_DET_CTL_0:
+    case R_COM_DET_CTL_1:
+    case R_COM_DET_CTL_2:
+    case R_COM_DET_CTL_3:
+        return 0xfu;
+    case R_AUTO_BLOCK_DEBOUNCE_CTL:
+        return 0x7u;
+    case R_EC_RST_CTL:
+    case R_ULP_AC_DEBOUNCE_CTL:
+    case R_ULP_LID_DEBOUNCE_CTL:
+    case R_ULP_PWRB_DEBOUNCE_CTL:
+    case R_KEY_INVERT_CTL:
+    case R_PIN_ALLOWED_CTL:
+    case R_KEY_INTR_CTL:
+    case R_KEY_INTR_DEBOUNCE_CTL:
+    case R_KEY_INTR_STATUS:
+        return 0x3u;
+    default:
+        return 0x1u;
+    }
+}
+
+static MemTxResult ot_sysrst_ctrl_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    uint64_t word = ot_sysrst_ctrl_read(opaque, aligned_addr, 4u);
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (word >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
+
+static MemTxResult ot_sysrst_ctrl_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = ot_sysrst_ctrl_permit(reg);
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
+    ot_sysrst_ctrl_write(opaque, aligned_addr, wdata, 4u);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ot_sysrst_ctrl_ops = {
-    .read = &ot_sysrst_ctrl_read,
-    .write = &ot_sysrst_ctrl_write,
+    .read_with_attrs = &ot_sysrst_ctrl_read_with_attrs,
+    .write_with_attrs = &ot_sysrst_ctrl_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
