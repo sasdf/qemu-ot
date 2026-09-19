@@ -1111,16 +1111,16 @@ static size_t ot_keymgr_kdf_append_dev_id(OtKeyMgrState *s)
     return OT_OTP_HWCFG_DEVICE_ID_BYTES;
 }
 
-static size_t
-ot_keymgr_kdf_append_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
-                                const char *seed_name, uint32_t debug_mask)
+static void ot_keymgr_check_flash_seed(OtKeyMgrState *s,
+                                       OtFlashKeyMgrSecretType type,
+                                       const char *seed_name,
+                                       uint32_t debug_mask)
 {
     OtFlashKeyMgrSecret seed = { 0u };
 
     OtFlashClass *fc = OT_FLASH_GET_CLASS(s->flash_ctrl);
     fc->get_keymgr_secret(s->flash_ctrl, type, &seed);
 
-    ot_keymgr_kdf_push_bytes(s, seed.secret, OT_FLASH_KEYMGR_SECRET_BYTES);
     bool data_valid =
         ot_keymgr_valid_data_check(seed.secret, OT_FLASH_KEYMGR_SECRET_BYTES);
 
@@ -1147,7 +1147,18 @@ ot_keymgr_kdf_append_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
         s->regs[R_DEBUG] |= debug_mask;
         s->op_state.valid_inputs = false;
     }
+}
 
+static size_t
+ot_keymgr_kdf_append_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
+                                const char *seed_name)
+{
+    OtFlashKeyMgrSecret seed = { 0u };
+
+    OtFlashClass *fc = OT_FLASH_GET_CLASS(s->flash_ctrl);
+    fc->get_keymgr_secret(s->flash_ctrl, type, &seed);
+
+    ot_keymgr_kdf_push_bytes(s, seed.secret, OT_FLASH_KEYMGR_SECRET_BYTES);
     ot_keymgr_dump_kdf_material(s, seed.secret, OT_FLASH_KEYMGR_SECRET_BYTES,
                                 "%s", seed_name);
     return OT_FLASH_KEYMGR_SECRET_BYTES;
@@ -1315,20 +1326,37 @@ static void ot_keymgr_operation_advance(OtKeyMgrState *s, OtKeyMgrStage stage,
 
         /* Device ID (from OTP) */
         expected_kdf_len += ot_keymgr_kdf_append_dev_id(s);
+
+        /*
+         * In RTL (keymgr.sv:442, 537), adv_dvalid[Creator] and
+         * hw2reg.debug.invalid_creator_seed.de check creator_seed_vld
+         * during stage_sel == Creator.
+         */
+        ot_keymgr_check_flash_seed(s, FLASH_KEYMGR_SECRET_CREATOR_SEED,
+                                   "CREATOR_SEED",
+                                   R_DEBUG_INVALID_CREATOR_SEED_MASK);
         break;
     case KEYMGR_STAGE_OWNER_INT:
-        /* Creator Seed (from flash) */
+        /*
+         * In RTL (keymgr.sv:459-460, 538), adv_matrix[OwnerInt] hashes
+         * creator_seed, while adv_dvalid[OwnerInt] and
+         * hw2reg.debug.invalid_owner_seed.de check owner_seed_vld.
+         */
         expected_kdf_len +=
             ot_keymgr_kdf_append_flash_seed(s, FLASH_KEYMGR_SECRET_CREATOR_SEED,
-                                            "CREATOR_SEED",
-                                            R_DEBUG_INVALID_CREATOR_SEED_MASK);
+                                            "CREATOR_SEED");
+        ot_keymgr_check_flash_seed(s, FLASH_KEYMGR_SECRET_OWNER_SEED,
+                                   "OWNER_SEED",
+                                   R_DEBUG_INVALID_OWNER_SEED_MASK);
         break;
     case KEYMGR_STAGE_OWNER:
-        /* Owner Seed (from flash) */
+        /*
+         * In RTL (keymgr.sv:463-464), adv_matrix[Owner] hashes owner_seed
+         * and adv_dvalid[Owner] = 1'b1.
+         */
         expected_kdf_len +=
             ot_keymgr_kdf_append_flash_seed(s, FLASH_KEYMGR_SECRET_OWNER_SEED,
-                                            "OWNER_SEED",
-                                            R_DEBUG_INVALID_OWNER_SEED_MASK);
+                                            "OWNER_SEED");
         break;
     case KEYMGR_STAGE_DISABLE:
         /* you can "advance" from the OwnerRootKey to the `Disabled` state */
