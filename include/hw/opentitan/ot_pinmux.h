@@ -40,8 +40,10 @@
 #define OT_PINMUX_GPIO_IN   TYPE_OT_PINMUX "-gpio-in"
 #define OT_PINMUX_WKUP      TYPE_OT_PINMUX "-wkup"
 #define OT_PINMUX_SYSRST_IN TYPE_OT_PINMUX "-sysrst-in"
-#define OT_PINMUX_SLEEP_EN  TYPE_OT_PINMUX "-sleep-en"
-#define OT_PINMUX_GPIO_PAD  TYPE_OT_PINMUX "-gpio-pad"
+#define OT_PINMUX_SLEEP_EN       TYPE_OT_PINMUX "-sleep-en"
+#define OT_PINMUX_GPIO_PAD       TYPE_OT_PINMUX "-gpio-pad"
+#define OT_PINMUX_LC_HW_DEBUG_EN TYPE_OT_PINMUX "-lc-hw-debug-en"
+#define OT_PINMUX_LC_ESCALATE_EN TYPE_OT_PINMUX "-lc-escalate-en"
 
 SHARED_FIELD(OT_PINMUX_PAD_ATTR_INVERT, 0u, 1u)
 SHARED_FIELD(OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN, 1u, 1u)

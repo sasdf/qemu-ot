@@ -184,6 +184,7 @@ struct OtOTBNState {
     char *log_file;
     OtOTBNRandom rnds[OT_OTBN_RND_COUNT];
     bool log_asm;
+    bool lc_escalated;
 };
 
 struct OtOTBNClass {
@@ -206,12 +207,14 @@ static void ot_otbn_request_entropy(OtOTBNRandom *rnd);
 
 static bool ot_otbn_is_idle(OtOTBNState *s)
 {
-    return ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_IDLE;
+    return !s->lc_escalated &&
+           ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_IDLE;
 }
 
 static bool ot_otbn_is_locked(OtOTBNState *s)
 {
-    return ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_LOCKED;
+    return s->lc_escalated ||
+           ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_LOCKED;
 }
 
 static void ot_otbn_update_irq(OtOTBNState *s)
@@ -601,6 +604,10 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = (uint32_t)ot_otbn_proxy_get_ctrl(s->proxy);
         break;
     case R_STATUS:
+        if (s->lc_escalated) {
+            val32 = OT_OTBN_STATUS_LOCKED;
+            break;
+        }
         val32 = ot_otbn_sync_proxy(s);
         if ((val32 == OT_OTBN_STATUS_IDLE ||
              val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) &&
@@ -610,7 +617,8 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         }
         break;
     case R_ERR_BITS:
-        val32 = ot_otbn_proxy_get_err_bits(s->proxy);
+        val32 = ot_otbn_proxy_get_err_bits(s->proxy) |
+                (s->errbits & R_ERR_BITS_LIFECYCLE_ESCALATION_MASK);
         break;
     case R_FATAL_ALERT_CAUSE:
         s->fatal_alert_cause |= (ot_otbn_proxy_get_err_bits(s->proxy) >> 16u);
@@ -861,6 +869,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
     s->errbits = 0;
     s->fatal_alert_cause = 0;
     s->load_checksum = 0;
+    s->lc_escalated = false;
 
     s->last_cmd = OT_OTBN_CMD_NONE;
     s->exec_start_ns = 0;
@@ -923,6 +932,23 @@ static void ot_otbn_reset_exit(Object *obj, ResetType type)
     s->last_cmd = OT_OTBN_CMD_NONE;
 }
 
+static void ot_otbn_lc_escalate_en(void *opaque, int irq, int level)
+{
+    OtOTBNState *s = opaque;
+
+    g_assert(irq == 0);
+
+    if (level) {
+        s->lc_escalated = true;
+        s->errbits |= R_ERR_BITS_LIFECYCLE_ESCALATION_MASK;
+        s->fatal_alert_cause |= R_FATAL_ALERT_CAUSE_LIFECYCLE_ESCALATION_MASK;
+        qemu_bh_cancel(s->proxy_completion_bh);
+        timer_del(s->proxy_defer);
+        s->last_cmd = OT_OTBN_CMD_NONE;
+        ot_otbn_update_alert(s);
+    }
+}
+
 static void ot_otbn_realize(DeviceState *dev, Error **errp)
 {
     (void)errp;
@@ -939,6 +965,8 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_clock_input,
                             OT_OTBN_CLOCK_INPUT, 1);
+    qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_lc_escalate_en,
+                            OT_OTBN_LC_ESCALATE_EN, 1);
 }
 
 static void ot_otbn_init(Object *obj)

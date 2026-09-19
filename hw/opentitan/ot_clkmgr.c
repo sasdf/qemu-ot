@@ -249,6 +249,7 @@ struct OtClkMgrState {
     OtClkMgrMeasureRegs *measure_regs;
     unsigned measure_count; /* count of measure_regs */
     bool input_clock_connected; /* true once clock source are connected */
+    bool lc_hw_debug_en;
 
     char *ot_id;
     DeviceState *clock_src; /* Top clock source */
@@ -305,8 +306,9 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
                                           const OtClkMgrClock *clk)
 {
     const OtClkMgrClock *target_clk = clk;
-    if (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL) ==
-        OT_MULTIBITBOOL4_TRUE) {
+    if (s->lc_hw_debug_en &&
+        FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL) ==
+            OT_MULTIBITBOOL4_TRUE) {
         bool hi_speed = (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
                                     HI_SPEED_SEL) == OT_MULTIBITBOOL4_TRUE);
         if (!hi_speed) {
@@ -1227,9 +1229,10 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
             val32 &= R_EXTCLK_CTRL_SEL_MASK | R_EXTCLK_CTRL_HI_SPEED_SEL_MASK;
             s->regs[reg] = val32;
             uint32_t sel = FIELD_EX32(val32, EXTCLK_CTRL, SEL);
-            s->regs[R_EXTCLK_STATUS] = (sel == OT_MULTIBITBOOL4_TRUE) ?
-                                           OT_MULTIBITBOOL4_TRUE :
-                                           OT_MULTIBITBOOL4_FALSE;
+            s->regs[R_EXTCLK_STATUS] =
+                (s->lc_hw_debug_en && sel == OT_MULTIBITBOOL4_TRUE) ?
+                    OT_MULTIBITBOOL4_TRUE :
+                    OT_MULTIBITBOOL4_FALSE;
             for (unsigned ix = 0; ix < s->measure_count; ix++) {
                 ot_clkmgr_check_measurement(s, ix);
             }
@@ -1495,13 +1498,35 @@ static void ot_clkmgr_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 }
 
+static void ot_clkmgr_lc_hw_debug_en(void *opaque, int irq, int level)
+{
+    OtClkMgrState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->lc_hw_debug_en = (bool)level;
+    uint32_t sel = FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL);
+    s->regs[R_EXTCLK_STATUS] =
+        (s->lc_hw_debug_en && sel == OT_MULTIBITBOOL4_TRUE) ?
+            OT_MULTIBITBOOL4_TRUE :
+            OT_MULTIBITBOOL4_FALSE;
+    for (unsigned ix = 0; ix < s->measure_count; ix++) {
+        ot_clkmgr_check_measurement(s, ix);
+    }
+}
+
 static void ot_clkmgr_init(Object *obj)
 {
     OtClkMgrState *s = OT_CLKMGR(obj);
 
+    s->lc_hw_debug_en = true;
+
     for (unsigned ix = 0; ix < ALERT_COUNT; ix++) {
         ibex_qdev_init_irq(obj, &s->alerts[ix], OT_DEVICE_ALERT);
     }
+
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_clkmgr_lc_hw_debug_en,
+                            OT_CLKMGR_LC_HW_DEBUG_EN, 1);
 }
 
 static void ot_clkmgr_class_init(ObjectClass *klass, const void *data)

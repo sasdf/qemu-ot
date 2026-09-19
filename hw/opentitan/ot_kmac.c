@@ -416,6 +416,7 @@ struct OtKMACState {
     bool entropy_refresh_needed;
     bool edn_pending;
     bool msgfifo_full_seen; /* kmac.sv msgfifo_full_seen_q */
+    bool lc_escalate_en;
     hash_state ltc_state; /* TomCrypt hash state */
     uint8_t keccak_state[KECCAK_STATE_BYTES];
 
@@ -2100,6 +2101,7 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->entropy_refresh_needed = false;
     s->edn_pending = false;
     s->msgfifo_full_seen = false;
+    s->lc_escalate_en = false;
     memset(s->regs, 0, REGS_SIZE);
     s->regs[R_STATUS] = 0x4001u;
     ot_shadow_reg_init(&s->cfg, 0u);
@@ -2135,6 +2137,23 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     }
 }
 
+static void ot_kmac_lc_escalate_en(void *opaque, int irq, int level)
+{
+    OtKMACState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->lc_escalate_en = (bool)level;
+    if (s->lc_escalate_en) {
+        ot_kmac_change_fsm_state(s, KMAC_ST_TERMINAL_ERROR);
+        s->app_in_error = true;
+        s->entropy_in_err = true;
+        ot_kmac_cancel_bh(s);
+        s->regs[R_STATUS] |= R_STATUS_ALERT_FATAL_FAULT_MASK;
+        ot_kmac_update_alert(s);
+    }
+}
+
 static void ot_kmac_realize(DeviceState *dev, Error **errp)
 {
     OtKMACState *s = OT_KMAC(dev);
@@ -2158,6 +2177,8 @@ static void ot_kmac_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_kmac_clock_input,
                             OT_KMAC_CLOCK_INPUT, 1);
+    qdev_init_gpio_in_named(DEVICE(s), &ot_kmac_lc_escalate_en,
+                            OT_KMAC_LC_ESCALATE_EN, 1);
 }
 
 static void ot_kmac_init(Object *obj)

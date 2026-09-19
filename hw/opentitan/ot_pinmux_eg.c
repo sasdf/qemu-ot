@@ -216,6 +216,8 @@ struct OtPinmuxEgState {
     uint8_t wkup_prev_level[PARAM_N_WKUP_DETECT];
     bool low_power_exit;
     bool host_synced;
+    bool lc_hw_debug_en;
+    bool lc_escalate_en;
 
     OtPinmuxEgStateRegs *regs;
 };
@@ -1189,6 +1191,24 @@ static void ot_pinmux_eg_reset_exit(Object *obj, ResetType type)
     ot_pinmux_eg_update_pads(s);
 }
 
+static void ot_pinmux_eg_lc_hw_debug_en(void *opaque, int irq, int level)
+{
+    OtPinmuxEgState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->lc_hw_debug_en = (bool)level;
+}
+
+static void ot_pinmux_eg_lc_escalate_en(void *opaque, int irq, int level)
+{
+    OtPinmuxEgState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->lc_escalate_en = (bool)level;
+}
+
 static void ot_pinmux_eg_init(Object *obj)
 {
     OtPinmuxEgState *s = OT_PINMUX_EG(obj);
@@ -1220,6 +1240,10 @@ static void ot_pinmux_eg_init(Object *obj)
                             PARAM_N_MIO_PADS);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_sleep_en,
                             OT_PINMUX_SLEEP_EN, 1u);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_lc_hw_debug_en,
+                            OT_PINMUX_LC_HW_DEBUG_EN, 1u);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_lc_escalate_en,
+                            OT_PINMUX_LC_ESCALATE_EN, 1u);
     ot_pinmux_eg_instance = s;
 }
 

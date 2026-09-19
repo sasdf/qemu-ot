@@ -349,6 +349,7 @@ struct OtCSRNGState {
     bool read_int_granted;
     bool in_scheduler;
     bool waiting_for_entropy;
+    bool lc_hw_debug_en;
     uint32_t scheduled_cmd;
     unsigned entropy_delay;
     unsigned es_retry_count;
@@ -2121,6 +2122,15 @@ static void ot_csrng_realize(DeviceState *dev, Error **errp)
     (void)OBJECT_CHECK(OtOTPIf, s->otp_ctrl, TYPE_OT_OTP_IF);
 }
 
+static void ot_csrng_lc_hw_debug_en(void *opaque, int irq, int level)
+{
+    OtCSRNGState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->lc_hw_debug_en = (bool)level;
+}
+
 static void ot_csrng_init(Object *obj)
 {
     OtCSRNGState *s = OT_CSRNG(obj);
@@ -2146,6 +2156,8 @@ static void ot_csrng_init(Object *obj)
     qdev_init_gpio_in_named_with_opaque(DEVICE(s), &ot_csrng_hwapp_ready_irq, s,
                                         TYPE_OT_CSRNG "-genbits_ready",
                                         OT_CSRNG_HW_APP_MAX);
+    qdev_init_gpio_in_named(DEVICE(s), &ot_csrng_lc_hw_debug_en,
+                            OT_CSRNG_LC_HW_DEBUG_EN, 1);
 
     static_assert(CMD_FIFO_CAPACITY >= OT_CSRNG_CMD_WORD_MAX,
                   "Invalid CMD FIFO size");

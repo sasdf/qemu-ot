@@ -1617,13 +1617,15 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .type = TYPE_SPLIT_IRQ,
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_S2D(0, SRAM_MAIN_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(1, SRAM_RET_CTRL, OT_SRAM_CTRL_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(2, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(3, TAP_CTRL, TAP_CTRL_RBB_ENABLE, 0),
-            OT_EG_SOC_S2D(4, RV_DM, PULP_RV_DM_LC_HW_DEBUG_EN, 0)
+            OT_EG_SOC_S2D(1, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(2, TAP_CTRL, TAP_CTRL_RBB_ENABLE, 0),
+            OT_EG_SOC_S2D(3, RV_DM, PULP_RV_DM_LC_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(4, CLKMGR, OT_CLKMGR_LC_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(5, PINMUX, OT_PINMUX_LC_HW_DEBUG_EN, 0),
+            OT_EG_SOC_S2D(6, CSRNG, OT_CSRNG_LC_HW_DEBUG_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 5u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 7u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_DFT] = {
@@ -1647,10 +1649,13 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_S2D(2, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0),
             OT_EG_SOC_S2D(3, SRAM_RET_CTRL, OT_SRAM_CTRL_LC_ESCALATE_EN, 0),
             OT_EG_SOC_S2D(4, SRAM_MAIN_CTRL, OT_SRAM_CTRL_LC_ESCALATE_EN, 0),
-            OT_EG_SOC_S2D(5, AES, OT_AES_LC_ESCALATE_EN, 0)
+            OT_EG_SOC_S2D(5, AES, OT_AES_LC_ESCALATE_EN, 0),
+            OT_EG_SOC_S2D(6, KMAC, OT_KMAC_LC_ESCALATE_EN, 0),
+            OT_EG_SOC_S2D(7, OTBN, OT_OTBN_LC_ESCALATE_EN, 0),
+            OT_EG_SOC_S2D(8, PINMUX, OT_PINMUX_LC_ESCALATE_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 6u)
+            IBEX_DEV_UINT_PROP("num-lines", 9u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_SEED_HW_RD] = {
