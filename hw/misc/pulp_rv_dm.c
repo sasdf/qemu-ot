@@ -283,7 +283,10 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (R32_OFF(addr)) {
     case R_ALERT_TEST:
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
-        ibex_irq_set(&s->alert, (int)(bool)val32);
+        if (val32) {
+            ibex_irq_set(&s->alert, 1);
+            ibex_irq_set(&s->alert, 0);
+        }
         break;
     case R_LATE_DEBUG_ENABLE_REGWEN:
         s->late_debug_enable_regwen &=
