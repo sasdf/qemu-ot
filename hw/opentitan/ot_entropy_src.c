@@ -284,6 +284,9 @@ REG32(MAIN_SM_STATE, 0xc0u)
     (R_ERR_CODE_ES_ACK_SM_ERR_MASK | R_ERR_CODE_ES_MAIN_SM_ERR_MASK | \
      R_ERR_CODE_ES_CNTR_ERR_MASK | R_ERR_CODE_SHA3_STATE_ERR_MASK | \
      R_ERR_CODE_SHA3_RST_STORAGE_ERR_MASK)
+#define ERR_CODE_LOCAL_ESCALATE_MASK \
+    (R_ERR_CODE_ES_ACK_SM_ERR_MASK | R_ERR_CODE_ES_MAIN_SM_ERR_MASK | \
+     R_ERR_CODE_ES_CNTR_ERR_MASK | R_ERR_CODE_SHA3_STATE_ERR_MASK)
 
 /*
  * this is an alias for the CHECK_MULTIBOOT macro, as the RECOV_ALERT_STS
@@ -771,6 +774,8 @@ static void ot_entropy_src_change_state_line(
     OtEntropySrcFsmState old_state = s->state;
 
     switch (s->state) {
+    case ENTROPY_SRC_ERROR:
+        break;
     case ENTROPY_SRC_ALERT_STATE:
         s->state = ENTROPY_SRC_ALERT_HANG;
         break;
@@ -843,10 +848,16 @@ static void ot_entropy_src_update_alerts(OtEntropySrcState *s)
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
     }
-    uint32_t fatal_alert = s->regs_hi[R_ERR_CODE] & ERR_CODE_FATAL_ERROR_MASK;
-    fatal_alert |=
-        (1u << s->regs_hi[R_ERR_CODE_TEST]) & ERR_CODE_FATAL_ERROR_MASK;
-    if (fatal_alert || (s->regs_lo[R_ALERT_TEST] & R_ALERT_TEST_FATAL_ALERT_MASK)) {
+    uint32_t fatal_mask =
+        ERR_CODE_FATAL_ERROR_MASK |
+        (ot_entropy_src_is_module_enabled(s) ? ERR_CODE_MASK : 0u);
+    uint32_t fatal_alert = s->regs_hi[R_ERR_CODE] & fatal_mask;
+    if (fatal_alert) {
+        s->regs_lo[R_INTR_STATE] |= INTR_ES_FATAL_ERR_MASK;
+        ot_entropy_src_update_irqs(s);
+    }
+    if (fatal_alert ||
+        (s->regs_lo[R_ALERT_TEST] & R_ALERT_TEST_FATAL_ALERT_MASK)) {
         s->regs_lo[R_ALERT_TEST] &= ~R_ALERT_TEST_FATAL_ALERT_MASK;
         ibex_irq_set(&s->alerts[ALERT_FATAL], 1);
     } else {
@@ -1853,6 +1864,7 @@ static void ot_entropy_src_lo_regs_write(void *opaque, hwaddr addr,
                 s->regs_hi[R_OBSERVE_FIFO_THRESH]) {
             s->regs_lo[R_INTR_STATE] |= INTR_ES_OBSERVE_FIFO_READY_MASK;
         }
+        ot_entropy_src_update_alerts(s);
         ot_entropy_src_update_irqs(s);
         break;
     case R_INTR_ENABLE:
@@ -1997,6 +2009,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                           (int64_t)(now +
                                     (uint64_t)OT_ENTROPY_SRC_BOOT_DELAY_NS));
             }
+            ot_entropy_src_update_alerts(s);
             break;
         }
         qemu_log_mask(LOG_GUEST_ERROR, "%s: ME_REGWEN not enabled\n", __func__);
@@ -2197,12 +2210,18 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         s->regs_hi[reg] &= val32; /* RW0C */
         s->regs_hi[reg] |= ot_entropy_src_get_cfg_alerts(s);
         break;
-    case R_ERR_CODE_TEST:
+    case R_ERR_CODE_TEST: {
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs_hi[R_ERR_CODE_TEST] = val32;
-        ot_entropy_src_update_irqs(s);
+        uint32_t err_bit =
+            (val32 < 31u) ? ((1u << val32) & ERR_CODE_MASK) : 0u;
+        s->regs_hi[R_ERR_CODE] |= err_bit;
+        if (err_bit & ERR_CODE_LOCAL_ESCALATE_MASK) {
+            ot_entropy_src_change_state(s, ENTROPY_SRC_ERROR);
+        }
         ot_entropy_src_update_alerts(s);
-        break;
+        ot_entropy_src_update_irqs(s);
+    } break;
     case R_ENTROPY_DATA:
     case R_REPCNT_HI_WATERMARKS:
     case R_REPCNTS_HI_WATERMARKS:
@@ -2345,6 +2364,7 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
         ibex_irq_set(&s->alerts[ix], 0);
     }
 
+    s->state = ENTROPY_SRC_IDLE;
     ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
 }
 
