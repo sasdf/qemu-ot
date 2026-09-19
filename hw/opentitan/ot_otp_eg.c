@@ -922,8 +922,9 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
     (void)size;
     (void)attrs;
 
-    hwaddr reg = R32_OFF(addr);
-    int partition = c->get_part_from_address(s, addr);
+    hwaddr word_addr = addr & ~3ull;
+    hwaddr reg = R32_OFF(word_addr);
+    int partition = c->get_part_from_address(s, word_addr);
 
     if (partition < 0) {
         trace_ot_otp_access_error_on(s->ot_id, partition, addr, "invalid");
@@ -943,7 +944,7 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
     }
 
     bool is_readable = c->is_readable(s, part_ix);
-    bool is_zer = ot_otp_engine_is_part_zer_offset(s, part_ix, addr);
+    bool is_zer = ot_otp_engine_is_part_zer_offset(s, part_ix, word_addr);
 
     if (!is_readable && !is_zer) {
         trace_ot_otp_access_error_on(s->ot_id, partition, addr, "not readable");
@@ -959,11 +960,26 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
 
     pc = ibex_get_current_pc();
     trace_ot_otp_io_swcfg_read_out(s->ot_id, (uint32_t)addr,
-                                   ot_otp_eg_swcfg_reg_name(addr), val32, pc);
+                                   ot_otp_eg_swcfg_reg_name(word_addr), val32,
+                                   pc);
 
-    *data = (uint64_t)val32;
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
 
     return MEMTX_OK;
+}
+
+static MemTxResult ot_otp_eg_swcfg_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
+    (void)value;
+    (void)size;
+    (void)attrs;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "%s: %s: SW_CFG window is read-only at 0x%03x\n", __func__,
+                  s->ot_id, (uint32_t)addr);
+    return MEMTX_ERROR;
 }
 
 static void ot_otp_eg_get_lc_info(
@@ -1172,9 +1188,12 @@ static const MemoryRegionOps ot_otp_eg_reg_ops = {
 
 static const MemoryRegionOps ot_otp_eg_swcfg_ops = {
     .read_with_attrs = &ot_otp_eg_swcfg_read_with_attrs,
+    .write_with_attrs = &ot_otp_eg_swcfg_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
 };
 
 static void ot_otp_eg_reset_enter(Object *obj, ResetType type)
