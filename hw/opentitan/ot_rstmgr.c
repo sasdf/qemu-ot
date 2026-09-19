@@ -555,10 +555,15 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = 8u;
         break;
     case R_CPU_INFO: {
+        /*
+         * In rstmgr_crash_info.sv, SlotCntWidth = $clog2(CrashStoreSlot).
+         * For CPU_INFO, CrashStoreSlot = 8 -> SlotCntWidth = $clog2(8) = 3,
+         * so slot_sel_i[3] is tied off as unused_idx and slot_o indexes
+         * slots[slot_sel_i[2:0]] (idx % 8u).
+         */
         uint32_t idx =
             FIELD_EX32(s->regs[R_CPU_INFO_CTRL], CPU_INFO_CTRL, INDEX);
-        val32 =
-            (idx < ARRAY_SIZE(s->cpu_info_dump)) ? s->cpu_info_dump[idx] : 0u;
+        val32 = s->cpu_info_dump[idx % ARRAY_SIZE(s->cpu_info_dump)];
         break;
     }
     case R_ALERT_TEST:
