@@ -1490,6 +1490,11 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_edn_handle_sw_cmd_req(s, val32);
         break;
     case R_RESEED_CMD:
+        if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) ==
+            OT_MULTIBITBOOL4_TRUE) {
+            ot_edn_reset_replay_fifos(s);
+            break;
+        }
         if (ot_fifo32_is_full(&c->cmd_reseed_fifo)) {
             if (ot_edn_is_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_RESCMD_ERR_MASK |
@@ -1503,6 +1508,11 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_GENERATE_CMD:
+        if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) ==
+            OT_MULTIBITBOOL4_TRUE) {
+            ot_edn_reset_replay_fifos(s);
+            break;
+        }
         if (ot_fifo32_is_full(&c->cmd_gen_fifo)) {
             if (ot_edn_is_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_GENCMD_ERR_MASK |
