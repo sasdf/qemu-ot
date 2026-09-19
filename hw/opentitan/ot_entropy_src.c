@@ -483,12 +483,17 @@ struct OtEntropySrcState {
     hash_state sha3_state; /* libtomcrypt hash state */
     OtEntropySrcFsmState state;
     uint64_t noise_fill_pace_ns;
+    uint64_t rdata_capt; /* last popped esfinal lower 64 bits */
+    uint64_t swread_capt_data; /* current swread_fifo seed lower 64 bits */
     unsigned cond_word; /* count of words processed with SHA3 till hash */
     unsigned noise_count; /* count of consumed noise words since enabled */
     unsigned packet_count; /* count of output packets since enabled */
     unsigned ht_symbol_count; /* count of symbols in current HT window */
+    unsigned swread_idx; /* word index (0..11) for ENTROPY_DATA reads */
     bool last_ht_failed; /* whether the last HT window failed */
     bool obs_fifo_en; /* observe FIFO accept incoming data */
+    bool rdata_capt_vld; /* whether rdata_capt holds a valid seed prefix */
+    bool fifo_err_pulse; /* 1-cycle FIFO error pulse for fatal alert/IRQ */
 
     char *ot_id;
     unsigned version; /* emulated version */
@@ -561,6 +566,7 @@ static bool ot_entropy_src_is_bypass_mode(const OtEntropySrcState *s);
 static bool ot_entropy_src_is_fw_ov_mode(const OtEntropySrcState *s);
 static bool ot_entropy_src_is_fw_ov_entropy_insert(const OtEntropySrcState *s);
 static void ot_entropy_src_update_alerts(OtEntropySrcState *s);
+static void ot_entropy_src_check_bus_cmp(OtEntropySrcState *s, uint64_t low64);
 static void ot_entropy_src_update_filler(OtEntropySrcState *s);
 static bool ot_entropy_src_can_consume_entropy(const OtEntropySrcState *s);
 static bool ot_entropy_src_fill_noise(OtEntropySrcState *s);
@@ -641,6 +647,8 @@ static int ot_entropy_src_get_entropy(
         g_assert(!ot_fifo32_is_empty(&ess->final_fifo));
         randu32[pos++] = ot_fifo32_pop(&ess->final_fifo);
     }
+    ot_entropy_src_check_bus_cmp(ess,
+                                 ((uint64_t)randu32[1] << 32) | randu32[0]);
 
     bool fips_capable = ot_entropy_src_is_fips_capable(ess);
 
@@ -829,10 +837,14 @@ static void ot_entropy_src_disable(OtEntropySrcState *s)
     ot_fifo32_reset(&s->observe_fifo);
     ot_fifo32_reset(&s->swread_fifo);
     ot_fifo32_reset(&s->final_fifo);
+    s->rdata_capt = 0u;
+    s->swread_capt_data = 0u;
+    s->rdata_capt_vld = false;
     s->cond_word = 0u;
     s->noise_count = 0u;
     s->packet_count = 0u;
     s->ht_symbol_count = 0u;
+    s->swread_idx = 0u;
     s->last_ht_failed = false;
     s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
     s->regs_hi[R_FW_OV_RD_FIFO_OVERFLOW] &= ~R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK;
@@ -849,6 +861,16 @@ static void ot_entropy_src_trigger_recov_alert(OtEntropySrcState *s,
     ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
 }
 
+static void ot_entropy_src_check_bus_cmp(OtEntropySrcState *s, uint64_t low64)
+{
+    if (s->rdata_capt_vld && s->rdata_capt == low64) {
+        ot_entropy_src_trigger_recov_alert(
+            s, R_RECOV_ALERT_STS_ES_BUS_CMP_ALERT_MASK);
+    }
+    s->rdata_capt = low64;
+    s->rdata_capt_vld = true;
+}
+
 static void ot_entropy_src_update_alerts(OtEntropySrcState *s)
 {
     if (s->regs_lo[R_ALERT_TEST] & R_ALERT_TEST_RECOV_ALERT_MASK) {
@@ -856,10 +878,12 @@ static void ot_entropy_src_update_alerts(OtEntropySrcState *s)
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
     }
-    uint32_t fatal_mask =
-        ERR_CODE_FATAL_ERROR_MASK |
-        (ot_entropy_src_is_module_enabled(s) ? ERR_CODE_MASK : 0u);
-    uint32_t fatal_alert = s->regs_hi[R_ERR_CODE] & fatal_mask;
+    uint32_t fatal_alert =
+        (s->regs_hi[R_ERR_CODE] & ERR_CODE_FATAL_ERROR_MASK) |
+        ((ot_entropy_src_is_module_enabled(s) && s->fifo_err_pulse) ?
+             (s->regs_hi[R_ERR_CODE] & ERR_CODE_MASK) :
+             0u);
+    s->fifo_err_pulse = false;
     if (fatal_alert) {
         s->regs_lo[R_INTR_STATE] |= INTR_ES_FATAL_ERR_MASK;
         ot_entropy_src_update_irqs(s);
@@ -868,7 +892,8 @@ static void ot_entropy_src_update_alerts(OtEntropySrcState *s)
         (s->regs_lo[R_ALERT_TEST] & R_ALERT_TEST_FATAL_ALERT_MASK)) {
         s->regs_lo[R_ALERT_TEST] &= ~R_ALERT_TEST_FATAL_ALERT_MASK;
         ibex_irq_set(&s->alerts[ALERT_FATAL], 1);
-    } else {
+    } else if (!ot_entropy_src_is_module_enabled(s) &&
+               !(s->regs_hi[R_ERR_CODE] & ERR_CODE_FATAL_ERROR_MASK)) {
         ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
     }
 }
@@ -1092,12 +1117,6 @@ ot_entropy_src_push_entropy_to_conditioner(OtEntropySrcState *s, uint32_t word)
     return true;
 }
 
-static bool ot_entropy_src_can_hash(const OtEntropySrcState *s)
-{
-    return ot_fifo32_is_empty(&s->precon_fifo) &&
-           (s->cond_word >= (2048 / (8u * sizeof(uint32_t))));
-}
-
 static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
 {
     uint32_t hash[OT_ENTROPY_SRC_WORD_COUNT];
@@ -1126,8 +1145,21 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
         }
     }
     s->packet_count += 1u;
-    if (REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START) ||
-        ot_entropy_src_is_fw_ov_entropy_insert(s)) {
+    if (ot_entropy_src_is_fw_ov_entropy_insert(s)) {
+        ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
+        if (ot_entropy_src_is_module_enabled(s) &&
+            !ot_entropy_src_is_bypass_mode(s)) {
+            res = sha3_384_init(&s->sha3_state);
+            g_assert(res == CRYPT_OK);
+            s->cond_word = 0;
+            ot_fifo32_reset(&s->precon_fifo);
+            ot_entropy_src_change_state(
+                s, REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START,
+                                   FW_OV_INSERT_START) ?
+                       ENTROPY_SRC_FW_INSERT_MSG :
+                       ENTROPY_SRC_FW_INSERT_START);
+        }
+    } else if (REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START)) {
         ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
     } else {
         ot_entropy_src_change_state(s, ENTROPY_SRC_CONT_HT_START);
@@ -1177,10 +1209,18 @@ static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
         trace_ot_entropy_src_info(s->ot_id, "FW ROUTE");
         if (ot_fifo32_is_empty(&s->swread_fifo)) {
             /* refill swread FIFO */
-            unsigned count = ES_WORD_COUNT;
-            while (count--) {
-                ot_fifo32_push(&s->swread_fifo, ot_fifo32_pop(&s->final_fifo));
+            uint32_t w0 = 0;
+            uint32_t w1 = 0;
+            for (unsigned ix = 0; ix < ES_WORD_COUNT; ix++) {
+                uint32_t w = ot_fifo32_pop(&s->final_fifo);
+                if (ix == 0u) {
+                    w0 = w;
+                } else if (ix == 1u) {
+                    w1 = w;
+                }
+                ot_fifo32_push(&s->swread_fifo, w);
             }
+            s->swread_capt_data = ((uint64_t)w1 << 32) | (uint64_t)w0;
             trace_ot_entropy_src_available(s->ot_id, STATE_NAME(s->state),
                                            s->state);
             ot_entropy_src_update_filler(s);
@@ -1417,15 +1457,21 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
 
                 unsigned alert_thresh = FIELD_EX32(
                     s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD, VAL);
+                uint16_t alert_thresh_inv = (uint16_t)~FIELD_EX32(
+                    s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD, INV);
                 uint32_t max_cnt =
                     (alert_thresh == 0xffffu) ? 0xfffeu : 0xffffu;
                 if (s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] < max_cnt) {
                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] += 1u;
                 }
 
+                uint32_t fail_cnt = s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS];
+                bool thresh_fail =
+                    (alert_thresh != 0 && fail_cnt >= alert_thresh) ||
+                    (alert_thresh_inv != 0 && fail_cnt >= alert_thresh_inv);
+
                 if (s->state == ENTROPY_SRC_STARTUP_FAIL1 ||
-                    (!is_startup && alert_thresh != 0 &&
-                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] >= alert_thresh)) {
+                    (!is_startup && thresh_fail)) {
                     s->regs_lo[R_INTR_STATE] |= INTR_ES_HEALTH_TEST_FAILED_MASK;
                     ot_entropy_src_update_irqs(s);
                     ot_entropy_src_trigger_recov_alert(
@@ -1485,17 +1531,37 @@ static uint32_t ot_entropy_src_get_entropy_data(OtEntropySrcState *s)
             REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE) :
             REG_MB4_IS_TRUE(s, hi, CONF, V3_ENTROPY_DATA_REG_ENABLE);
 
-    if (ot_entropy_src_is_module_enabled(s) && is_entropy_data_enabled &&
-        ot_entropy_src_is_fw_route(s)) {
-        if (!ot_fifo32_is_empty(&s->swread_fifo)) {
-            uint32_t word = ot_fifo32_pop(&s->swread_fifo);
-            if (ot_fifo32_is_empty(&s->swread_fifo)) {
-                ot_entropy_src_update_fw_route(s);
-            }
-            return word;
+    if (ot_entropy_src_is_module_enabled(s) && is_entropy_data_enabled) {
+        bool done = (s->swread_idx == ES_WORD_COUNT - 1u);
+        if (done) {
+            s->swread_idx = 0u;
+        } else {
+            s->swread_idx += 1u;
         }
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Entropy data not available\n",
-                      __func__);
+        if (ot_entropy_src_is_fw_route(s)) {
+            if (!ot_fifo32_is_empty(&s->swread_fifo)) {
+                uint32_t word = ot_fifo32_pop(&s->swread_fifo);
+                if (ot_fifo32_is_empty(&s->swread_fifo)) {
+                    s->swread_idx = 0u;
+                    ot_entropy_src_check_bus_cmp(s, s->swread_capt_data);
+                    ot_entropy_src_update_fw_route(s);
+                }
+                return word;
+            }
+            if (done) {
+                s->regs_hi[R_ERR_CODE] |=
+                    R_ERR_CODE_SFIFO_ESFINAL_ERR_MASK |
+                    R_ERR_CODE_FIFO_READ_ERR_MASK;
+                s->fifo_err_pulse = true;
+                ot_entropy_src_update_alerts(s);
+                ot_entropy_src_update_irqs(s);
+            }
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: Entropy data not available\n",
+                          __func__);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: Entropy data not configured\n",
+                          __func__);
+        }
     } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Entropy data not configured\n",
                       __func__);
@@ -1796,6 +1862,7 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
             } else {
                 s->regs_hi[R_ERR_CODE] |= R_ERR_CODE_SFIFO_OBSERVE_ERR_MASK |
                                           R_ERR_CODE_FIFO_READ_ERR_MASK;
+                s->fifo_err_pulse = true;
                 ot_entropy_src_update_alerts(s);
                 ot_entropy_src_update_irqs(s);
                 qemu_log_mask(LOG_GUEST_ERROR,
@@ -2146,7 +2213,6 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             }
         } else { /* default to false */
             if (s->state == ENTROPY_SRC_FW_INSERT_MSG ||
-                s->state == ENTROPY_SRC_FW_INSERT_START ||
                 s->state == ENTROPY_SRC_SHA3_PROCESS) {
                 /* handle SHA3 processing */
                 if (ot_fifo32_is_empty(&s->precon_fifo)) {
@@ -2159,6 +2225,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                     qemu_log_mask(LOG_GUEST_ERROR, "%s: need 1 more word\n",
                                   __func__);
                 }
+            } else if (s->state == ENTROPY_SRC_FW_INSERT_START) {
+                /* remain in ENTROPY_SRC_FW_INSERT_START waiting for start */
             } else {
                 OtEntropySrcFsmState new_state;
                 if (ot_entropy_src_is_fw_ov_entropy_insert(s)) {
@@ -2194,17 +2262,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             } else {
                 can_write = ot_entropy_src_can_condition_entropy(s);
                 if (can_write) {
-                    if (ot_entropy_src_push_entropy_to_conditioner(s, val32)) {
-                        if (!REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START,
-                                             FW_OV_INSERT_START) &&
-                            ot_entropy_src_can_hash(s)) {
-                            ot_entropy_src_perform_hash(s);
-                            if (ot_entropy_src_is_fw_route(s)) {
-                                ot_entropy_src_update_fw_route(s);
-                            }
-                            ot_entropy_src_update_irqs(s);
-                        }
-                    }
+                    (void)ot_entropy_src_push_entropy_to_conditioner(s, val32);
                 }
             }
             if (!can_write) {
@@ -2238,6 +2296,9 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         s->regs_hi[R_ERR_CODE] |= err_bit;
         if (err_bit & ERR_CODE_LOCAL_ESCALATE_MASK) {
             ot_entropy_src_change_state(s, ENTROPY_SRC_ERROR);
+        }
+        if (err_bit) {
+            s->fifo_err_pulse = true;
         }
         ot_entropy_src_update_alerts(s);
         ot_entropy_src_update_irqs(s);
@@ -2372,6 +2433,11 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
     ot_fifo32_reset(&s->swread_fifo);
     ot_fifo32_reset(&s->final_fifo);
 
+    s->rdata_capt = 0u;
+    s->swread_capt_data = 0u;
+    s->swread_idx = 0u;
+    s->rdata_capt_vld = false;
+    s->fifo_err_pulse = false;
     s->cond_word = 0u;
     s->noise_count = 0u;
     s->packet_count = 0u;
