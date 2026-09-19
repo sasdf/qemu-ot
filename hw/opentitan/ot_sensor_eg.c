@@ -197,6 +197,7 @@ struct OtSensorEgState {
     IbexIRQ wkup;
     QEMUTimer *io_change_timer;
     unsigned io_change_count;
+    uint32_t ast_alert_latch;
 
     uint32_t *regs;
 };
@@ -265,8 +266,10 @@ static uint32_t ot_sensor_eg_get_alert_en_mask(const OtSensorEgState *s)
 
 static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
 {
+    s->ast_alert_latch |= s->regs[R_ALERT_TRIG];
+
     uint32_t alert_en_mask = ot_sensor_eg_get_alert_en_mask(s);
-    uint32_t active_events = s->regs[R_ALERT_TRIG] & alert_en_mask;
+    uint32_t active_events = s->ast_alert_latch & alert_en_mask;
     uint32_t recov_events = active_events & ~s->regs[R_FATAL_ALERT_EN];
     uint32_t fatal_events = active_events & s->regs[R_FATAL_ALERT_EN];
 
@@ -284,8 +287,22 @@ static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
     }
+
+    /*
+     * In ast_alert.sv & sensor_ctrl.sv:
+     * event_clr[i] = recov_event[i] & reg2hw.recov_alert[i].q
+     * clr_p_alert = !set_p_alert && p_alert_ack
+     */
+    s->ast_alert_latch &= ~(recov_events & ~s->regs[R_ALERT_TRIG]);
+    uint32_t rem_recov =
+        s->ast_alert_latch & alert_en_mask & ~s->regs[R_FATAL_ALERT_EN];
+    if (!rem_recov && !(s->regs[R_ALERT_TEST] & R_ALERT_TEST_RECOV_ALERT_MASK)) {
+        ibex_irq_set(&s->alerts[0], 0);
+    }
+
     ibex_irq_set(&s->wkup,
-                 (int)(bool)(active_events || s->regs[R_RECOV_ALERT]));
+                 (int)(bool)((s->ast_alert_latch & alert_en_mask) ||
+                             s->regs[R_RECOV_ALERT]));
 }
 
 void ot_sensor_eg_trigger_recov_event(OtSensorEgState *s, unsigned event_idx)
@@ -293,12 +310,8 @@ void ot_sensor_eg_trigger_recov_event(OtSensorEgState *s, unsigned event_idx)
     if (!s || event_idx > (R_ALERT_EN_10 - R_ALERT_EN_0)) {
         return;
     }
-    uint32_t alert_en_mask = ot_sensor_eg_get_alert_en_mask(s);
-    uint32_t bit = (1u << event_idx) & alert_en_mask;
-    if (bit && !(bit & s->regs[R_FATAL_ALERT_EN])) {
-        s->regs[R_RECOV_ALERT] |= bit;
-        ot_sensor_eg_update_alerts(s);
-    }
+    s->ast_alert_latch |= (1u << event_idx);
+    ot_sensor_eg_update_alerts(s);
 }
 
 static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -422,10 +435,8 @@ static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_sensor_eg_update_alerts(s);
         break;
     case R_FATAL_ALERT:
-        val32 &= ALERT_SENSOR_MASK;
-        s->regs[reg] = val32;
-        qemu_log_mask(LOG_UNIMP, "Unimplemented register 0x%02x (%s)\n",
-                      (uint32_t)addr, REG_NAME(reg));
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
+                      __func__, (uint32_t)addr, REG_NAME(reg));
         break;
     case R_STATUS:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
@@ -437,15 +448,14 @@ static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_MANUAL_PAD_ATTR_0 ... R_MANUAL_PAD_ATTR_3:
         if (!s->regs[reg - R_MANUAL_PAD_ATTR_0 + R_MANUAL_PAD_ATTR_REGWEN_0]) {
-            qemu_log_mask(LOG_GUEST_ERROR, "Cannot change %s, %s disabled",
+            qemu_log_mask(LOG_GUEST_ERROR, "Cannot change %s, %s disabled\n",
                           REG_NAME(reg),
                           REG_NAME(reg - R_MANUAL_PAD_ATTR_0 +
                                    R_MANUAL_PAD_ATTR_REGWEN_0));
+            break;
         }
-        break;
         val32 &= MANUAL_PAD_ATTR_MASK;
-        qemu_log_mask(LOG_UNIMP, "Unimplemented register 0x%02x (%s)\n",
-                      (uint32_t)addr, REG_NAME(reg));
+        s->regs[reg] = val32;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
@@ -473,6 +483,7 @@ static void ot_sensor_eg_reset_enter(Object *obj, ResetType type)
 
     timer_del(s->io_change_timer);
     s->io_change_count = 0u;
+    s->ast_alert_latch = 0u;
 
     uint32_t alert_trig = s->regs[R_ALERT_TRIG];
     uint32_t recov_alert = s->regs[R_RECOV_ALERT];
