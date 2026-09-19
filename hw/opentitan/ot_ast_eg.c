@@ -338,53 +338,18 @@ static void ot_ast_eg_parse_clocks(OtASTEgState *s, Error **errp)
 }
 
 
-static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_ast_eg_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     OtASTEgState *s = opaque;
     (void)size;
+    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
-    case R_REGA0:
-    case R_REGA1:
-    case R_REGA2:
-    case R_REGA3:
-    case R_REGA4:
-    case R_REGA5:
-    case R_REGA6:
-    case R_REGA7:
-    case R_REGA8:
-    case R_REGA9:
-    case R_REGA10:
-    case R_REGA11:
-    case R_REGA12:
-    case R_REGA13:
-    case R_REGA14:
-    case R_REGA15:
-    case R_REGA16:
-    case R_REGA17:
-    case R_REGA18:
-    case R_REGA19:
-    case R_REGA20:
-    case R_REGA21:
-    case R_REGA22:
-    case R_REGA23:
-    case R_REGA24:
-    case R_REGA25:
-    case R_REGA26:
-    case R_REGA27:
-    case R_REGA28:
-    case R_REGA29:
-    case R_REGA30:
-    case R_REGA31:
-    case R_REGA32:
-    case R_REGA33:
-    case R_REGA34:
-    case R_REGA35:
-    case R_REGA36:
-    case R_REGA37:
+    case R_REGA0 ... R_REGA37:
         val32 = s->regsa[reg];
         break;
     case R_REGAL:
@@ -392,37 +357,47 @@ static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
                       REG_NAME(reg));
         val32 = 0;
         break;
-    case R_REGB0:
-    case R_REGB1:
-    case R_REGB2:
-    case R_REGB3:
-    case R_REGB4:
+    case R_REGB0 ... R_REGB4:
         val32 = s->regsb[reg - R_REGB0];
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        val32 = 0;
-        break;
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ast_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
-};
+    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return MEMTX_OK;
+}
 
-static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
-                                 unsigned size)
+static MemTxResult ot_ast_eg_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtASTEgState *s = opaque;
-    (void)size;
+    (void)attrs;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ast_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
+
+    if ((reg > R_REGAL && reg < R_REGB0) || reg > R_REGB4) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_ERROR;
+    }
+
+    if (size != 4u || (addr & 3u) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Sub-word write error at 0x%03x (%s, size=%u)\n",
+                      __func__, (uint32_t)addr, REG_NAME(reg), size);
+        return MEMTX_ERROR;
+    }
 
     switch (reg) {
     case R_REGA0:
@@ -431,57 +406,20 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is read-only\n", __func__,
                       REG_NAME(reg));
         break;
-    case R_REGA2:
-    case R_REGA3:
-    case R_REGA4:
-    case R_REGA5:
-    case R_REGA6:
-    case R_REGA7:
-    case R_REGA8:
-    case R_REGA9:
-    case R_REGA10:
-    case R_REGA11:
-    case R_REGA12:
-    case R_REGA13:
-    case R_REGA14:
-    case R_REGA15:
-    case R_REGA16:
-    case R_REGA17:
-    case R_REGA18:
-    case R_REGA19:
-    case R_REGA20:
-    case R_REGA21:
-    case R_REGA22:
-    case R_REGA23:
-    case R_REGA24:
-    case R_REGA25:
-    case R_REGA26:
-    case R_REGA27:
-    case R_REGA29:
-    case R_REGA30:
-    case R_REGA31:
-    case R_REGA32:
-    case R_REGA33:
-    case R_REGA34:
-    case R_REGA35:
-    case R_REGA36:
-    case R_REGA37:
+    case R_REGA2 ... R_REGA27:
+    case R_REGA29 ... R_REGA37:
     case R_REGAL:
         s->regsa[reg] = val32;
         break;
-    case R_REGB0:
-    case R_REGB1:
-    case R_REGB2:
-    case R_REGB3:
-    case R_REGB4:
+    case R_REGB0 ... R_REGB4:
         s->regsb[reg - R_REGB0] = val32;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
-                      (uint32_t)addr);
-        break;
+        g_assert_not_reached();
     }
-};
+
+    return MEMTX_OK;
+}
 
 static const Property ot_ast_eg_properties[] = {
     DEFINE_PROP_STRING("topclocks", OtASTEgState, cfg_topclocks),
@@ -489,11 +427,13 @@ static const Property ot_ast_eg_properties[] = {
 };
 
 static const MemoryRegionOps ot_ast_eg_regs_ops = {
-    .read = &ot_ast_eg_regs_read,
-    .write = &ot_ast_eg_regs_write,
+    .read_with_attrs = &ot_ast_eg_regs_read_with_attrs,
+    .write_with_attrs = &ot_ast_eg_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
+    .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
 };
 
 static void ot_ast_eg_reset_enter(Object *obj, ResetType type)
@@ -575,7 +515,7 @@ static void ot_ast_eg_init(Object *obj)
     OtASTEgState *s = OT_AST_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_ast_eg_regs_ops, s, TYPE_OT_AST_EG,
-                          REGS_SIZE);
+                          0x400u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regsa = g_new0(uint32_t, REGSA_COUNT);
