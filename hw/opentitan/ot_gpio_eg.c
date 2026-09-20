@@ -435,7 +435,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                                 out_core = g_out_val;
                             }
                         }
-                    } else if (outsel >= 35u && outsel <= 42u &&
+                    } else if (outsel >= 72u && outsel <= 77u &&
                                s->sysrst_ctrl) {
                         pad_driven = true;
                         out_core = (bool)ot_sysrst_ctrl_get_outsel_level(
@@ -509,7 +509,7 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
                 return g_out_val ? 1 : 0;
             }
         }
-    } else if (outsel >= 35u && outsel <= 42u && s->sysrst_ctrl) {
+    } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
         return ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
     } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
         return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
