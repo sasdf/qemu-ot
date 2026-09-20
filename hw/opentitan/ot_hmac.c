@@ -254,7 +254,6 @@ typedef enum OtHMACKeyLength {
 struct OtHMACRegisters {
     uint32_t intr_state;
     uint32_t intr_enable;
-    uint32_t intr_test;
     uint32_t alert_test;
     uint32_t cfg;
     uint32_t cmd;
@@ -270,7 +269,6 @@ struct OtHMACContext {
     hash_state state;
     OtHMACDigestSize digest_size_started;
     bool msg_length_overflow;
-    bool fifo_full_seen;
 };
 typedef struct OtHMACContext OtHMACContext;
 
@@ -407,9 +405,8 @@ static inline bool ot_hmac_key_length_supported(OtHMACDigestSize digest_size,
 
 static void ot_hmac_update_irqs(OtHMACState *s)
 {
-    uint32_t state = s->regs->intr_state | s->regs->intr_test;
-    uint32_t levels = state & s->regs->intr_enable;
-    trace_ot_hmac_irqs(s->ot_id, state, s->regs->intr_enable,
+    uint32_t levels = s->regs->intr_state & s->regs->intr_enable;
+    trace_ot_hmac_irqs(s->ot_id, s->regs->intr_state, s->regs->intr_enable,
                        levels);
     for (unsigned ix = 0; ix < PARAM_NUM_IRQS; ix++) {
         ibex_irq_set(&s->irqs[ix], (int)((levels >> ix) & 0x1u));
@@ -515,6 +512,11 @@ static size_t ot_hmac_get_curlen(OtHMACState *s)
         return s->ctx->state.sha512.curlen;
     case HMAC_SHA2_NONE:
     default:
+        /*
+         * Should never happen: digest size was validated when calling start /
+         * continue to begin operation.
+         */
+        g_assert_not_reached();
         return 0u;
     }
 }
@@ -650,17 +652,10 @@ static void ot_hmac_process_fifo(OtHMACState *s)
         if (fifo8_is_empty(&s->input_fifo) || stop) {
             ot_hmac_writeback_digest_state(s);
         }
-
-        /* assert FIFO Empty IRQ only if FIFO was previously full (RTL hmac.sv) */
-        if (fifo8_is_empty(&s->input_fifo) && s->ctx->fifo_full_seen) {
-            s->regs->intr_state |= INTR_FIFO_EMPTY_MASK;
-        }
     }
 
     if (stop && ot_hmac_get_curlen(s) == 0) {
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
-        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
-        s->ctx->fifo_full_seen = false;
         s->regs->cmd = 0;
     }
 
@@ -670,8 +665,6 @@ static void ot_hmac_process_fifo(OtHMACState *s)
         }
         ot_hmac_compute_digest(s);
         s->regs->intr_state |= INTR_HMAC_DONE_MASK;
-        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
-        s->ctx->fifo_full_seen = false;
         s->regs->cmd = 0;
     }
 
@@ -709,15 +702,10 @@ static MemTxResult ot_hmac_regs_read_with_attrs(void *opaque, hwaddr addr,
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
-        val32 = s->regs->intr_state | s->regs->intr_test;
+        val32 = s->regs->intr_state;
         break;
     case R_INTR_ENABLE:
         val32 = s->regs->intr_enable;
@@ -857,12 +845,6 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_hmac_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
     /*
      * Enforce HMAC_PERMIT sub-word write byte-enable check
      * (hw/ip/hmac/rtl/hmac_reg_pkg.sv:441-501, hmac_reg_top.sv:2010-2070):
@@ -895,8 +877,8 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
         ot_hmac_update_irqs(s);
         break;
     case R_INTR_TEST:
-        s->regs->intr_test = val32 & INTR_FIFO_EMPTY_MASK;
-        s->regs->intr_state |= val32 & (INTR_HMAC_DONE_MASK | INTR_HMAC_ERR_MASK);
+        s->regs->intr_state =
+            (s->regs->intr_state & ~INTR_FIFO_EMPTY_MASK) | (val32 & INTR_MASK);
         ot_hmac_update_irqs(s);
         break;
     case R_ALERT_TEST:
@@ -983,9 +965,6 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
             s->regs->cmd = R_CMD_HASH_START_MASK;
             s->regs->msg_length = 0;
             s->ctx->msg_length_overflow = false;
-            s->ctx->fifo_full_seen = false;
-            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
-            ot_hmac_update_irqs(s);
 
             ibex_irq_set(&s->clock_active, true);
 
@@ -1032,8 +1011,6 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
                 break;
             }
             s->regs->cmd |= R_CMD_HASH_PROCESS_MASK;
-            s->ctx->fifo_full_seen = false;
-            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /* trigger delayed processing of FIFO */
             ibex_irq_set(&s->clock_active, true);
@@ -1047,8 +1024,6 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
             }
             s->regs->cmd = R_CMD_HASH_STOP_MASK;
             s->ctx->msg_length_overflow = false;
-            s->ctx->fifo_full_seen = false;
-            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /*
              * trigger delayed processing of FIFO until the next block is
@@ -1071,8 +1046,6 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
 
             s->regs->cmd = R_CMD_HASH_CONTINUE_MASK;
             s->ctx->msg_length_overflow = false;
-            s->ctx->fifo_full_seen = false;
-            s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
 
             /*
              * Hold the previous digest size until the HMAC is started with the
@@ -1210,23 +1183,33 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
         }
         break;
     case R_MSG_LENGTH_LOWER:
-        /* ignore write if engine is not idle (hmac.sv:636 `if (!cfg_block)`) */
+        /* ignore write and report error if engine is not idle */
         if (s->regs->cmd) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Cannot W register 0x%02x (%s) whilst non-idle\n",
                           __func__, (uint32_t)addr, REG_NAME(reg));
             break;
+        } else if (s->regs->cfg & R_CFG_SHA_EN_MASK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: Cannot W register 0x%02x (%s) whilst SHA Engine "
+                          "is enabled\n",
+                          __func__, (uint32_t)addr, REG_NAME(reg));
         }
         s->regs->msg_length =
             (s->regs->msg_length & (0xFFFFFFFFull << 32u)) | val32;
         break;
     case R_MSG_LENGTH_UPPER:
-        /* ignore write if engine is not idle (hmac.sv:636 `if (!cfg_block)`) */
+        /* ignore write and report error if engine is not idle */
         if (s->regs->cmd) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: Cannot W register 0x%02x (%s) whilst non-idle\n",
                           __func__, (uint32_t)addr, REG_NAME(reg));
             break;
+        } else if (s->regs->cfg & R_CFG_SHA_EN_MASK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: Cannot W register 0x%02x (%s) whilst SHA Engine "
+                          "is enabled\n",
+                          __func__, (uint32_t)addr, REG_NAME(reg));
         }
         s->regs->msg_length =
             ((uint64_t)val32 << 32u) | (s->regs->msg_length & 0xFFFFFFFFull);
@@ -1278,22 +1261,11 @@ static void ot_hmac_fifo_write(void *opaque, hwaddr addr, uint64_t value,
 
     ibex_irq_set(&s->clock_active, true);
 
-    bool was_empty = fifo8_is_empty(&s->input_fifo);
-
     for (unsigned i = 0; i < size; i++) {
         uint8_t b = value;
         g_assert(!fifo8_is_full(&s->input_fifo));
         fifo8_push(&s->input_fifo, b);
-        if (fifo8_is_full(&s->input_fifo)) {
-            s->ctx->fifo_full_seen = true;
-        }
         value >>= 8u;
-    }
-
-    if (was_empty && size > 0) {
-        s->ctx->fifo_full_seen = false;
-        s->regs->intr_state &= ~INTR_FIFO_EMPTY_MASK;
-        ot_hmac_update_irqs(s);
     }
 
     uint64_t add_bits = (uint64_t)size * 8u;
