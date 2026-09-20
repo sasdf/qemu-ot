@@ -1029,7 +1029,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
     CPUTLB *tlb = &cpu->neg.tlb;
     CPUTLBDesc *desc = &tlb->d[mmu_idx];
     MemoryRegionSection *section;
-    unsigned int index, read_flags, write_flags, code_flags;
+    unsigned int index, read_flags, write_flags;
     uintptr_t addend;
     CPUTLBEntry *te, tn;
     hwaddr iotlb, xlat, sz, paddr_page;
@@ -1059,22 +1059,9 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
               addr, full->phys_addr, prot, mmu_idx);
 
     read_flags = full->tlb_fill_flags;
-    write_flags = read_flags;
-    code_flags = read_flags;
     if (full->lg_page_size < TARGET_PAGE_BITS) {
-        /*
-         * Repeat the MMU check and TLB fill on every access for any access
-         * type whose protection is not valid across the entire page.
-         */
-        if (!(full->page_prot & PAGE_EXEC)) {
-            code_flags |= TLB_INVALID_MASK;
-        }
-        if (!(full->page_prot & PAGE_READ)) {
-            read_flags |= TLB_INVALID_MASK;
-        }
-        if (!(full->page_prot & PAGE_WRITE)) {
-            write_flags |= TLB_INVALID_MASK;
-        }
+        /* Repeat the MMU check and TLB fill on every access.  */
+        read_flags |= TLB_INVALID_MASK;
     }
 
     is_ram = memory_region_is_ram(section->mr);
@@ -1088,6 +1075,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
         addend = 0;
     }
 
+    write_flags = read_flags;
     if (is_ram) {
         iotlb = memory_region_get_ram_addr(section->mr) + xlat;
         assert(!(iotlb & ~TARGET_PAGE_MASK));
@@ -1112,8 +1100,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
          */
         write_flags |= TLB_MMIO;
         if (!is_romd) {
-            read_flags |= TLB_MMIO;
-            code_flags |= TLB_MMIO;
+            read_flags = write_flags;
         }
     }
 
@@ -1177,7 +1164,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
     /* Now calculate the new entry */
     tn.addend = addend - addr_page + ofs_diff;
 
-    tlb_set_compare(full, &tn, addr_page, code_flags,
+    tlb_set_compare(full, &tn, addr_page, read_flags,
                     MMU_INST_FETCH, prot & PAGE_EXEC);
 
     if (wp_flags & BP_MEM_READ) {
@@ -1208,7 +1195,6 @@ void tlb_set_page_with_attrs(CPUState *cpu, vaddr addr,
         .phys_addr = paddr,
         .attrs = attrs,
         .prot = prot,
-        .page_prot = (size >= TARGET_PAGE_SIZE) ? prot : 0,
         .lg_page_size = ctz64(size)
     };
 
