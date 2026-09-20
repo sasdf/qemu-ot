@@ -656,8 +656,8 @@ static MemTxResult ot_otbn_regs_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     trace_ot_otbn_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -751,7 +751,7 @@ static MemTxResult ot_otbn_regs_write_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
+        break;
     }
 
     return MEMTX_OK;
@@ -806,13 +806,9 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
                               uint32_t value)
 {
-    if (s->lc_escalated) {
-        trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr,
-                                value, " FAILED");
-        return;
-    }
     bool was_locked = ot_otbn_is_locked(s);
-    bool written = ot_otbn_proxy_write_memory(s->proxy, doi, addr, value);
+    bool written = !s->lc_escalated &&
+                   ot_otbn_proxy_write_memory(s->proxy, doi, addr, value);
     trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value,
                             written ? "" : " FAILED");
     if (written || was_locked) {
@@ -1009,20 +1005,11 @@ static void ot_otbn_lc_escalate_en(void *opaque, int irq, int level)
     g_assert(irq == 0);
 
     if (level && !s->lc_escalated) {
-        uint32_t status = ot_otbn_proxy_get_status(s->proxy);
-        bool was_running = (s->last_cmd != OT_OTBN_CMD_NONE) ||
-                           (status != OT_OTBN_STATUS_IDLE &&
-                            status != OT_OTBN_STATUS_LOCKED);
         s->lc_escalated = true;
         s->fatal_alert_cause |= R_FATAL_ALERT_CAUSE_LIFECYCLE_ESCALATION_MASK;
         qemu_bh_cancel(s->proxy_completion_bh);
         timer_del(s->proxy_defer);
         s->last_cmd = OT_OTBN_CMD_NONE;
-        if (was_running) {
-            s->errbits |= R_ERR_BITS_LIFECYCLE_ESCALATION_MASK;
-            s->intr_state |= INTR_DONE_MASK;
-            ot_otbn_update_irq(s);
-        }
         ot_otbn_update_alert(s);
     }
 }
