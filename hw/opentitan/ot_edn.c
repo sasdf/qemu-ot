@@ -726,16 +726,18 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
         return;
     }
 
-    bool fatal_error = false;
     uint32_t command;
     uint32_t length;
 
     if (ot_fifo32_is_empty(&c->cmd_reseed_fifo)) {
         s->regs[R_ERR_CODE] |=
             R_ERR_CODE_SFIFO_RESCMD_ERR_MASK | R_ERR_CODE_FIFO_READ_ERR_MASK;
-        fatal_error = true;
+        s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
+        ot_edn_update_irqs(s);
+        ot_edn_update_alerts(s);
         command = (uint32_t)OT_CSRNG_CMD_NONE;
         length = 1u; /* always push the command */
+        c->buffer[0] = command;
     } else {
         command = ot_fifo32_peek(&c->cmd_reseed_fifo);
         uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
@@ -745,13 +747,6 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
         const uint32_t *cmd =
             ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &avail);
         memcpy(c->buffer, cmd, length * sizeof(uint32_t));
-    }
-
-
-    if (fatal_error) {
-        c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
-        ot_edn_change_state(s, EDN_ERROR);
-        return;
     }
 
     ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
@@ -770,16 +765,18 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         return;
     }
 
-    bool fatal_error = false;
     uint32_t command;
     uint32_t length;
 
     if (ot_fifo32_is_empty(&c->cmd_gen_fifo)) {
         s->regs[R_ERR_CODE] |=
             R_ERR_CODE_SFIFO_GENCMD_ERR_MASK | R_ERR_CODE_FIFO_READ_ERR_MASK;
-        fatal_error = true;
+        s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
+        ot_edn_update_irqs(s);
+        ot_edn_update_alerts(s);
         command = (uint32_t)OT_CSRNG_CMD_NONE;
         length = 1u; /* always push the command */
+        c->buffer[0] = command;
     } else {
         command = ot_fifo32_peek(&c->cmd_gen_fifo);
         uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
@@ -792,12 +789,6 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
         xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
                             c->rem_packet_count);
-    }
-
-    if (fatal_error) {
-        c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
-        ot_edn_change_state(s, EDN_ERROR);
-        return;
     }
 
     xtrace_ot_edn_xinfo(c->appid, "COMMAND", c->buffer[0]);
