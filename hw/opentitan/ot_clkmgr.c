@@ -1400,10 +1400,7 @@ static uint32_t ot_clkmgr_get_permit(OtClkMgrState *s, hwaddr reg)
     if (reg_err == R_RECOV_ERR_CODE) {
         return 0x3u;
     }
-    if (reg_err == R_FATAL_ERR_CODE) {
-        return 0x1u;
-    }
-    return 0u;
+    return 0x1u;
 }
 
 static MemTxResult ot_clkmgr_read_with_attrs(void *opaque, hwaddr addr,
@@ -1411,10 +1408,6 @@ static MemTxResult ot_clkmgr_read_with_attrs(void *opaque, hwaddr addr,
                                              MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (ot_clkmgr_get_permit(opaque, reg) == 0u) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t val32 = (uint32_t)ot_clkmgr_read(opaque, addr & ~3ULL, 4u);
     uint32_t shift = (uint32_t)((addr & 3ULL) * 8ULL);
     uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
@@ -1430,12 +1423,12 @@ static MemTxResult ot_clkmgr_write_with_attrs(void *opaque, hwaddr addr,
     OtClkMgrState *s = opaque;
     hwaddr reg = R32_OFF(addr);
     uint32_t permit = ot_clkmgr_get_permit(s, reg);
-    if (permit == 0u) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t byte_offset = (uint32_t)(addr & 3ULL);
     uint32_t reg_be = (((1u << size) - 1u) << byte_offset) & 0xfu;
     if ((permit & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: sub-word write not permitted at 0x%02x (size %u)\n",
+                      __func__, s->ot_id, (uint32_t)addr, size);
         return MEMTX_ERROR;
     }
     uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
