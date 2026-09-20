@@ -834,12 +834,8 @@ static void ot_spi_host_update_bb_config(OtSPIHostState *s, uint32_t opts)
     s->bb_cpha = (bool)FIELD_EX32(opts, CONFIGOPTS, CPHA);
     unsigned clkdiv = FIELD_EX32(opts, CONFIGOPTS, CLKDIV);
     unsigned pclk = s->pclk ? s->pclk : 12000000u;
-    unsigned spiclock = pclk / ((clkdiv + 1u) * 2u);
-    if (spiclock > 0) {
-        s->bb_half_clk_ns = NANOSECONDS_PER_SECOND / (2ULL * spiclock);
-    } else {
-        s->bb_half_clk_ns = 25000ULL;
-    }
+    s->bb_half_clk_ns =
+        ((uint64_t)(clkdiv + 1u) * NANOSECONDS_PER_SECOND) / pclk;
     ot_spi_host_clear_waveform(s);
 }
 
@@ -1282,11 +1278,6 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
     OtSPIHostState *s = opaque;
     uint32_t val32;
 
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return 0u;
-    }
-
     if (s->on_reset) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: device in reset\n", __func__,
                       s->ot_id);
@@ -1402,11 +1393,6 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtSPIHostState *s = opaque;
     uint32_t val32 = val64;
-
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return;
-    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -1695,11 +1681,24 @@ static const uint8_t SPI_HOST_PERMIT[REGS_COUNT] = {
     [R_EVENT_ENABLE] = 0x1u,
 };
 
+static bool ot_spi_host_is_unclocked(OtSPIHostState *s, hwaddr addr)
+{
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+        return true;
+    }
+    return false;
+}
+
 static MemTxResult ot_spi_host_read_with_attrs(void *opaque, hwaddr addr,
                                                uint64_t *val64, unsigned size,
                                                MemTxAttrs attrs)
 {
     (void)attrs;
+    if (ot_spi_host_is_unclocked(opaque, addr)) {
+        *val64 = 0u;
+        return MEMTX_OK;
+    }
     uint32_t reg = (uint32_t)(addr >> 2u);
     if (reg >= REGS_COUNT || reg == R_TXDATA) {
         return MEMTX_ERROR;
@@ -1720,21 +1719,23 @@ static MemTxResult ot_spi_host_write_with_attrs(void *opaque, hwaddr addr,
                                                 MemTxAttrs attrs)
 {
     (void)attrs;
-    uint32_t reg = (uint32_t)(addr >> 2u);
-    if (reg >= REGS_COUNT || reg == R_RXDATA) {
-        return MEMTX_ERROR;
+    if (!ot_spi_host_is_unclocked(opaque, addr)) {
+        uint32_t reg = (uint32_t)(addr >> 2u);
+        if (reg >= REGS_COUNT || reg == R_RXDATA) {
+            return MEMTX_ERROR;
+        }
+        if (reg == R_TXDATA) {
+            ot_spi_host_io_write(opaque, addr, val64, size);
+            return MEMTX_OK;
+        }
+        uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+        if ((SPI_HOST_PERMIT[reg] & ~reg_be) != 0u) {
+            return MEMTX_ERROR;
+        }
+        unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+        uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
+        ot_spi_host_io_write(opaque, addr & ~3ULL, val32, 4u);
     }
-    if (reg == R_TXDATA) {
-        ot_spi_host_io_write(opaque, addr, val64, size);
-        return MEMTX_OK;
-    }
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((SPI_HOST_PERMIT[reg] & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
-    ot_spi_host_io_write(opaque, addr & ~3ULL, val32, 4u);
     return MEMTX_OK;
 }
 
