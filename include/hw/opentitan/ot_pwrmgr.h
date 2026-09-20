@@ -87,9 +87,9 @@ typedef union {
 #define OT_PWRMGR_LC_RSP  TYPE_OT_PWRMGR "-lc-rsp"
 #define OT_PWRMGR_OTP_RSP TYPE_OT_PWRMGR "-otp-rsp"
 
-#define OT_PWRMGR_WKUP    TYPE_OT_PWRMGR "-wkup"
-#define OT_PWRMGR_RST     TYPE_OT_PWRMGR "-rst"
-#define OT_PWRMGR_SW_RST  TYPE_OT_PWRMGR "-sw-rst"
+#define OT_PWRMGR_WKUP   TYPE_OT_PWRMGR "-wkup"
+#define OT_PWRMGR_RST    TYPE_OT_PWRMGR "-rst"
+#define OT_PWRMGR_SW_RST TYPE_OT_PWRMGR "-sw-rst"
 #define OT_PWRMGR_NDM_RST TYPE_OT_PWRMGR "-ndm-rst"
 
 #define OT_PWRMGR_ROM_GOOD TYPE_OT_PWRMGR "-rom-good"

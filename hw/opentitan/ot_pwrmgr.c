@@ -1328,29 +1328,7 @@ static inline uint32_t ot_pwrmgr_byte_mask(hwaddr addr, unsigned size)
 
 static uint32_t ot_pwrmgr_reg_permit(hwaddr reg)
 {
-    switch (reg) {
-    case R_CONTROL:
-        return 0x3u;
-    case R_INTR_STATE:
-    case R_INTR_ENABLE:
-    case R_INTR_TEST:
-    case R_ALERT_TEST:
-    case R_CTRL_CFG_REGWEN:
-    case R_CFG_CDC_SYNC:
-    case R_WAKEUP_EN_REGWEN:
-    case R_WAKEUP_EN:
-    case R_WAKE_STATUS:
-    case R_RESET_EN_REGWEN:
-    case R_RESET_EN:
-    case R_RESET_STATUS:
-    case R_ESCALATE_RESET_STATUS:
-    case R_WAKE_INFO_CAPTURE_DIS:
-    case R_WAKE_INFO:
-    case R_FAULT_STATUS:
-        return 0x1u;
-    default:
-        return 0u;
-    }
+    return (reg == R_CONTROL) ? 0x3u : 0x1u;
 }
 
 static MemTxResult ot_pwrmgr_regs_read_with_attrs(void *opaque, hwaddr addr,
@@ -1358,11 +1336,6 @@ static MemTxResult ot_pwrmgr_regs_read_with_attrs(void *opaque, hwaddr addr,
                                                   MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        *data = 0xffffffffu;
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t val32 = (uint32_t)ot_pwrmgr_regs_read(opaque, addr & ~3ull, 4u);
     val32 >>= (addr & 3u) * 8u;
     if (size < 4u) {
@@ -1379,9 +1352,6 @@ static MemTxResult ot_pwrmgr_regs_write_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t be = ot_pwrmgr_byte_mask(addr, size);
     uint32_t permit = ot_pwrmgr_reg_permit(reg);
     if ((permit & ~be) != 0u) {
