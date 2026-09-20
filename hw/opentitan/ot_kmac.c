@@ -871,27 +871,9 @@ static void ot_kmac_process(void *opaque)
                 /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
-            switch (cfg->mode) {
-            case OT_KMAC_MODE_SHA3:
-                sha3_done(&s->ltc_state, &s->keccak_state[0]);
-                break;
-            case OT_KMAC_MODE_SHAKE:
-                sha3_shake_done(&s->ltc_state, &s->keccak_state[0],
-                                ot_kmac_get_keccak_rate_bytes(cfg->strength));
-                break;
-            /* NOLINTNEXTLINE(bugprone-branch-clone) */
-            case OT_KMAC_MODE_CSHAKE:
-            case OT_KMAC_MODE_KMAC:
-                sha3_cshake_done(&s->ltc_state, &s->keccak_state[0],
-                                 ot_kmac_get_keccak_rate_bytes(cfg->strength));
-                break;
-            default:
-                /*
-                 * should never happen: mode was validated when going from state
-                 * IDLE to START
-                 */
-                g_assert_not_reached();
-            }
+            size_t strength = cfg->strength ? cfg->strength : 256u;
+            sha3_shake_done(&s->ltc_state, &s->keccak_state[0],
+                            ot_kmac_get_keccak_rate_bytes(strength));
 
             /*
              * "If key is sideloaded and KMAC is SW initiated, hide the capacity
@@ -993,83 +975,6 @@ static bool ot_kmac_check_mode_and_strength(const OtKMACAppCfg *cfg)
     }
 }
 
-static inline uint8_t
-ot_kmac_get_prefix_byte(const OtKMACState *s, size_t offset)
-{
-    size_t reg = offset / sizeof(uint32_t);
-    size_t byteoffset = offset - reg * sizeof(uint32_t);
-
-    if (reg >= NUM_PREFIX_REGS) {
-        /*
-         * Just return 0, bounds checking should have been done by the caller
-         * anyway.
-         */
-        return 0;
-    }
-
-    return (uint8_t)(s->regs[R_PREFIX_0 + reg] >> (byteoffset * 8u));
-}
-
-static size_t ot_kmac_left_decode(const OtKMACState *s, size_t offset,
-                                  size_t *value)
-{
-    size_t len;
-    size_t val = 0;
-
-    /* first byte is the length in bytes of encoded value */
-    len = (size_t)ot_kmac_get_prefix_byte(s, offset);
-    if (len < 1u || len > 4u) {
-        return 0;
-    }
-
-    /* compute value */
-    for (size_t ix = 1u; ix < len + 1u; ix++) {
-        val = (val << 8u) | ot_kmac_get_prefix_byte(s, offset + ix);
-    }
-
-    *value = val;
-    return 1u + len;
-}
-
-static bool ot_kmac_decode_sw_prefix(OtKMACState *s)
-{
-    size_t offset = 0;
-    size_t used;
-    OtKMACPrefix *prefix = &s->sw_cfg.prefix;
-
-    used = ot_kmac_left_decode(s, offset, &prefix->funcname_len);
-    prefix->funcname_len /= 8u;
-    offset += used;
-
-    if (prefix->funcname_len > OT_KMAC_PREFIX_FUNCNAME_LEN) {
-        goto error;
-    }
-    for (size_t ix = 0; ix < prefix->funcname_len; ix++) {
-        prefix->funcname[ix] = ot_kmac_get_prefix_byte(s, offset + ix);
-    }
-    offset += prefix->funcname_len;
-
-    used = ot_kmac_left_decode(s, offset, &prefix->customstr_len);
-    prefix->customstr_len /= 8u;
-    offset += used;
-
-    if (prefix->customstr_len > OT_KMAC_PREFIX_CUSTOMSTR_LEN) {
-        goto error;
-    }
-    for (size_t ix = 0; ix < prefix->customstr_len; ix++) {
-        prefix->customstr[ix] = ot_kmac_get_prefix_byte(s, offset + ix);
-    }
-    offset += prefix->customstr_len;
-
-    if (offset <= NUM_PREFIX_REGS * sizeof(uint32_t)) {
-        return true;
-    }
-
-error:
-    memset(prefix, 0, sizeof(OtKMACPrefix));
-    return false;
-}
-
 static bool ot_kmac_check_kmac_sw_prefix(const OtKMACState *s)
 {
     /*
@@ -1086,81 +991,109 @@ static void ot_kmac_process_start(OtKMACState *s)
 
     g_assert(cfg);
 
+    size_t strength = cfg->strength ? cfg->strength : 256u;
+    size_t rate = ot_kmac_get_keccak_rate_bytes(strength);
+    memset(&s->ltc_state.sha3, 0, sizeof(s->ltc_state.sha3));
+    s->ltc_state.sha3.capacity_words =
+        (unsigned short)(2u * strength / (8u * sizeof(uint64_t)));
+
+    /*
+     * RTL (sha3pad.sv:558-567):
+     *   Sha3   -> 5'b00110 (0x06)
+     *   Shake  -> 5'b11111 (0x1f)
+     *   CShake -> 5'b00100 (0x04)
+     *   default (mode=1) -> 5'b00001 (0x01)
+     */
     switch (cfg->mode) {
     case OT_KMAC_MODE_SHA3:
-        switch (cfg->strength) {
-        case 224u:
-            sha3_224_init(&s->ltc_state);
-            break;
-        case 256u:
-            sha3_256_init(&s->ltc_state);
-            break;
-        case 384u:
-            sha3_384_init(&s->ltc_state);
-            break;
-        case 512u:
-            sha3_512_init(&s->ltc_state);
-            break;
-        default:
-            /* should never happen: strength was already validated earlier */
-            g_assert_not_reached();
-        }
+        s->ltc_state.sha3.suffix = 0x06u;
         break;
     case OT_KMAC_MODE_SHAKE:
-        switch (cfg->strength) {
-        case 128u:
-        case 256u:
-            sha3_shake_init(&s->ltc_state, (int)cfg->strength);
-            break;
-        default:
-            /* should never happen: strength was already validated earlier */
-            g_assert_not_reached();
-        }
+        s->ltc_state.sha3.suffix = 0x1fu;
         break;
     case OT_KMAC_MODE_CSHAKE:
     case OT_KMAC_MODE_KMAC:
-        switch (cfg->strength) {
-        case 128u:
-        case 256u: {
-            sha3_cshake_init(&s->ltc_state, (int)cfg->strength,
+        s->ltc_state.sha3.suffix = 0x04u;
+        if (s->current_app) {
+            sha3_cshake_init(&s->ltc_state, (int)strength,
                              cfg->prefix.funcname, cfg->prefix.funcname_len,
                              cfg->prefix.customstr, cfg->prefix.customstr_len);
-            /* if KMAC mode is enabled, process key */
-            if (cfg->mode == OT_KMAC_MODE_KMAC) {
-                uint8_t key[NUM_KEY_REGS * sizeof(uint32_t)];
-                size_t keylen = 0;
-                static_assert(OT_KMAC_KEY_SIZE <= ARRAY_SIZE(key),
-                              "key buffer too small to hold sideloaded key");
-                ot_kmac_get_key(s, key, &keylen);
-                sha3_process_kmac_key(&s->ltc_state, key, keylen);
-                s->regs[R_ENTROPY_REFRESH_HASH_CNT] =
-                    (s->regs[R_ENTROPY_REFRESH_HASH_CNT] + 1u) &
-                    R_ENTROPY_REFRESH_HASH_CNT_HASH_CNT_MASK;
-                uint32_t threshold =
-                    ot_shadow_reg_peek(&s->entropy_refresh_threshold);
-                if (threshold > 0 &&
-                    s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= threshold) {
-                    s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
-                    if (s->entropy_configured) {
-                        ot_kmac_request_entropy(s);
-                    }
-                }
+        } else {
+            /*
+             * RTL (sha3pad.sv:236, 327-358, 509-533):
+             * When mode_i == CShake, StPrefix unconditionally absorbs one
+             * rate-byte block {ns_data_i, encode_bytepad} zero-padded to rate.
+             */
+            uint8_t prefix_blk[168];
+            memset(prefix_blk, 0, sizeof(prefix_blk));
+            if (cfg->strength != 0) {
+                prefix_blk[0] = 0x01u;
+                prefix_blk[1] = (uint8_t)rate;
             }
-            break;
-        }
-        default:
-            /* should never happen: strength was already validated earlier */
-            g_assert_not_reached();
+            for (size_t ix = 0; ix < NUM_PREFIX_REGS; ix++) {
+                stl_le_p(&prefix_blk[2u + ix * 4u], s->regs[R_PREFIX_0 + ix]);
+            }
+            sha3_process(&s->ltc_state, prefix_blk, rate);
         }
         break;
     default:
-        /* should never happen: mode was already validated earlier */
-        g_assert_not_reached();
+        s->ltc_state.sha3.suffix = 0x01u;
+        break;
+    }
+
+    /*
+     * RTL (kmac_core.sv:180, 286-376):
+     * StKey absorbs {encoded_key, encode_bytepad} whenever kmac_en_i is set.
+     */
+    bool kmac_en = s->current_app ?
+                       (cfg->mode == OT_KMAC_MODE_KMAC) :
+                       (FIELD_EX32(ot_shadow_reg_peek(&s->cfg), CFG_SHADOWED,
+                                   KMAC_EN) != 0);
+    if (kmac_en) {
+        uint8_t key[NUM_KEY_REGS * sizeof(uint32_t)];
+        size_t keylen = 0;
+        static_assert(OT_KMAC_KEY_SIZE <= ARRAY_SIZE(key),
+                      "key buffer too small to hold sideloaded key");
+        ot_kmac_get_key(s, key, &keylen);
+
+        uint8_t key_blk[168];
+        memset(key_blk, 0, sizeof(key_blk));
+        if (cfg->strength != 0) {
+            key_blk[0] = 0x01u;
+            key_blk[1] = (uint8_t)rate;
+        }
+        if (keylen > 0) {
+            if (keylen <= 24u) {
+                key_blk[2] = 0x01u;
+                key_blk[3] = (uint8_t)(keylen * 8u);
+                memcpy(&key_blk[4], key, keylen);
+            } else {
+                key_blk[2] = 0x02u;
+                key_blk[3] = (uint8_t)((keylen * 8u) >> 8u);
+                key_blk[4] = (uint8_t)((keylen * 8u) & 0xffu);
+                memcpy(&key_blk[5], key, keylen);
+            }
+        }
+        sha3_process(&s->ltc_state, key_blk, rate);
+
+        s->regs[R_ENTROPY_REFRESH_HASH_CNT] =
+            (s->regs[R_ENTROPY_REFRESH_HASH_CNT] + 1u) &
+            R_ENTROPY_REFRESH_HASH_CNT_HASH_CNT_MASK;
+        uint32_t threshold = ot_shadow_reg_peek(&s->entropy_refresh_threshold);
+        if (threshold > 0 &&
+            s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= threshold) {
+            s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
+            if (s->entropy_configured) {
+                ot_kmac_request_entropy(s);
+            }
+        }
     }
 }
 
 static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 {
+    bool app_active = (s->current_app != NULL);
+
     timer_del(s->edn_wait_timer);
     s->error_awaiting_sw = false;
     s->cfg_entropy_ready = false;
@@ -1239,7 +1172,7 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 
     /* SW shoud not send a command along with the err_processed bit */
     if (cmd != OT_KMAC_CMD_NONE) {
-        if (s->current_app) {
+        if (app_active) {
             ot_kmac_report_error(s, OT_KMAC_ERR_SW_ISSUED_CMD_IN_APP_ACTIVE,
                                  cmd);
         } else {
@@ -1309,19 +1242,8 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
                 err_entropy_ready) {
                 break;
             }
-            if (s->sw_cfg.mode == OT_KMAC_MODE_KMAC && !s->entropy_seeded) {
+            if (kmac_en && !s->entropy_seeded) {
                 ot_kmac_request_entropy(s);
-            }
-            /* if cSHAKE or KMAC modes, decode prefix from PREFIX_x registers */
-            if (s->sw_cfg.mode == OT_KMAC_MODE_CSHAKE ||
-                s->sw_cfg.mode == OT_KMAC_MODE_KMAC) {
-                if (!ot_kmac_decode_sw_prefix(s)) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                  "%s: %s: could not decode cSHAKE prefix, "
-                                  "digest result will be wrong!\n",
-                                  __func__, s->ot_id);
-                    memset(&s->sw_cfg.prefix, 0, sizeof(s->sw_cfg.prefix));
-                }
             }
 
             s->msgfifo_full_seen = false;
