@@ -453,18 +453,13 @@ static void ot_rom_ctrl_unscramble(OtRomCtrlState *s, const uint64_t *src,
 static void ot_rom_ctrl_scramble(OtRomCtrlState *s, const uint32_t *src,
                                  uint64_t *dst)
 {
-    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
-    memset(&dst[scr_word_size], 0, ROM_DIGEST_WORDS * sizeof(uint64_t));
-
     if (!s->key_xstr || !s->nonce_xstr) {
         trace_ot_rom_ctrl_missing(s->ot_id,
                                   "missing key/nonce to fake scrambling");
-        for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
-            dst[log_addr] = ot_rom_ctrl_add_ecc_39_32_u64(src[log_addr]);
-        }
         return;
     }
 
+    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
     for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
         uint64_t clrdata = src[log_addr];
         uint64_t eclrdata = ot_rom_ctrl_add_ecc_39_32_u64(clrdata);
@@ -655,10 +650,9 @@ static void ot_rom_ctrl_load_binary(OtRomCtrlState *s, const OtRomImg *ri)
     ot_rom_ctrl_spawn_hash_calculation(s, tmpptr, true);
 }
 
-static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri,
-                                        bool scrambled_n_ecc)
+static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri)
 {
-    if (scrambled_n_ecc && (!s->key_xstr || !s->nonce_xstr)) {
+    if (!s->key_xstr || !s->nonce_xstr) {
         error_setg(&error_fatal,
                    "%s: %s: cannot unscrambled ROM '%s' w/o key and nonce\n",
                    __func__, ri->filename, s->ot_id);
@@ -691,7 +685,7 @@ static char *ot_rom_ctrl_read_text_file(OtRomCtrlState *s, const OtRomImg *ri,
 static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
                                   bool scrambled_n_ecc)
 {
-    char *buffer = ot_rom_ctrl_read_text_file(s, ri, scrambled_n_ecc);
+    char *buffer = ot_rom_ctrl_read_text_file(s, ri);
     if (!buffer) {
         return;
     }
@@ -818,7 +812,7 @@ static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
 
 static void ot_rom_ctrl_load_hex(OtRomCtrlState *s, const OtRomImg *ri)
 {
-    char *buffer = ot_rom_ctrl_read_text_file(s, ri, true);
+    char *buffer = ot_rom_ctrl_read_text_file(s, ri);
     if (!buffer) {
         return;
     }
@@ -969,30 +963,7 @@ static inline uint32_t ot_rom_ctrl_byte_mask(hwaddr addr, unsigned size)
 
 static uint32_t ot_rom_ctrl_reg_permit(hwaddr reg)
 {
-    switch (reg) {
-    case R_ALERT_TEST:
-    case R_FATAL_ALERT_CAUSE:
-        return 0x1u;
-    case R_DIGEST_0:
-    case R_DIGEST_1:
-    case R_DIGEST_2:
-    case R_DIGEST_3:
-    case R_DIGEST_4:
-    case R_DIGEST_5:
-    case R_DIGEST_6:
-    case R_DIGEST_7:
-    case R_EXP_DIGEST_0:
-    case R_EXP_DIGEST_1:
-    case R_EXP_DIGEST_2:
-    case R_EXP_DIGEST_3:
-    case R_EXP_DIGEST_4:
-    case R_EXP_DIGEST_5:
-    case R_EXP_DIGEST_6:
-    case R_EXP_DIGEST_7:
-        return 0xfu;
-    default:
-        return 0u;
-    }
+    return (reg == R_ALERT_TEST || reg == R_FATAL_ALERT_CAUSE) ? 0x1u : 0xfu;
 }
 
 static uint64_t ot_rom_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -1048,11 +1019,6 @@ static MemTxResult ot_rom_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
                                                     MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        *data = 0xffffffffu;
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t val32 = (uint32_t)ot_rom_ctrl_regs_read(opaque, addr & ~3ull, 4u);
     val32 >>= (addr & 3u) * 8u;
     if (size < 4u) {
@@ -1117,9 +1083,6 @@ static MemTxResult ot_rom_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t be = ot_rom_ctrl_byte_mask(addr, size);
     uint32_t permit = ot_rom_ctrl_reg_permit(reg);
     if ((permit & ~be) != 0u) {
@@ -1248,15 +1211,6 @@ static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,
     return val;
 }
 
-static void ot_rom_ctrl_digest_mem_write(void *opaque, hwaddr addr,
-                                         uint64_t value, unsigned size)
-{
-    OtRomCtrlState *s = opaque;
-    hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
-
-    ot_rom_ctrl_mem_write(s, rom_offset, value, size);
-}
-
 static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
                                            unsigned size, bool is_write,
                                            MemTxAttrs attrs)
@@ -1274,7 +1228,7 @@ static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
 
 static const MemoryRegionOps ot_rom_ctrl_digest_mem_ops = {
     .read = &ot_rom_ctrl_digest_mem_read,
-    .write = &ot_rom_ctrl_digest_mem_write,
+    .write = &ot_rom_ctrl_mem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
@@ -1311,11 +1265,6 @@ static void ot_rom_ctrl_reset_hold(Object *obj, ResetType type)
     }
 
     s->loaded = false;
-    if (s->scrambled.buffer) {
-        qemu_vfree(s->scrambled.buffer);
-        s->scrambled.buffer = NULL;
-        s->scrambled.word_count = 0u;
-    }
 
     /* reset all registers on first reset, otherwise keep digests */
     if (s->first_reset) {
