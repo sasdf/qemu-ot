@@ -143,7 +143,7 @@ REG32(MAIN_SM_STATE, 0x5cu)
 
 #define R_LAST_REG (R_MAIN_SM_STATE)
 #define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
+#define REGS_SIZE  0x80u
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -167,7 +167,7 @@ REG32(MAIN_SM_STATE, 0x5cu)
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_ACMD_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_CMD_SEQ_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_RESEED_CNT_ALERT_MASK)
-#define ERR_CODE_MASK 0x77e0ffffu
+#define ERR_CODE_MASK 0x77f0ffffu
 
 #define OT_CSRNG_AES_KEY_SIZE   32u /* 256 bits */
 #define OT_CSRNG_AES_BLOCK_SIZE 16u /* 128 bits */
@@ -478,6 +478,8 @@ ot_csrng_connect_hw_app(OtCSRNGState *s, unsigned app_id, qemu_irq req_sts,
                                   (int)app_id);
 }
 
+static bool ot_csrng_is_in_queue(OtCSRNGInstance *inst);
+
 static OtCSRNGCmdStatus
 ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
 {
@@ -491,8 +493,13 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
     g_assert(inst->hw.filler);
     g_assert(inst->hw.req_sts);
 
+    if (ot_csrng_is_in_queue(inst) &&
+        FIELD_EX32(word, OT_CSNRG_CMD, ACMD) == OT_CSRNG_CMD_UNINSTANTIATE) {
+        ot_fifo32_reset(&inst->cmd_fifo);
+    }
+
     /* FIFO is emptied in #ot_csrng_complete_command */
-    if (ot_fifo32_is_full(&inst->cmd_fifo)) {
+    if (ot_fifo32_is_full(&inst->cmd_fifo) || ot_csrng_is_in_queue(inst)) {
         xtrace_ot_csrng_error("Command FIFO is full");
         return CSRNG_STATUS_INVALID_CMD_SEQ;
     }
@@ -570,7 +577,8 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
     }
 
     if (acmd == OT_CSRNG_CMD_UNINSTANTIATE) {
-        if (!ot_csrng_drng_is_instantiated(inst)) {
+        if (!ot_csrng_drng_is_instantiated(inst) &&
+            ot_csrng_is_in_queue(inst)) {
             /*
              * Very special hacky case:
              *
@@ -815,7 +823,7 @@ static OtCSRNDCmdResult ot_csrng_drng_reseed(OtCSRNGInstance *inst, bool flag0)
         }
 
         if (res > 0) {
-            s->entropy_delay = (res > 1) ? (unsigned)res : 0;
+            s->entropy_delay = (unsigned)res;
             s->waiting_for_entropy = true;
             trace_ot_csrng_entropy_rejected(slot, "not ready", res);
             return CSRNG_CMD_RETRY;
@@ -1134,6 +1142,11 @@ ot_csrng_complete_sw_command(OtCSRNGInstance *inst, OtCSRNGCmdStatus sts)
 {
     OtCSRNGState *s = inst->parent;
 
+    if (!s->enabled) {
+        s->regs[R_SW_CMD_STS] = 0u;
+        return;
+    }
+
     uint32_t reg = s->regs[R_SW_CMD_STS];
     reg = FIELD_DP32(reg, SW_CMD_STS, CMD_RDY, 1u);
     reg = FIELD_DP32(reg, SW_CMD_STS, CMD_ACK, 1u);
@@ -1254,8 +1267,6 @@ static OtCSRNDCmdResult ot_csrng_handle_generate(OtCSRNGState *s, unsigned slot)
 
     if (!packet_count) {
         xtrace_ot_csrng_error("generation for no packet");
-        CHANGE_STATE(s, CSRNG_ERROR);
-        ot_csrng_update_alerts(s);
         return CSRNG_CMD_INVALID_GEN_CMD;
     }
 
@@ -2021,7 +2032,8 @@ static MemTxResult ot_csrng_regs_write_with_attrs(
     case R_CMD_REQ:
         s->regs[R_SW_CMD_STS] &= ~R_SW_CMD_STS_CMD_ACK_MASK;
         inst = &s->instances[SW_INSTANCE_ID];
-        if (!ot_fifo32_is_full(&inst->cmd_fifo)) {
+        if (!ot_fifo32_is_full(&inst->cmd_fifo) &&
+            !ot_csrng_is_in_queue(inst)) {
             ot_fifo32_push(&inst->cmd_fifo, val32);
             if (ot_csrng_instance_is_command_ready(inst, false)) {
                 /*
@@ -2173,7 +2185,7 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     }
     s->entropy_delay = 0;
 
-    memset(s->regs, 0, REGS_SIZE);
+    memset(s->regs, 0, REGS_COUNT * sizeof(uint32_t));
 
     s->regs[R_REGWEN] = 0x1u;
     s->regs[R_CTRL] = 0x9999u;
