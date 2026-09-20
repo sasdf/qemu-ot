@@ -375,6 +375,8 @@ struct OtI2CState {
     uint8_t matched_address;
 
     /* Target mode transaction and stretching state */
+    bool in_bus_xact;
+    bool in_target_xact;
     bool in_target_transfer;
     bool restart_pending;
     bool target_read_mode;
@@ -1571,22 +1573,20 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
     case I2C_START_SEND:
     case I2C_START_SEND_ASYNC:
     case I2C_START_RECV: {
-        if (!ot_i2c_check_address_match(s, s->matched_address)) {
-            if (s->in_target_transfer && !s->restart_pending) {
-                ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
-            }
-            s->in_target_transfer = false;
-            s->restart_pending = false;
-            return -1;
-        }
-        bool is_recv = (event == I2C_START_RECV);
-        OtI2CSignal sig = (s->in_target_transfer || s->restart_pending)
-                              ? SIGNAL_RESTART
-                              : SIGNAL_START;
+        bool is_restart = s->in_bus_xact || s->restart_pending;
         if (s->in_target_transfer && !s->restart_pending) {
             ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
         }
+        s->in_bus_xact = true;
         s->restart_pending = false;
+        if (!ot_i2c_check_address_match(s, s->matched_address)) {
+            s->in_target_transfer = false;
+            s->target_read_mode = false;
+            return -1;
+        }
+        bool is_recv = (event == I2C_START_RECV);
+        OtI2CSignal sig = is_restart ? SIGNAL_RESTART : SIGNAL_START;
+        s->in_target_xact = true;
         s->in_target_transfer = true;
         s->expect_stop = false;
         s->nack_transaction = false;
@@ -1627,13 +1627,17 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
             if (s->target_read_mode && !s->expect_stop) {
                 ot_i2c_irq_set_state(s, UNEXP_STOP, true);
             }
+            /* Assert command complete interrupt. */
+            ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+        }
+        if (s->in_target_xact) {
             /* Signal STOP or NACK_STOP as the last entry in the fifo. */
             ot_i2c_target_set_acqdata(s, 0,
                                       s->nack_transaction ? SIGNAL_NACK_STOP
                                                           : SIGNAL_STOP);
-            /* Assert command complete interrupt. */
-            ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
         }
+        s->in_bus_xact = false;
+        s->in_target_xact = false;
         s->in_target_transfer = false;
         s->restart_pending = false;
         s->target_read_mode = false;
@@ -1931,6 +1935,8 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->check_timings = true;
     s->address_mask_0 = 0x0u;
     s->matched_address = 0x0u;
+    s->in_bus_xact = false;
+    s->in_target_xact = false;
     s->in_target_transfer = false;
     s->restart_pending = false;
     s->target_read_mode = false;

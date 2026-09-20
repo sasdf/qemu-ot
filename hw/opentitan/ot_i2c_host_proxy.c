@@ -221,12 +221,14 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         }
         if (byte == 'P') {
             s->parser_state = CMD_I2C_INIT;
+            i2c_nack(s->active_bus);
             i2c_end_transfer(s->active_bus);
             ot_i2c_host_proxy_stall(s);
             break;
         }
         if (byte == 'S') {
             s->parser_state = CMD_I2C_REPEATED_START;
+            i2c_nack(s->active_bus);
             ot_i2c_bus_target_repeated_start(s->active_bus);
             ot_i2c_host_proxy_stall(s);
             break;
