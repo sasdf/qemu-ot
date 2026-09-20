@@ -389,6 +389,8 @@ static void ot_rstmgr_reset_bus(void *opaque)
         replay_mutex_lock();
         bql_lock();
         qemu_notify_event();
+    } else {
+        s->cpu->stop = false;
     }
 
     if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
