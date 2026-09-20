@@ -938,12 +938,10 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     }
 
-    if (!fifo8_is_empty(&s->rx_staging_fifo)) {
-        if (fifo8_is_empty(&s->rx_fifo)) {
-            s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        }
-        ot_uart_step_rx(s);
+    if (fifo8_is_empty(&s->rx_fifo) && !fifo8_is_empty(&s->rx_staging_fifo)) {
+        s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     }
+    ot_uart_step_rx(s);
 
     if (!fifo8_is_empty(&s->tx_fifo) && !s->tx_busy &&
         ot_uart_is_tx_enabled(s)) {
