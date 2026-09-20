@@ -220,10 +220,6 @@ static bool ot_adc_ctrl_pick_sample_chn(uint32_t filter_ctl, uint32_t def_val,
         return false;
     }
 
-    if (min_v > 0u) {
-        *out_val = min_v - 1u;
-        return true;
-    }
     if (max_v < FILTER_CTL_MAX_V_MASK) {
         *out_val = max_v + 1u;
         return true;
