@@ -49,14 +49,22 @@ static OtRomImgFormat ot_rom_img_guess_image_format(const char *filename)
     uint8_t data[128u];
     ssize_t len = read(fd, data, sizeof(data));
     data[sizeof(data) - 1u] = '\0';
+    close(fd);
+
+    if (len < sizeof(data)) {
+        return OT_ROM_IMG_FORMAT_NONE;
+    }
+
+    if (!memcmp(data, ELF_HEADER, sizeof(ELF_HEADER))) {
+        return OT_ROM_IMG_FORMAT_ELF;
+    }
 
     /*
      * Discard comments; only cope with single-line comments:
      * we do not need to handle more, since OT-generated files do not contain
      * multi-line comments in VMEM files; keep it as simple as possible.
      */
-    if (len == sizeof(data) && data[0u] == '/' &&
-        (data[1u] == '*' || data[1u] == '/')) {
+    if (data[0u] == '/' && (data[1u] == '*' || data[1u] == '/')) {
         for (unsigned ix = 2u; ix < sizeof(data) - 1u; ix++) {
             if (data[ix] == '\n') {
                 unsigned rem = sizeof(data) - 1u - ix;
@@ -67,16 +75,6 @@ static OtRomImgFormat ot_rom_img_guess_image_format(const char *filename)
                 break;
             }
         }
-    }
-
-    close(fd);
-
-    if (len < sizeof(data)) {
-        return OT_ROM_IMG_FORMAT_NONE;
-    }
-
-    if (!memcmp(data, ELF_HEADER, sizeof(ELF_HEADER))) {
-        return OT_ROM_IMG_FORMAT_ELF;
     }
 
     if (data[0u] == '@') { /* likely a VMEM file */
