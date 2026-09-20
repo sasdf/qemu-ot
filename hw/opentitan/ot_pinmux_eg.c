@@ -257,12 +257,6 @@ int ot_pinmux_eg_mio_to_host_pin(unsigned pad)
     }
 }
 
-int ot_pinmux_eg_mio_to_gpio(const OtPinmuxEgState *s, unsigned pad)
-{
-    (void)s;
-    return ot_pinmux_eg_mio_to_host_pin(pad);
-}
-
 static int ot_pinmux_eg_pad_priority(const OtPinmuxEgState *s, unsigned pad)
 {
     const OtPinmuxEgStateRegs *regs = s->regs;
@@ -300,9 +294,6 @@ static int ot_pinmux_eg_pad_priority(const OtPinmuxEgState *s, unsigned pad)
 
 int ot_pinmux_eg_host_pin_to_gpio(OtPinmuxEgState *s, unsigned host_pin)
 {
-    if (!s || !s->regs) {
-        return (int)host_pin;
-    }
     const OtPinmuxEgStateRegs *regs = s->regs;
     int best_pad = -1;
     int best_prio = -1;
@@ -590,52 +581,6 @@ static void ot_pinmux_eg_update_gpio_inputs(OtPinmuxEgState *s)
     ot_gpio_eg_notify_sysrst_change();
 }
 
-static void ot_pinmux_eg_check_wkup_detectors(OtPinmuxEgState *s, bool is_dio,
-                                              uint32_t target_padsel, int prev,
-                                              int level)
-{
-    OtPinmuxEgStateRegs *regs = s->regs;
-
-    for (unsigned i = 0; i < PARAM_N_WKUP_DETECT; i++) {
-        if (!(regs->wkup_detector[i] & R_WKUP_DETECTOR_EN_MASK)) {
-            continue;
-        }
-        bool det_dio =
-            (bool)(regs->wkup_detector_cfg[i] & R_WKUP_DETECTOR_CFG_MIODIO_MASK);
-        if (det_dio != is_dio) {
-            continue;
-        }
-        if (regs->wkup_detector_padsel[i] != target_padsel) {
-            continue;
-        }
-        uint32_t mode = regs->wkup_detector_cfg[i] & 0x7u;
-        bool match = false;
-        switch (mode) {
-        case 0: /* Posedge */
-            match = (prev == 0 && level == 1);
-            break;
-        case 1: /* Negedge */
-            match = (prev == 1 && level == 0);
-            break;
-        case 2: /* Edge */
-            match = (prev != level);
-            break;
-        case 3: /* High */
-            match = (level == 1);
-            break;
-        case 4: /* Low */
-            match = (level == 0);
-            break;
-        default:
-            break;
-        }
-        if (match) {
-            regs->wkup_cause |= (1u << i);
-            ibex_irq_set(&s->wkup, 1);
-        }
-    }
-}
-
 bool ot_pinmux_eg_trigger_mio_wkup(unsigned mio_pad)
 {
     OtPinmuxEgState *s = ot_pinmux_eg_instance;
@@ -702,21 +647,17 @@ void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level)
         return;
     }
 
-    ot_pinmux_eg_check_wkup_detectors(s, true, dio_pad, prev, level);
+    ot_pinmux_eg_eval_wkup_detectors(s);
 }
 
 static void ot_pinmux_eg_set_mio_pad_in(OtPinmuxEgState *s, unsigned pad,
                                         int level)
 {
     uint64_t bit = 1ULL << pad;
-    int prev = (int)((s->pad_in_level >> pad) & 1u);
     if (level) {
         s->pad_in_level |= bit;
     } else {
         s->pad_in_level &= ~bit;
-    }
-    if (prev != level) {
-        ot_pinmux_eg_check_wkup_detectors(s, false, pad + 2u, prev, level);
     }
 }
 
