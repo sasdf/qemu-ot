@@ -568,18 +568,17 @@ static void ot_sram_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_CTRL:
         if (s->regs[R_CTRL_REGWEN]) { /* WO */
             val32 &= R_CTRL_INIT_MASK | R_CTRL_RENEW_SCR_KEY_MASK;
-            if (!s->initializing) {
-                if (val32 & R_CTRL_RENEW_SCR_KEY_MASK) {
-                    ot_sram_ctrl_reseed(s);
-                }
-                if (val32 & R_CTRL_INIT_MASK) {
-                    if (s->noinit) {
-                        qemu_log_mask(LOG_GUEST_ERROR,
-                                      "%s: %s initialization support disabled\n",
-                                      __func__, s->ot_id);
-                    } else {
-                        ot_sram_ctrl_start_initialization(s);
-                    }
+            uint32_t trig = s->initializing ? 0u : val32;
+            if (trig & R_CTRL_RENEW_SCR_KEY_MASK) {
+                ot_sram_ctrl_reseed(s);
+            }
+            if (trig & R_CTRL_INIT_MASK) {
+                if (s->noinit) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "%s: %s initialization support disabled\n",
+                                  __func__, s->ot_id);
+                } else {
+                    ot_sram_ctrl_start_initialization(s);
                 }
             }
         } else {
