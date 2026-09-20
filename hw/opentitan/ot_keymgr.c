@@ -2512,9 +2512,6 @@ static MemTxResult ot_keymgr_read_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     hwaddr aligned_addr = addr & ~3ULL;
-    if ((aligned_addr >> 2u) >= REGS_COUNT) {
-        return MEMTX_ERROR;
-    }
     unsigned shift = (unsigned)((addr & 3ULL) * 8u);
     uint64_t val32 = ot_keymgr_read(opaque, aligned_addr, 4u);
     uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
@@ -2528,9 +2525,6 @@ static MemTxResult ot_keymgr_write_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     uint32_t reg = (uint32_t)(addr >> 2u);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_ERROR;
-    }
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     if ((KEYMGR_PERMIT[reg] & ~reg_be) != 0u) {
         return MEMTX_ERROR;
