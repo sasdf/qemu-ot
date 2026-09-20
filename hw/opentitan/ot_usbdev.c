@@ -840,32 +840,37 @@ static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
             1u :
             0u;
 
-    uint32_t usb_tx_oe_o = tx_oe_i;
-    if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
-        usb_tx_oe_o =
-            FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, OE_O);
-    }
+    bool drive_en =
+        (bool)(s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK);
+    bool link_suspend = (FIELD_EX32(s->regs[R_USBSTAT], USBSTAT, LINK_STATE) ==
+                         OT_USBDEV_LINK_STATE_SUSPENDED);
+    bool usb_rx_enable = drive_en ?
+        (bool)FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE,
+                         RX_ENABLE_O) :
+        (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, USE_DIFF_RCVR) &&
+         !link_suspend);
+
+    uint32_t usb_tx_dp_o = drive_en ?
+        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DP_O) :
+        tx_dp_i;
+    uint32_t usb_tx_dn_o = drive_en ?
+        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O) :
+        tx_dn_i;
+    uint32_t usb_tx_oe_o = drive_en ?
+        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, OE_O) :
+        tx_oe_i;
 
     uint32_t rx_dp;
     uint32_t rx_dn;
     if (usb_tx_oe_o) {
-        if (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, TX_USE_D_SE0)) {
-            uint32_t se0 =
-                FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, SE0_O);
-            uint32_t d =
-                FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, D_O);
-            rx_dp = se0 ? 0u : d;
-            rx_dn = se0 ? 0u : (d ? 0u : 1u);
-        } else {
-            rx_dp = FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DP_O);
-            rx_dn = FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O);
-        }
+        rx_dp = usb_tx_dp_o;
+        rx_dn = usb_tx_dn_o;
     } else {
         rx_dp = dp_pullup ? 1u : 0u;
         rx_dn = dn_pullup ? 1u : 0u;
     }
 
-    uint32_t rx_d = (rx_dp && !rx_dn) ? 1u : 0u;
+    uint32_t rx_d = (usb_rx_enable && rx_dp && !rx_dn) ? 1u : 0u;
     uint32_t pwr_sense = ot_usbdev_has_vbus(s) ? 1u : 0u;
 
     uint32_t val32 = 0u;
@@ -879,6 +884,40 @@ static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
     val32 = FIELD_DP32(val32, PHY_PINS_SENSE, TX_OE_O, tx_oe_i);
     val32 = FIELD_DP32(val32, PHY_PINS_SENSE, PWR_SENSE, pwr_sense);
     return val32;
+}
+
+static void ot_usbdev_update_aon_wake(OtUsbdevState *s)
+{
+    if (!(s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
+        return;
+    }
+
+    uint32_t pins_sense = ot_usbdev_read_phy_pins_sense(s);
+    bool usb_dp_i = (bool)FIELD_EX32(pins_sense, PHY_PINS_SENSE, RX_DP_I);
+    bool usb_dn_i = (bool)FIELD_EX32(pins_sense, PHY_PINS_SENSE, RX_DN_I);
+    bool usb_sense_i = (bool)FIELD_EX32(pins_sense, PHY_PINS_SENSE, PWR_SENSE);
+
+    bool not_idle = (usb_dp_i != s->aon_dppullup_en) ||
+                    (usb_dn_i != s->aon_dnpullup_en);
+    bool se0 = !usb_dp_i && !usb_dn_i;
+    bool sense_lost = !usb_sense_i;
+
+    if (not_idle) {
+        s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_NOT_IDLE_MASK;
+    }
+    if (se0) {
+        s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_RESET_MASK;
+    }
+    if (sense_lost) {
+        s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_DISCONNECTED_MASK;
+    }
+
+    if (not_idle || se0 || sense_lost) {
+        ibex_irq_set(&s->wkup, 1);
+    }
+
+    s->aon_wake_events = s->regs[R_WAKE_EVENTS];
+    s->aon_cdc_dst_qs = s->aon_wake_events;
 }
 
 /*
@@ -2367,16 +2406,7 @@ static MemTxResult ot_usbdev_write_with_attrs(
                 s->aon_dnpullup_en = dn_pullup;
                 s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_MODULE_ACTIVE_MASK;
             }
-            if (!ot_usbdev_has_vbus(s)) {
-                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_DISCONNECTED_MASK;
-                ibex_irq_set(&s->wkup, 1);
-            } else if (s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK) {
-                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_BUS_NOT_IDLE_MASK |
-                                          R_WAKE_EVENTS_BUS_RESET_MASK;
-                ibex_irq_set(&s->wkup, 1);
-            }
-            s->aon_wake_events = s->regs[R_WAKE_EVENTS];
-            s->aon_cdc_dst_qs = s->aon_wake_events;
+            ot_usbdev_update_aon_wake(s);
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
             bool was_connected =
                 ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
@@ -2419,6 +2449,7 @@ static MemTxResult ot_usbdev_write_with_attrs(
     }
     case R_PHY_PINS_DRIVE:
         s->regs[reg] = val32 & 0x000100ffu;
+        ot_usbdev_update_aon_wake(s);
         break;
     case R_OUT_ISO:
     case R_IN_ISO:
