@@ -264,14 +264,14 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
         .sw_resettable_devices = {
-            [0u] = { TYPE_OT_SPI_DEVICE, 0u, false },
-            [1u] = { TYPE_OT_SPI_HOST, 0u, false },
-            [2u] = { TYPE_OT_SPI_HOST, 1u, false },
-            [3u] = { TYPE_OT_USBDEV, 0u, false },
+            [0u] = { TYPE_OT_SPI_DEVICE, 0u },
+            [1u] = { TYPE_OT_SPI_HOST, 0u },
+            [2u] = { TYPE_OT_SPI_HOST, 1u },
+            [3u] = { TYPE_OT_USBDEV, 0u },
             [4u] = { TYPE_OT_USBDEV, 0u, true },
-            [5u] = { TYPE_OT_I2C, 0u, false },
-            [6u] = { TYPE_OT_I2C, 1u, false },
-            [7u] = { TYPE_OT_I2C, 2u, false },
+            [5u] = { TYPE_OT_I2C, 0u },
+            [6u] = { TYPE_OT_I2C, 1u },
+            [7u] = { TYPE_OT_I2C, 2u },
         }
     },
     [OT_RSTMGR_VERSION_DJ] = {
@@ -286,9 +286,9 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [OT_RSTMGR_RESET_RV_DM] = BIT(7),
         },
         .sw_resettable_devices = {
-            [0u] = { TYPE_OT_SPI_DEVICE, 0u, false },
-            [1u] = { TYPE_OT_SPI_HOST, 0u, false },
-            [2u] = { TYPE_OT_I2C, 0u, false },
+            [0u] = { TYPE_OT_SPI_DEVICE, 0u },
+            [1u] = { TYPE_OT_SPI_HOST, 0u },
+            [2u] = { TYPE_OT_I2C, 0u },
         }
     },
 };
@@ -323,17 +323,7 @@ static const char *OT_RST_MGR_REQUEST_NAMES[] = {
 
 static void ot_rstmgr_update_alerts(OtRstMgrState *s)
 {
-    uint32_t err_level = 0;
-
-    if (s->regs[R_ERR_CODE] &
-        (R_ERR_CODE_REG_INTG_ERR_MASK | R_ERR_CODE_FSM_ERR_MASK)) {
-        err_level |= R_ALERT_TEST_FATAL_FAULT_MASK;
-    }
-    if (s->regs[R_ERR_CODE] & R_ERR_CODE_RESET_CONSISTENCY_ERR_MASK) {
-        err_level |= R_ALERT_TEST_FATAL_CNSTY_FAULT_MASK;
-    }
-
-    uint32_t level = s->regs[R_ALERT_TEST] | err_level;
+    uint32_t level = s->regs[R_ALERT_TEST];
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
         ibex_irq_set(&s->alerts[ix], (int)((level >> ix) & 0x1u));
@@ -342,7 +332,7 @@ static void ot_rstmgr_update_alerts(OtRstMgrState *s)
     if (s->regs[R_ALERT_TEST]) {
         s->regs[R_ALERT_TEST] = 0u;
         for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
-            ibex_irq_set(&s->alerts[ix], (int)((err_level >> ix) & 0x1u));
+            ibex_irq_set(&s->alerts[ix], 0);
         }
     }
 }
@@ -501,24 +491,14 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         s->por = true;
     }
     s->regs[R_RESET_INFO] |= req;
-    if (!ot_rstmgr_pending_internal_reset) {
-        ot_rstmgr_pending_internal_reset = true;
-        ot_rstmgr_last_reset_por = (level == OT_RSTMGR_RESET_POR);
-        ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
-        ot_rstmgr_last_reset_ndm = (level == OT_RSTMGR_RESET_RV_DM);
-    } else {
-        if (level == OT_RSTMGR_RESET_POR) {
-            ot_rstmgr_last_reset_por = true;
-        }
-        if (level == OT_RSTMGR_RESET_LOW_POWER) {
-            ot_rstmgr_last_reset_low_power = true;
-        } else {
-            ot_rstmgr_last_reset_low_power = false;
-        }
-        if (level == OT_RSTMGR_RESET_RV_DM) {
-            ot_rstmgr_last_reset_ndm = true;
-        }
-    }
+    ot_rstmgr_last_reset_por =
+        (ot_rstmgr_pending_internal_reset && ot_rstmgr_last_reset_por) ||
+        (level == OT_RSTMGR_RESET_POR);
+    ot_rstmgr_last_reset_low_power = (level == OT_RSTMGR_RESET_LOW_POWER);
+    ot_rstmgr_last_reset_ndm =
+        (ot_rstmgr_pending_internal_reset && ot_rstmgr_last_reset_ndm) ||
+        (level == OT_RSTMGR_RESET_RV_DM);
+    ot_rstmgr_pending_internal_reset = true;
 
     trace_ot_rstmgr_reset_req(s->ot_id, REQ_NAME(level), req, fastclk);
 
