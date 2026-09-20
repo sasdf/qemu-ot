@@ -1859,6 +1859,20 @@ static void ot_flash_op_read(OtFlashState *s)
                     word = src[address];
                 }
             }
+        } else if (!s->op.info_part &&
+                   (s->regs[R_ERR_CODE] & R_ERR_CODE_RD_ERR_MASK)) {
+            /*
+             * RTL: flash_ctrl_rd.sv:180 (`assign data_o = ~err_sel |
+             * (err_sel & op_err_o.rd_err) ? flash_data_i : inv_data_integ`).
+             * In StErr after a physical RD_ERR, flash_req_o is 0 so
+             * flash_phy_rd.sv data_err_o is 0 and flash_data_i outputs the
+             * latched 64-bit flash word's low 32-bit word (word_sel = 0).
+             */
+            unsigned err_word =
+                (s->regs[R_ERR_ADDR] / sizeof(uint32_t)) & ~1u;
+            if (err_word < storage->total_data_words) {
+                word = src[err_word];
+            }
         }
 
         s->op.remaining--;
