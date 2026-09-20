@@ -227,6 +227,11 @@ bool ot_rstmgr_is_ndm_reset(void)
     return ot_rstmgr_pending_internal_reset && ot_rstmgr_last_reset_ndm;
 }
 
+bool ot_rstmgr_is_internal_reset(void)
+{
+    return ot_rstmgr_pending_internal_reset;
+}
+
 typedef struct {
     const char *typename;
     unsigned idx;

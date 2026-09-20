@@ -1138,7 +1138,7 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
      * and the host VBUS control.
      */
     bool vbus_sense;
-    if (s->pinmux_vbus_sense == 1) {
+    if (s->pinmux_vbus_sense == 1 && !s->usb_server.client_connected) {
         vbus_sense = true;
     } else if (s->pinmux_vbus_sense == 0 && !s->usb_server.vbus_connected &&
                !s->vbus_override) {
@@ -2728,6 +2728,10 @@ static void ot_usbdev_server_process_vbus_changed(OtUsbdevState *s, bool vbus)
 
     server->vbus_connected = vbus;
     ot_usbdev_update_vbus(s);
+    if (vbus && ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s) &&
+        !server->device_connected) {
+        ot_usbdev_server_report_connected(s, true);
+    }
 }
 
 static void ot_usbdev_server_process_setup(OtUsbdevState *s)
@@ -3248,9 +3252,9 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
 
     ot_usbdev_cancel_all_transfers(s, "device going into reset");
 
-    bool is_sw_usb_rst = (type == RESET_TYPE_WAKEUP);
-    bool is_por = !is_sw_usb_rst &&
-                  (type == RESET_TYPE_COLD) && ot_rstmgr_is_por_reset();
+    bool is_sw_usb_rst =
+        (type == RESET_TYPE_WAKEUP) && !ot_rstmgr_is_internal_reset();
+    bool is_por = !is_sw_usb_rst && ot_rstmgr_is_por_reset();
     bool keep_aon = !is_por &&
                     (s->aon_wake_events & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
     uint32_t saved_wake_events = s->aon_wake_events;
