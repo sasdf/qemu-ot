@@ -121,9 +121,6 @@ static gint ot_vmapper_compare(gconstpointer a, gconstpointer b,
     (void)user_data;
 
     if (ra->start == rb->start) {
-        if (ra->prio == rb->prio) {
-            return (ra->end < rb->end) ? -1 : 1;
-        }
         return (gint)ra->prio - (gint)rb->prio;
     }
     return (ra->start < rb->start) ? -1 : 1;
