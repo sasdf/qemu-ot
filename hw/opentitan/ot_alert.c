@@ -655,14 +655,16 @@ ot_alert_reg_intr_test_write(OtAlertState *s, unsigned reg, uint32_t value)
 static void ot_alert_set_class_timer(OtAlertState *s, unsigned nclass,
                                      uint32_t timeout)
 {
-    uint32_t pclk = s->pclks[OT_ALERT_CLOCK_SRC_IO];
-    if (pclk == 0) {
-        pclk = 24000000u;
+    if (s->pclks[OT_ALERT_CLOCK_SRC_IO] == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: no clock\n", __func__,
+                      s->ot_id);
+        return;
     }
     OtAlertScheduler *atimer = &s->schedulers[nclass];
     /* TODO: update running schedulers if timeout_cyc_shadowed is updated */
     uint32_t cycles = timeout ? timeout : 1u;
-    int64_t ns = (int64_t)muldiv64(cycles, NANOSECONDS_PER_SECOND, pclk);
+    int64_t ns = (int64_t)muldiv64(cycles, NANOSECONDS_PER_SECOND,
+                                   s->pclks[OT_ALERT_CLOCK_SRC_IO]);
 
     OtAlertAClassState state = ot_alert_get_class_state(s, nclass);
     trace_ot_alert_set_class_timer(s->ot_id, ACLASS(nclass), ST_NAME(state),
@@ -707,8 +709,6 @@ static void ot_alert_update_escalation_outputs(OtAlertState *s)
         if (st >= STATE_PHASE0 && st <= STATE_PHASE3) {
             active_mask |=
                 ot_alert_get_phase_signals_mask(s, c, st - STATE_PHASE0);
-        } else if (st == STATE_FSMERROR) {
-            active_mask |= (1u << PARAM_N_ESC_SEV) - 1u;
         }
         active_mask |= s->schedulers[c].esc_tx_release_mask;
     }
@@ -1283,10 +1283,7 @@ static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
      * {wait_cyc_mask_i, {ReseedLfsrExtraBits{1'b1}}} = 19'h7ffff (524,287 cycles)
      * at the 24 MHz I/O Div4 clock (~21.845 ms).
      */
-    uint32_t pclk = s->pclks[OT_ALERT_CLOCK_SRC_IO];
-    if (pclk == 0) {
-        pclk = 24000000u;
-    }
+    uint32_t pclk = MAX(s->pclks[OT_ALERT_CLOCK_SRC_IO], 1u);
     uint64_t reseed_ns = muldiv64(0x7ffffULL, NANOSECONDS_PER_SECOND, pclk);
     timer_mod(&s->reseed_timer,
               qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)reseed_ns);
@@ -1302,10 +1299,7 @@ static void ot_alert_request_entropy(OtAlertState *s)
         s->edn_connected = true;
     }
     if (!s->entropy_requested) {
-        s->entropy_requested = true;
-        if (ot_edn_request_entropy(s->edn, s->edn_ep)) {
-            s->entropy_requested = false;
-        }
+        s->entropy_requested = !ot_edn_request_entropy(s->edn, s->edn_ep);
     }
 }
 
