@@ -317,13 +317,7 @@ static MemTxResult ot_timer_write_with_attrs(void *opaque, hwaddr addr,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_timer_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    if (reg >= REGS_COUNT || RV_TIMER_PERMIT[reg] == 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
-    if ((RV_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
+    if (reg < REGS_COUNT && (RV_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Sub-word write error at 0x%03x (be=0x%x)\n",
                       __func__, (uint32_t)addr, reg_be);
