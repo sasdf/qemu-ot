@@ -1092,8 +1092,6 @@ static void ot_kmac_process_start(OtKMACState *s)
 
 static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
 {
-    bool app_active = (s->current_app != NULL);
-
     timer_del(s->edn_wait_timer);
     s->error_awaiting_sw = false;
     s->cfg_entropy_ready = false;
@@ -1170,18 +1168,16 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
      * CMD.err_processed does NOT clear ERR_CODE.
      */
 
-    /* SW shoud not send a command along with the err_processed bit */
+    /*
+     * In RTL (kmac_app.sv:955), app_active_o is 0 in StError / StErrorAwaitSw,
+     * so sending a command along with err_processed_i reports ErrSwCmdSequence
+     * via kmac_errchk.sv:186-234.
+     */
     if (cmd != OT_KMAC_CMD_NONE) {
-        if (app_active) {
-            ot_kmac_report_error(s, OT_KMAC_ERR_SW_ISSUED_CMD_IN_APP_ACTIVE,
-                                 cmd);
-        } else {
-            /* see error encoding in (hw/ip/kmac/rtl/kmac_errchk.sv) */
-            uint32_t info = (1u << 18u);
-            info |= (uint32_t)s->state << 8u;
-            info |= cmd;
-            ot_kmac_report_error(s, OT_KMAC_ERR_SW_CMD_SEQUENCE, info);
-        }
+        uint32_t info = (1u << 18u);
+        info |= (uint32_t)s->state << 8u;
+        info |= cmd;
+        ot_kmac_report_error(s, OT_KMAC_ERR_SW_CMD_SEQUENCE, info);
     }
 }
 
