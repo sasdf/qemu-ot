@@ -124,8 +124,6 @@ struct OtAonTimerState {
 
     uint32_t regs[REGS_COUNT];
 
-    int64_t wkup_origin_ns;
-    int64_t wdog_origin_ns;
     uint64_t wkup_origin_clks;
     uint64_t wdog_origin_clks;
     uint32_t prescale_count;
@@ -215,7 +213,6 @@ static uint32_t ot_aon_timer_first_wkup_incr_clks(const OtAonTimerState *s)
 static void ot_aon_timer_sync_wkup(OtAonTimerState *s, int64_t now)
 {
     uint64_t now_clks = ot_aon_timer_ns_to_aon_clks(s, now);
-    s->wkup_origin_ns = now;
 
     if (!ot_aon_timer_is_wkup_enabled(s)) {
         s->wkup_intr_level = false;
@@ -274,7 +271,6 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s, int64_t now)
 static void ot_aon_timer_sync_wdog(OtAonTimerState *s, int64_t now)
 {
     uint64_t now_clks = ot_aon_timer_ns_to_aon_clks(s, now);
-    s->wdog_origin_ns = now;
 
     if (!ot_aon_timer_is_wdog_enabled(s)) {
         s->wdog_origin_clks = now_clks;
@@ -513,13 +509,6 @@ static MemTxResult ot_aon_timer_read_with_attrs(void *opaque, hwaddr addr,
     ot_aon_timer_update_irqs(s);
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        *val64 = 0u;
-        return MEMTX_ERROR;
-    }
-
     switch (reg) {
     case R_WKUP_CTRL:
     case R_WKUP_THOLD_HI:
