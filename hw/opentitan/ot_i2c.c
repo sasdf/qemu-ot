@@ -959,7 +959,8 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         if (ot_fifo32_is_empty(&s->target_rx_fifo)) {
             val32 = FIELD_DP32(val32, STATUS, ACQEMPTY, 1u);
         }
-        if (ot_fifo32_is_full(&s->target_rx_fifo)) {
+        if (ot_fifo32_num_used(&s->target_rx_fifo) >=
+            (OT_I2C_ACQ_FIFO_SIZE - 2u)) {
             val32 = FIELD_DP32(val32, STATUS, ACQFULL, 1u);
         }
         if (s->ack_ctrl_stretching) {
