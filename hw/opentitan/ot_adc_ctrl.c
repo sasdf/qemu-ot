@@ -460,10 +460,7 @@ static MemTxResult ot_adc_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
         val32 = 0;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        *val64 = 0;
-        return MEMTX_DECODE_ERROR;
+        g_assert_not_reached();
     }
 
     uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
@@ -490,12 +487,6 @@ static MemTxResult ot_adc_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
 
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     if ((ADC_CTRL_PERMIT[reg] & ~reg_be) != 0u) {
@@ -586,9 +577,7 @@ static MemTxResult ot_adc_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
                       __func__, (uint32_t)addr, REG_NAME(reg));
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        g_assert_not_reached();
     }
 
     return MEMTX_OK;
