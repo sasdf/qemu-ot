@@ -1138,8 +1138,6 @@ static void ot_aes_reseed(OtAESState *s, unsigned words)
         edn->scheduled = true;
         edn->pending_words = words;
         if (ot_edn_request_entropy(edn->device, edn->ep)) {
-            edn->scheduled = false;
-            edn->pending_words = 0u;
             xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
         }
     }
