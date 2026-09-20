@@ -702,6 +702,10 @@ static void ot_edn_send_boot_req(OtEDNState *s, unsigned reg)
 
     c->hw_cmd_type = (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
 
+    /*
+     * CSRNG request should be completed asynchronously, changing the state here
+     * should occur before ot_edn_csrng_ack_irq is called.
+     */
     switch (reg) {
     case R_BOOT_INS_CMD:
         c->no_fips = false;
