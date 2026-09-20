@@ -180,7 +180,6 @@ static void ot_timer_rearm(OtTimerState *s, bool reset_origin)
     timer_del(s->timer);
 
     if (!s->pclk) {
-        ot_timer_update_irqs(s);
         return;
     }
 
@@ -233,6 +232,7 @@ static void ot_timer_clock_input(void *opaque, int irq, int level)
     }
 
     trace_ot_timer_update_clock(s->ot_id, s->pclk);
+
     /* TODO: @loic: update on-going timer */
 }
 
@@ -272,14 +272,14 @@ static MemTxResult ot_timer_read_with_attrs(void *opaque, hwaddr addr,
         int64_t now = ot_timer_is_active(s) ?
                           qemu_clock_get_ns(OT_VIRTUAL_CLOCK) :
                           s->origin_ns;
-        val32 = (uint32_t)ot_timer_get_mtime(s, now);
+        val32 = ot_timer_get_mtime(s, now);
         break;
     }
     case R_TIMER_V_UPPER0: {
         int64_t now = ot_timer_is_active(s) ?
                           qemu_clock_get_ns(OT_VIRTUAL_CLOCK) :
                           s->origin_ns;
-        val32 = (uint32_t)(ot_timer_get_mtime(s, now) >> 32u);
+        val32 = ot_timer_get_mtime(s, now) >> 32u;
         break;
     }
     case R_ALERT_TEST:
