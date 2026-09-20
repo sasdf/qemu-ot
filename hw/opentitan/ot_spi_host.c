@@ -1695,22 +1695,22 @@ static MemTxResult ot_spi_host_read_with_attrs(void *opaque, hwaddr addr,
                                                MemTxAttrs attrs)
 {
     (void)attrs;
-    if (ot_spi_host_is_unclocked(opaque, addr)) {
-        *val64 = 0u;
-        return MEMTX_OK;
+    *val64 = 0u;
+    if (!ot_spi_host_is_unclocked(opaque, addr)) {
+        uint32_t reg = (uint32_t)(addr >> 2u);
+        if (reg >= REGS_COUNT || reg == R_TXDATA) {
+            return MEMTX_ERROR;
+        }
+        if (reg == R_RXDATA) {
+            *val64 = ot_spi_host_io_read(opaque, addr, size);
+            return MEMTX_OK;
+        }
+        unsigned shift = (unsigned)((addr & 3ULL) * 8u);
+        uint64_t val32 = ot_spi_host_io_read(opaque, addr & ~3ULL, 4u);
+        uint64_t mask =
+            (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
+        *val64 = (val32 >> shift) & mask;
     }
-    uint32_t reg = (uint32_t)(addr >> 2u);
-    if (reg >= REGS_COUNT || reg == R_TXDATA) {
-        return MEMTX_ERROR;
-    }
-    if (reg == R_RXDATA) {
-        *val64 = ot_spi_host_io_read(opaque, addr, size);
-        return MEMTX_OK;
-    }
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint64_t val32 = ot_spi_host_io_read(opaque, addr & ~3ULL, 4u);
-    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (val32 >> shift) & mask;
     return MEMTX_OK;
 }
 
