@@ -336,12 +336,6 @@ static MemTxResult ot_sensor_eg_regs_read_with_attrs(
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -370,7 +364,10 @@ static MemTxResult ot_sensor_eg_regs_read_with_attrs(
         val32 = 0;
         break;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
     }
 
     uint32_t pc = ibex_get_current_pc();
@@ -391,12 +388,6 @@ static MemTxResult ot_sensor_eg_regs_write_with_attrs(
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
 
     uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
     if ((ot_sensor_eg_reg_permit(reg) & ~reg_be) != 0u) {
@@ -491,7 +482,9 @@ static MemTxResult ot_sensor_eg_regs_write_with_attrs(
         s->regs[reg] = val32;
         break;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_ERROR;
     }
 
     return MEMTX_OK;
