@@ -429,16 +429,6 @@ target_ulong helper_mret(CPURISCVState *env)
         env->mepc = env->mstack_epc;
         env->mcause = env->mstack_cause;
         env->nmi_mode = false;
-        if (env->rnmip) {
-            bool release_lock = !bql_locked();
-            if (release_lock) {
-                bql_lock();
-            }
-            cpu_interrupt(env_cpu(env), CPU_INTERRUPT_RNMI);
-            if (release_lock) {
-                bql_unlock();
-            }
-        }
     } else {
         env->sync_exc_seen = false;
         mstatus = set_field(mstatus, MSTATUS_MPIE, 1);
@@ -457,12 +447,13 @@ target_ulong helper_mret(CPURISCVState *env)
     }
     env->mstatus = mstatus;
 
-    if (riscv_cpu_all_pending(env)) {
+    if (env->rnmip || riscv_cpu_all_pending(env)) {
         bool release_lock = !bql_locked();
         if (release_lock) {
             bql_lock();
         }
-        cpu_interrupt(env_cpu(env), CPU_INTERRUPT_HARD);
+        cpu_interrupt(env_cpu(env),
+                      env->rnmip ? CPU_INTERRUPT_RNMI : CPU_INTERRUPT_HARD);
         if (release_lock) {
             bql_unlock();
         }
