@@ -322,11 +322,10 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
         ot_gpio_eg_notify_sysrst_change();
         break;
     case R_DUTY_CYCLE_0 ... R_BLINK_PARAM_5:
+    default:
         s->regs[reg] = val32;
         ot_gpio_eg_notify_sysrst_change();
         break;
-    default:
-        g_assert_not_reached();
     }
 
     return MEMTX_OK;
