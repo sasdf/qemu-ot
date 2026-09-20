@@ -135,31 +135,24 @@ target_ulong HELPER(xperm16)(target_ulong rs1, target_ulong rs2)
     return do_xperm(rs1, rs2, 4);
 }
 
+static const uint64_t grev_masks[] = {
+    0x5555555555555555ULL,
+    0x3333333333333333ULL,
+    0x0f0f0f0f0f0f0f0fULL,
+    0x00ff00ff00ff00ffULL,
+    0x0000ffff0000ffffULL,
+};
+
 target_ulong HELPER(grev)(target_ulong rs1, target_ulong rs2)
 {
     target_ulong x = rs1;
     int shamt = rs2 & (TARGET_LONG_BITS - 1);
 
-    if (shamt & 1) {
-        x = do_swap(x, 0x5555555555555555ull, 1);
+    for (int i = 0; i < ARRAY_SIZE(grev_masks); i++) {
+        if (shamt & (1 << i)) {
+            x = do_swap(x, grev_masks[i], 1 << i);
+        }
     }
-    if (shamt & 2) {
-        x = do_swap(x, 0x3333333333333333ull, 2);
-    }
-    if (shamt & 4) {
-        x = do_swap(x, 0x0f0f0f0f0f0f0f0full, 4);
-    }
-    if (shamt & 8) {
-        x = do_swap(x, 0x00ff00ff00ff00ffull, 8);
-    }
-    if (shamt & 16) {
-        x = do_swap(x, 0x0000ffff0000ffffull, 16);
-    }
-#if TARGET_LONG_BITS == 64
-    if (shamt & 32) {
-        x = do_swap(x, 0x00000000ffffffffull, 32);
-    }
-#endif
     return x;
 }
 
@@ -168,26 +161,11 @@ target_ulong HELPER(gorc)(target_ulong rs1, target_ulong rs2)
     target_ulong x = rs1;
     int shamt = rs2 & (TARGET_LONG_BITS - 1);
 
-    if (shamt & 1) {
-        x |= do_swap(x, 0x5555555555555555ull, 1);
+    for (int i = 0; i < ARRAY_SIZE(grev_masks); i++) {
+        if (shamt & (1 << i)) {
+            x |= do_swap(x, grev_masks[i], 1 << i);
+        }
     }
-    if (shamt & 2) {
-        x |= do_swap(x, 0x3333333333333333ull, 2);
-    }
-    if (shamt & 4) {
-        x |= do_swap(x, 0x0f0f0f0f0f0f0f0full, 4);
-    }
-    if (shamt & 8) {
-        x |= do_swap(x, 0x00ff00ff00ff00ffull, 8);
-    }
-    if (shamt & 16) {
-        x |= do_swap(x, 0x0000ffff0000ffffull, 16);
-    }
-#if TARGET_LONG_BITS == 64
-    if (shamt & 32) {
-        x |= do_swap(x, 0x00000000ffffffffull, 32);
-    }
-#endif
     return x;
 }
 
@@ -196,17 +174,11 @@ target_ulong HELPER(shfl)(target_ulong rs1, target_ulong rs2)
     target_ulong x = rs1;
     int shamt = rs2 & ((TARGET_LONG_BITS >> 1) - 1);
 
-    if (shamt & 8) {
-        x = do_shuf_stage(x, shuf_masks[3], shuf_masks[3] >> 8, 8);
-    }
-    if (shamt & 4) {
-        x = do_shuf_stage(x, shuf_masks[2], shuf_masks[2] >> 4, 4);
-    }
-    if (shamt & 2) {
-        x = do_shuf_stage(x, shuf_masks[1], shuf_masks[1] >> 2, 2);
-    }
-    if (shamt & 1) {
-        x = do_shuf_stage(x, shuf_masks[0], shuf_masks[0] >> 1, 1);
+    for (int i = 3; i >= 0; i--) {
+        if (shamt & (1 << i)) {
+            x = do_shuf_stage(x, shuf_masks[i], shuf_masks[i] >> (1 << i),
+                              1 << i);
+        }
     }
     return x;
 }
@@ -216,27 +188,18 @@ target_ulong HELPER(unshfl)(target_ulong rs1, target_ulong rs2)
     target_ulong x = rs1;
     int shamt = rs2 & ((TARGET_LONG_BITS >> 1) - 1);
 
-    if (shamt & 1) {
-        x = do_shuf_stage(x, shuf_masks[0], shuf_masks[0] >> 1, 1);
-    }
-    if (shamt & 2) {
-        x = do_shuf_stage(x, shuf_masks[1], shuf_masks[1] >> 2, 2);
-    }
-    if (shamt & 4) {
-        x = do_shuf_stage(x, shuf_masks[2], shuf_masks[2] >> 4, 4);
-    }
-    if (shamt & 8) {
-        x = do_shuf_stage(x, shuf_masks[3], shuf_masks[3] >> 8, 8);
+    for (int i = 0; i < 4; i++) {
+        if (shamt & (1 << i)) {
+            x = do_shuf_stage(x, shuf_masks[i], shuf_masks[i] >> (1 << i),
+                              1 << i);
+        }
     }
     return x;
 }
 
 target_ulong HELPER(bfp)(target_ulong rs1, target_ulong rs2)
 {
-    uint32_t len = (rs2 >> 24) & 0xf;
-    if (len == 0) {
-        len = 16;
-    }
+    uint32_t len = ((rs2 >> 24) & 0xf) ?: 16;
     uint32_t off = (rs2 >> 16) & 0x1f;
     uint32_t mask = (1U << len) - 1;
     return (rs1 & ~(mask << off)) | ((rs2 & mask) << off);
@@ -244,38 +207,14 @@ target_ulong HELPER(bfp)(target_ulong rs1, target_ulong rs2)
 
 target_ulong HELPER(fsl)(target_ulong rs1, target_ulong rs2, target_ulong rs3)
 {
-    uint32_t shamt = rs2 & 0x3f;
-    if (shamt == 0) {
-        return rs1;
-    }
-    if (shamt >= 32) {
-        target_ulong tmp = rs1;
-        rs1 = rs3;
-        rs3 = tmp;
-        shamt -= 32;
-    }
-    if (shamt == 0) {
-        return rs1;
-    }
-    return ((uint32_t)rs1 << shamt) | ((uint32_t)rs3 >> (32 - shamt));
+    uint64_t val = ((uint64_t)(uint32_t)rs1 << 32) | (uint32_t)rs3;
+    return (uint32_t)(rol64(val, rs2 & 0x3f) >> 32);
 }
 
 target_ulong HELPER(fsr)(target_ulong rs1, target_ulong rs2, target_ulong rs3)
 {
-    uint32_t shamt = rs2 & 0x3f;
-    if (shamt == 0) {
-        return rs1;
-    }
-    if (shamt >= 32) {
-        target_ulong tmp = rs1;
-        rs1 = rs3;
-        rs3 = tmp;
-        shamt -= 32;
-    }
-    if (shamt == 0) {
-        return rs1;
-    }
-    return ((uint32_t)rs1 >> shamt) | ((uint32_t)rs3 << (32 - shamt));
+    uint64_t val = ((uint64_t)(uint32_t)rs3 << 32) | (uint32_t)rs1;
+    return (uint32_t)ror64(val, rs2 & 0x3f);
 }
 
 /*
