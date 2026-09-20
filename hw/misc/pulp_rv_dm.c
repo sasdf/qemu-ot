@@ -418,12 +418,6 @@ static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
 
     addr += PULP_RV_DM_DMACT_BASE;
 
-    if (addr & 0x1u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_ERROR;
-    }
-
     switch (R32_OFF(addr)) {
     case R_HALTED:
     case R_GOING:
