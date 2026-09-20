@@ -306,6 +306,7 @@ typedef struct {
     bool seeded; /* ready to generate randomness */
     bool no_fips;
     bool force_fips;
+    bool no_glast_update;
     uint32_t prev_genbits[OT_CSRNG_PACKET_WORD_COUNT];
     bool prev_genbits_valid;
 } OtCSRNGDrng;
@@ -526,7 +527,13 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
             break;
         default:
             xtrace_ot_csrng_error("Invalid command opcode");
-            s->regs[R_HW_EXC_STS] |= 1u << app_id;
+            /*
+             * csrng_core.sv:1048,1728-1729: hw_exception_sts[app_id] pulses for
+             * 1 cycle (latching INTR_CS_HW_INST_EXC), then hw2reg.hw_exc_sts.de
+             * (= cs_enable_fo[50]) immediately writes hw_exception_sts (0) on
+             * the next cycle.
+             */
+            s->regs[R_HW_EXC_STS] = 0u;
             s->regs[R_INTR_STATE] |= INTR_CS_HW_INST_EXC_MASK;
             ot_csrng_update_irqs(s);
             ot_csrng_trigger_recov_alert(
@@ -564,7 +571,7 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
 
         const OtCSRNGDrng *drng = &inst->drng;
         if (drng->reseed_counter >= s->regs[R_RESEED_INTERVAL]) {
-            s->regs[R_HW_EXC_STS] |= 1u << app_id;
+            s->regs[R_HW_EXC_STS] = 0u;
             s->regs[R_INTR_STATE] |= INTR_CS_HW_INST_EXC_MASK;
             ot_fifo32_reset(&inst->cmd_fifo);
             ot_csrng_update_irqs(s);
@@ -887,9 +894,12 @@ static void ot_csrng_drng_generate(OtCSRNGInstance *inst, uint32_t *out,
     *fips = (!drng->no_fips) || drng->force_fips;
 
     if (!ot_csrng_drng_remaining_count(inst)) {
-        ot_csrng_drng_update(inst);
-        /* last packet generation for the current command */
-        drng->reseed_counter += 1u;
+        if (!drng->no_glast_update) {
+            ot_csrng_drng_update(inst);
+            /* last packet generation for the current command */
+            drng->reseed_counter += 1u;
+        }
+        drng->no_glast_update = false;
     }
 }
 
@@ -1050,7 +1060,11 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
         }
         s->enabled = false;
         s->waiting_for_entropy = false;
-        s->regs[R_SW_CMD_STS] = 0u;
+        /*
+         * csrng_core.sv:930-946: !cs_enable_fo[28] clears cmd_rdy and cmd_ack,
+         * while cmd_sts.de is gated only by cmd_stage_ack[NApps-1].
+         */
+        s->regs[R_SW_CMD_STS] &= R_SW_CMD_STS_CMD_STS_MASK;
         s->es_retry_count = 0;
 
         /* cancel any outstanding asynchronous request */
@@ -1143,7 +1157,7 @@ ot_csrng_complete_sw_command(OtCSRNGInstance *inst, OtCSRNGCmdStatus sts)
     OtCSRNGState *s = inst->parent;
 
     if (!s->enabled) {
-        s->regs[R_SW_CMD_STS] = 0u;
+        s->regs[R_SW_CMD_STS] &= R_SW_CMD_STS_CMD_STS_MASK;
         return;
     }
 
@@ -1162,8 +1176,7 @@ ot_csrng_complete_hw_command(OtCSRNGInstance *inst, OtCSRNGCmdStatus sts)
 {
     if (sts != CSRNG_STATUS_SUCCESS) {
         OtCSRNGState *s = inst->parent;
-        unsigned slot = ot_csrng_get_slot(inst);
-        s->regs[R_HW_EXC_STS] |= 1u << slot;
+        s->regs[R_HW_EXC_STS] = 0u;
         s->regs[R_INTR_STATE] |= INTR_CS_HW_INST_EXC_MASK;
         ot_csrng_update_irqs(s);
     }
@@ -1265,9 +1278,19 @@ static OtCSRNDCmdResult ot_csrng_handle_generate(OtCSRNGState *s, unsigned slot)
     uint32_t command = ot_fifo32_peek(&inst->cmd_fifo);
     uint32_t packet_count = FIELD_EX32(command, OT_CSNRG_CMD, GLEN);
 
-    if (!packet_count) {
+    /*
+     * csrng_cmd_stage.sv:378-431 & prim_count.sv:114-121:
+     * When GLEN == 0, SendSOP still issues 1 generate request to csrng_core
+     * with cmd_gen_cnt_last = 0 (glast = 0), while u_prim_count_cmd_gen_cntr
+     * saturates at 0 without error. csrng_ctr_drbg_gen.sv:575-598 generates
+     * 1 block into sfifo_genbits without post-generate update or reseed_counter
+     * increment, and GenReq completes with CMD_STS_SUCCESS once sfifo_genbits
+     * is drained.
+     */
+    bool no_glast = (packet_count == 0u);
+    if (no_glast) {
         xtrace_ot_csrng_error("generation for no packet");
-        return CSRNG_CMD_INVALID_GEN_CMD;
+        packet_count = 1u;
     }
 
     uint32_t clen = FIELD_EX32(command, OT_CSNRG_CMD, CLEN);
@@ -1317,6 +1340,7 @@ static OtCSRNDCmdResult ot_csrng_handle_generate(OtCSRNGState *s, unsigned slot)
     }
 
     inst->drng.rem_packet_count = packet_count;
+    inst->drng.no_glast_update = no_glast;
 
     /*
      * do not ack command yet,
