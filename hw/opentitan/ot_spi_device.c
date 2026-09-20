@@ -1558,7 +1558,6 @@ static void ot_spi_device_flash_exec_sw_command(OtSPIDeviceState *s, uint8_t rx)
     case SPI_FLASH_ERROR:
         trace_ot_spi_device_flash_byte_unexpected(s->ot_id, rx);
         BUS_CHANGE_STATE(s, DISCARD);
-        s->bus.failed_transaction = true;
         break;
     case SPI_FLASH_COLLECT:
     case SPI_FLASH_BUFFER:
@@ -3259,7 +3258,6 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
     OtSPIDeviceClass *c = OT_SPI_DEVICE_GET_CLASS(obj);
     OtSPIDeviceState *s = OT_SPI_DEVICE(obj);
     SpiDeviceFlash *f = &s->flash;
-    SpiDeviceBus *bus = &s->bus;
 
     trace_ot_spi_device_reset(s->ot_id, "enter");
 
@@ -3286,14 +3284,7 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
         s->spi_regs[R_CMD_INFO_0 + ix] = 0x7000u;
     }
 
-    if (bus->state != SPI_BUS_IDLE) {
-        BUS_CHANGE_STATE(s, DISCARD);
-        bus->failed_transaction = true;
-        s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
-        ot_pinmux_eg_dio_pad_in(13u, 0);
-    } else {
-        ot_spi_device_release(s);
-    }
+    ot_spi_device_release(s);
 
     memset(&f->cmd_params, 0u, sizeof(OtSpiCommandParams));
 
