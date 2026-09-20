@@ -231,45 +231,21 @@ static void riscv_pmu_icount_update_priv(CPURISCVState *env,
 
 uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
 {
-    if (icount_enabled()) {
-        int64_t raw = icount_get_raw();
-        if (env->cpu_freq_hz) {
-            int64_t warp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
-                              icount_to_ns(raw);
-            int64_t warp_cycles = (warp_ns >= 0) ?
-                (int64_t)muldiv64(warp_ns, env->cpu_freq_hz,
-                                  NANOSECONDS_PER_SECOND) :
-                -(int64_t)muldiv64(-warp_ns, env->cpu_freq_hz,
-                                   NANOSECONDS_PER_SECOND);
-            return (uint64_t)(raw + warp_cycles);
-        }
-        return (uint64_t)raw;
-    }
+    int64_t raw = icount_get_raw();
     if (env->cpu_freq_hz) {
-        return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                        env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
+        int64_t warp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                          icount_to_ns(raw);
+        if (warp_ns > 0) {
+            raw += muldiv64(warp_ns, env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
+        }
     }
-    return cpu_get_host_ticks();
+    return (uint64_t)raw;
 }
 
 void riscv_pmu_update_clock_freq(CPURISCVState *env, uint64_t freq_hz)
 {
-    uint64_t old_cyc = riscv_pmu_get_cpu_cycles(env);
     env->cpu_freq_hz = freq_hz;
     icount_set_clock_freq(freq_hz);
-    uint64_t new_cyc = riscv_pmu_get_cpu_cycles(env);
-    int64_t diff = (int64_t)(new_cyc - old_cyc);
-    if (diff != 0) {
-        for (int i = 0; i < RV_MAX_MHPMCOUNTERS; i++) {
-            if (riscv_pmu_ctr_monitor_cycles(env, i)) {
-                uint64_t prev = env->pmu_ctrs[i].mhpmcounter_prev |
-                    ((uint64_t)env->pmu_ctrs[i].mhpmcounterh_prev << 32);
-                prev += diff;
-                env->pmu_ctrs[i].mhpmcounter_prev = (target_ulong)prev;
-                env->pmu_ctrs[i].mhpmcounterh_prev = (target_ulong)(prev >> 32);
-            }
-        }
-    }
 }
 
 static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
@@ -280,7 +256,11 @@ static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
     uint64_t *counter_arr;
     uint64_t delta;
 
-    current_ticks = riscv_pmu_get_cpu_cycles(env);
+    if (icount_enabled()) {
+        current_ticks = riscv_pmu_get_cpu_cycles(env);
+    } else {
+        current_ticks = cpu_get_host_ticks();
+    }
 
     if (env->virt_enabled) {
         g_assert(env->priv <= PRV_S);
@@ -405,14 +385,11 @@ static gboolean pmu_remove_event_map(gpointer key, gpointer value,
     return (GPOINTER_TO_UINT(value) == GPOINTER_TO_UINT(udata)) ? true : false;
 }
 
-static int64_t pmu_icount_ticks_to_ns(CPURISCVState *env, uint32_t ctr_idx,
-                                      int64_t value)
+static int64_t pmu_icount_ticks_to_ns(int64_t value)
 {
     int64_t ret = 0;
 
-    if (riscv_pmu_ctr_monitor_cycles(env, ctr_idx) && env->cpu_freq_hz) {
-        ret = muldiv64(value, NANOSECONDS_PER_SECOND, env->cpu_freq_hz);
-    } else if (icount_enabled()) {
+    if (icount_enabled()) {
         ret = icount_to_ns(value);
     } else {
         ret = (NANOSECONDS_PER_SECOND / RISCV_TIMEBASE_FREQ) * value;
@@ -604,9 +581,8 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
 
     if (riscv_pmu_ctr_monitor_cycles(env, ctr_idx) ||
         riscv_pmu_ctr_monitor_instructions(env, ctr_idx)) {
-        overflow_ns = pmu_icount_ticks_to_ns(env, ctr_idx,
-                                             (int64_t)overflow_delta);
-        overflow_left = pmu_icount_ticks_to_ns(env, ctr_idx, overflow_left);
+        overflow_ns = pmu_icount_ticks_to_ns((int64_t)overflow_delta);
+        overflow_left = pmu_icount_ticks_to_ns(overflow_left) ;
     } else {
         return -1;
     }
