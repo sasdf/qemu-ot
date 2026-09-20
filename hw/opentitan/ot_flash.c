@@ -1512,38 +1512,8 @@ static MemTxResult ot_flash_ecc_fault_read_with_attrs(
     return MEMTX_ERROR;
 }
 
-static MemTxResult ot_flash_mem_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
-{
-    OtFlashState *s = opaque;
-    (void)value;
-    (void)size;
-    (void)attrs;
-
-    /*
-     * RTL: flash_ctrl.sv u_tl_adapter_eflash instantiates tlul_adapter_sram
-     * with ErrOnWrite = 1, EnableDataIntgGen = 0, EnableDataIntgPt = 1
-     * (tlul_adapter_sram.sv:155-156, 341-349): wr_vld_error returns TL-UL
-     * D-channel error along with d_data = 0xffffffff and
-     * data_intg = SecdedInv3932ZeroEcc (0x39), which asserts
-     * store_resp_intg_err_o in rv_core_ibex.
-     */
-    ot_common_raise_load_integrity_error(
-        DEVICE(s), (s->mmio.mem.addr + addr) - s->mmio.regs.addr);
-    return MEMTX_ERROR;
-}
-
-static MemTxResult ot_flash_ecc_fault_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
-{
-    OtFlashEccFault *fault = opaque;
-    return ot_flash_mem_write_with_attrs(fault->s, fault->offset + addr, value,
-                                         size, attrs);
-}
-
 static const MemoryRegionOps ot_flash_ecc_fault_ops = {
     .read_with_attrs = &ot_flash_ecc_fault_read_with_attrs,
-    .write_with_attrs = &ot_flash_ecc_fault_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
@@ -3663,21 +3633,7 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
         (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
         (1u << 6) | (1u << 7) | (1u << 8) | (1u << 9) | (1u << 15) |
         (1u << 16) | (1u << 22);
-    unsigned total_info_pages =
-        (flash->bank_count * flash->info_size) / BYTES_PER_PAGE;
     flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
-    for (unsigned p = 0; p < total_info_pages && p < 32u; p++) {
-        if (!(unprovisioned_default_mask & (1u << p))) {
-            continue;
-        }
-        const uint32_t *page_words = &flash->info[p * words_per_page];
-        for (unsigned w = 0; w < words_per_page; w++) {
-            if (page_words[w] != 0xFFFFFFFFu) {
-                flash->info_page_provisioned_bm |= (1u << p);
-                break;
-            }
-        }
-    }
 }
 
 #if DATA_PART_USE_IO_OPS
@@ -3748,20 +3704,18 @@ static const MemoryRegionOps ot_flash_csrs_ops = {
     .valid.max_access_size = 4u,
 };
 
-static const MemoryRegionOps ot_flash_mem_ops = {
 #if DATA_PART_USE_IO_OPS
+static const MemoryRegionOps ot_flash_mem_ops = {
     .read = &ot_flash_mem_read,
-#endif
-    .write_with_attrs = &ot_flash_mem_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
 };
-#if !DATA_PART_USE_IO_OPS && LOG_GPR_ON_FLASH_DATA_ACCESS
+#else
+#if LOG_GPR_ON_FLASH_DATA_ACCESS
 #warning "Cannot use LOG_GPR_ON_FLASH_DATA_ACCESS w/o DATA_PART_USE_IO_OPS"
 #endif
+#endif /* DATA_PART_USE_IO_OPS */
 
 static void ot_flash_reset_enter(Object *obj, ResetType type)
 {
@@ -3922,12 +3876,7 @@ static void ot_flash_realize(DeviceState *dev, Error **errp)
     /* there is no "memory_region_init_rom_ptr" - use ram_ptr variant and r/o */
     memory_region_init_ram_ptr(mr, OBJECT(dev), TYPE_OT_FLASH ".mem", size,
                                (void *)s->flash.data);
-    mr->ram = false;
     mr->readonly = true;
-    mr->rom_device = true;
-    mr->romd_mode = true;
-    mr->ops = &ot_flash_mem_ops;
-    mr->opaque = s;
 #endif /* DATA_PART_USE_IO_OPS */
 
     sysbus_init_mmio(SYS_BUS_DEVICE(s), mr);
