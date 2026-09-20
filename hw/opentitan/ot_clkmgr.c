@@ -312,7 +312,7 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
         bool hi_speed = (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
                                     HI_SPEED_SEL) == OT_MULTIBITBOOL4_TRUE);
         if (!hi_speed) {
-            if (!strcmp(clk->name, "io") || !strcmp(clk->name, "main")) {
+            if (!strcmp(clk->name, "io")) {
                 const OtClkMgrClock *io_div2 =
                     ot_clkmgr_find_clock(s->clocks, "io_div2");
                 if (io_div2) {
