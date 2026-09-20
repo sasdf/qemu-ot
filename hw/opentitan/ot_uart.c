@@ -868,9 +868,7 @@ static void ot_uart_tx_schedule(OtUARTState *s)
         return;
     }
     bool use_timer =
-        (s->regs[R_INTR_ENABLE] &
-         (INTR_TX_DONE_MASK | INTR_TX_WATERMARK_MASK | INTR_TX_EMPTY_MASK)) !=
-            0 ||
+        s->regs[R_INTR_ENABLE] != 0 || s->tx_chr_owner != s ||
         s->tx_busy || ot_uart_is_sys_loopack_enabled(s) ||
         !qemu_chr_fe_backend_connected(ot_uart_get_tx_chr(s)) ||
         ot_uart_char_ns(s) > 100000ULL;
