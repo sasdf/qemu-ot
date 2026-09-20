@@ -370,7 +370,6 @@ impl Executer {
             .err_bits
             .store(ErrBits::empty().bits(), Ordering::Relaxed);
         self.registers.insn_count.store(0, Ordering::Relaxed);
-        executor.hart_state.track_state = self.log_asm;
         let mut local_insn_count: usize = 0;
 
         loop {

@@ -447,36 +447,14 @@ impl CSRSet {
         csrs
     }
 
-    #[inline(always)]
     pub fn get_flags(&self, fg: usize) -> insn_proc::Flags {
         self.shared_flags.get()[fg]
     }
 
-    #[inline(always)]
     pub fn set_flags(&mut self, fg: usize, value: insn_proc::Flags) {
         let mut flags = self.shared_flags.get();
         flags[fg] = value;
         self.shared_flags.set(flags);
-    }
-
-    #[inline(always)]
-    pub fn get_acc(&self) -> u256 {
-        self.acc.val
-    }
-
-    #[inline(always)]
-    pub fn set_acc(&mut self, val: u256) {
-        self.acc.val = val;
-    }
-
-    #[inline(always)]
-    pub fn get_mod(&self) -> u256 {
-        self.r#mod.val.get()
-    }
-
-    #[inline(always)]
-    pub fn set_mod(&mut self, val: u256) {
-        self.r#mod.val.set(val);
     }
 
     pub fn get_csr(&self, addr: u32) -> Option<&dyn CSR> {

@@ -85,7 +85,6 @@ pub struct HartState {
     pub csr_set: csrs::CSRSet,
     /// Track state changes (debug)
     pub updated: StateTracker,
-    pub track_state: bool,
     pub x1_read: bool,
 }
 
@@ -98,7 +97,6 @@ impl HartState {
             loopstack: Vec::with_capacity(8),
             hwstack: Vec::with_capacity(8),
             updated: StateTracker::default(),
-            track_state: false,
             x1_read: false,
             csr_set: csrs::CSRSet::new(urnd, rnd, key),
         }
@@ -122,7 +120,7 @@ impl HartState {
         }
 
         self.registers[reg_index] = data;
-        if self.track_state { self.updated.gpr = Some(reg_index); }
+        self.updated.gpr = Some(reg_index);
         Ok(())
     }
 
@@ -149,7 +147,7 @@ impl HartState {
     /// register handling
     fn write_wide_register(&mut self, reg_index: usize, data: u256) -> Result<(), InstructionTrap> {
         self.wregisters[reg_index] = data;
-        if self.track_state { self.updated.wgpr = Some(reg_index); }
+        self.updated.wgpr = Some(reg_index);
         Ok(())
     }
 
@@ -171,7 +169,7 @@ impl HartState {
         if let Err(exc) = csr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(csr_addr)));
         }
-        if self.track_state { self.updated.csr = Some((false, csr_addr)); }
+        self.updated.csr = Some((false, csr_addr));
         Ok(())
     }
 
@@ -188,17 +186,7 @@ impl HartState {
             .map_err(|exc| InstructionTrap::Exception(exc, Some(csr_addr)))
     }
 
-    #[inline(always)]
     fn write_wsr(&mut self, wsr_addr: u32, data: u256) -> Result<(), InstructionTrap> {
-        if wsr_addr == 3 {
-            self.csr_set.set_acc(data);
-            if self.track_state { self.updated.csr = Some((true, wsr_addr)); }
-            return Ok(());
-        } else if wsr_addr == 0 {
-            self.csr_set.set_mod(data);
-            if self.track_state { self.updated.csr = Some((true, wsr_addr)); }
-            return Ok(());
-        }
         let wsr = self
             .csr_set
             .get_wsr_mut(wsr_addr)
@@ -210,17 +198,11 @@ impl HartState {
         if let Err(exc) = wsr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(wsr_addr)));
         }
-        if self.track_state { self.updated.csr = Some((true, wsr_addr)); }
+        self.updated.csr = Some((true, wsr_addr));
         Ok(())
     }
 
-    #[inline(always)]
     fn read_wsr(&mut self, wsr_addr: u32) -> Result<u256, InstructionTrap> {
-        if wsr_addr == 3 {
-            return Ok(self.csr_set.get_acc());
-        } else if wsr_addr == 0 {
-            return Ok(self.csr_set.get_mod());
-        }
         let wsr = self
             .csr_set
             .get_wsr(wsr_addr)
@@ -233,17 +215,16 @@ impl HartState {
             .map_err(|exc| InstructionTrap::Exception(exc, Some(wsr_addr)))
     }
 
-    #[inline(always)]
     fn set_mlz_wide_flags(&mut self, fg: usize, carry: bool, value: u256) {
         let mut flags = if carry {
             insn_proc::Flags::CARRY
         } else {
             insn_proc::Flags::default()
         };
-        if (*value.high() as i128) < 0 {
+        if (value >> 255u32).as_u32() != 0 {
             flags |= insn_proc::Flags::MSB;
         }
-        if (*value.low() & 1) != 0 {
+        if (value & U256::from(1u32)) != 0 {
             flags |= insn_proc::Flags::LSB;
         }
         if value == 0 {
@@ -252,13 +233,12 @@ impl HartState {
         self.csr_set.set_flags(fg, flags);
     }
 
-    #[inline(always)]
     fn update_mlz_wide_flags(&mut self, fg: usize, value: u256) {
         let mut flags = self.csr_set.get_flags(fg) & insn_proc::Flags::CARRY;
-        if (*value.high() as i128) < 0 {
+        if (value >> 255u32).as_u32() != 0 {
             flags |= insn_proc::Flags::MSB;
         }
-        if (*value.low() & 1) != 0 {
+        if (value & U256::from(1u32)) != 0 {
             flags |= insn_proc::Flags::LSB;
         }
         if value == 0 {
@@ -558,33 +538,12 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
         self.hart_state.pc = 0;
     }
 
-    #[inline(always)]
-    fn qw_mul_shifted(a_val: u256, qwsel1: u32, b_val: u256, qwsel2: u32, shift_qw: u32) -> u256 {
-        let extract_qw = |v: u256, qwsel: u32| -> u64 {
-            match qwsel & 3 {
-                0 => (*v.low()) as u64,
-                1 => (*v.low() >> 64) as u64,
-                2 => (*v.high()) as u64,
-                _ => (*v.high() >> 64) as u64,
-            }
-        };
-        let a_qw = extract_qw(a_val, qwsel1) as u128;
-        let b_qw = extract_qw(b_val, qwsel2) as u128;
-        let prod = a_qw.wrapping_mul(b_qw);
-        match shift_qw & 3 {
-            0 => U256::from_words(0, prod),
-            1 => U256::from_words(prod >> 64, prod << 64),
-            2 => U256::from_words(prod, 0),
-            _ => U256::from_words(prod << 64, 0),
-        }
-    }
-
     /// Execute instruction pointed to by `hart_state.pc`
     ///
     /// Returns `Ok` where instruction execution was successful. `Err` with the relevant
     /// [InstructionTrap] is returned when the instruction execution causes a trap.
     pub fn step(&mut self) -> Result<(), InstructionTrap> {
-        if self.hart_state.track_state { self.hart_state.updated.clear(); }
+        self.hart_state.updated.clear();
         self.hart_state.x1_read = false;
 
         if let Some(next_insn) = self.imem.read_mem(self.hart_state.pc) {
@@ -611,10 +570,8 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
                                 if hwloop.end == self.hart_state.pc {
                                     // one less iteration to go
                                     hwloop.count -= 1;
-                                    if self.hart_state.track_state {
-                                        self.hart_state.updated.loophead =
-                                            Some((loopdepth, hwloop.count));
-                                    }
+                                    self.hart_state.updated.loophead =
+                                        Some((loopdepth, hwloop.count));
                                     if hwloop.count == 0 {
                                         // loop exhausted, should be removed
                                         lstack.pop();
@@ -1226,7 +1183,10 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_addm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let modv = self.hart_state.csr_set.get_mod();
+        let modv = self
+            .hart_state
+            .read_wsr(csrs::WSRAddr::r#mod.into())
+            .unwrap();
 
         let (mut res, over) = a.overflowing_add(b);
         if over || res >= modv {
@@ -1241,7 +1201,10 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_subm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let modv = self.hart_state.csr_set.get_mod();
+        let modv = self
+            .hart_state
+            .read_wsr(csrs::WSRAddr::r#mod.into())
+            .unwrap();
 
         let (mut res, over) = a.overflowing_sub(b);
         if over {
@@ -1255,29 +1218,35 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
 
     fn process_bn_mulqacc(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let zero_acc = dec_insn.funct3 & 0b001 != 0;
-        let shift_qw = dec_insn.funct3 >> 1;
+        let acc_shift = 64 * (dec_insn.funct3 >> 1);
         let qwsel1 = dec_insn.funct7 & 0b11;
         let qwsel2 = dec_insn.funct7 >> 2 & 0b11;
 
         let a_val = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b_val = self.hart_state.read_wide_register(dec_insn.rs2)?;
 
-        let mul_res = Self::qw_mul_shifted(a_val, qwsel1, b_val, qwsel2, shift_qw);
+        let a_qw = a_val >> (64 * qwsel1) & U256::from(u64::MAX);
+        let b_qw = b_val >> (64 * qwsel2) & U256::from(u64::MAX);
 
-        let truncated = if zero_acc {
-            mul_res
+        let mut mul_res = (a_qw).wrapping_mul(b_qw);
+
+        let acc = if zero_acc {
+            U256::from(0u32)
         } else {
-            self.hart_state.csr_set.get_acc().wrapping_add(mul_res)
+            self.hart_state.read_wsr(csrs::WSRAddr::acc.into()).unwrap()
         };
 
+        mul_res = mul_res.wrapping_shl(acc_shift);
+
+        // add and truncate
         self.hart_state
-            .write_wsr(csrs::WSRAddr::acc.into(), truncated)
+            .write_wsr(csrs::WSRAddr::acc.into(), acc.wrapping_add(mul_res))
             .and(Ok(false))
     }
 
     fn process_bn_mulqacc_wo(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let zero_acc = dec_insn.funct3 & 0b001 != 0;
-        let shift_qw = dec_insn.funct3 >> 1;
+        let acc_shift = 64 * (dec_insn.funct3 >> 1);
         let qwsel1 = dec_insn.funct7 & 0b11;
         let qwsel2 = dec_insn.funct7 >> 2 & 0b11;
         let fg = ((dec_insn.funct7 >> 6) & 0b1) as usize;
@@ -1285,13 +1254,19 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let a_val = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b_val = self.hart_state.read_wide_register(dec_insn.rs2)?;
 
-        let mul_res = Self::qw_mul_shifted(a_val, qwsel1, b_val, qwsel2, shift_qw);
+        let a_qw = a_val >> (64 * qwsel1) & U256::from(u64::MAX);
+        let b_qw = b_val >> (64 * qwsel2) & U256::from(u64::MAX);
 
-        let truncated = if zero_acc {
-            mul_res
+        let mut mul_res = (a_qw).wrapping_mul(b_qw);
+
+        let acc: u256 = if zero_acc {
+            U256::from(0u32)
         } else {
-            self.hart_state.csr_set.get_acc().wrapping_add(mul_res)
+            self.hart_state.read_wsr(csrs::WSRAddr::acc.into()).unwrap()
         };
+
+        mul_res = mul_res.wrapping_shl(acc_shift);
+        let truncated = acc.wrapping_add(mul_res);
 
         self.hart_state
             .write_wide_register(dec_insn.rd, truncated)?;
@@ -1304,7 +1279,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
 
     fn process_bn_mulqacc_so(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let zero_acc = dec_insn.funct3 & 0b001 != 0;
-        let shift_qw = dec_insn.funct3 >> 1;
+        let acc_shift = 64 * (dec_insn.funct3 >> 1);
         let qwsel1 = dec_insn.funct7 & 0b11;
         let qwsel2 = dec_insn.funct7 >> 2 & 0b11;
         let hwsel = dec_insn.funct7 >> 4 & 0b1;
@@ -1314,22 +1289,25 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let b_val = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let d_val = self.hart_state.read_wide_register(dec_insn.rd)?;
 
-        let mul_res = Self::qw_mul_shifted(a_val, qwsel1, b_val, qwsel2, shift_qw);
+        let a_qw = a_val >> (64 * qwsel1) & U256::from(u64::MAX);
+        let b_qw = b_val >> (64 * qwsel2) & U256::from(u64::MAX);
 
-        let truncated = if zero_acc {
-            mul_res
+        let mut mul_res = a_qw.wrapping_mul(b_qw);
+
+        let acc: u256 = if zero_acc {
+            U256::from(0u32)
         } else {
-            self.hart_state.csr_set.get_acc().wrapping_add(mul_res)
+            self.hart_state.read_wsr(csrs::WSRAddr::acc.into()).unwrap()
         };
 
-        let lo_u128 = *truncated.low();
-        let hi_u128 = *truncated.high();
-        let wrd = if hwsel != 0 {
-            U256::from_words(lo_u128, *d_val.low())
-        } else {
-            U256::from_words(*d_val.high(), lo_u128)
-        };
-        let hi_part = U256::from_words(0, hi_u128);
+        mul_res = mul_res.wrapping_shl(acc_shift);
+        let truncated = acc.wrapping_add(mul_res);
+
+        let lo_part = U256::from(*truncated.low());
+        let hi_part = U256::from(*truncated.high());
+        let hw_shift = 128 * hwsel;
+        let hw_mask = U256::from(u128::MAX) << hw_shift;
+        let wrd = (d_val & !hw_mask) | (lo_part << hw_shift);
 
         self.hart_state.write_wide_register(dec_insn.rd, wrd)?;
         self.hart_state
@@ -1339,18 +1317,18 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let mut new_flags;
         if hwsel != 0 {
             new_flags = flags & (insn_proc::Flags::CARRY | insn_proc::Flags::LSB);
-            if (lo_u128 as i128) < 0 {
+            if ((lo_part >> 127u32).as_u32() & 0b1) != 0 {
                 new_flags |= insn_proc::Flags::MSB;
             }
-            if lo_u128 == 0 {
+            if lo_part == 0 {
                 new_flags |= flags & insn_proc::Flags::ZERO;
             }
         } else {
             new_flags = flags & (insn_proc::Flags::CARRY | insn_proc::Flags::MSB);
-            if (lo_u128 & 1) != 0 {
+            if (lo_part & 0b1) != 0 {
                 new_flags |= insn_proc::Flags::LSB;
             }
-            if lo_u128 == 0 {
+            if lo_part == 0 {
                 new_flags |= insn_proc::Flags::ZERO;
             }
         }
