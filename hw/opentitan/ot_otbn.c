@@ -823,10 +823,18 @@ static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
                                 value, " FAILED");
         return;
     }
+    bool was_locked = ot_otbn_is_locked(s);
     bool written = ot_otbn_proxy_write_memory(s->proxy, doi, addr, value);
     trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value,
                             written ? "" : " FAILED");
-    if (written) {
+    if (written || was_locked) {
+        /*
+         * In otbn.sv:737-739, mem_crc_data_in_valid is gated by
+         * ~(dmem_access_core | imem_access_core), i.e. ~(busy_execute_q | start_q),
+         * and is NOT gated by ~locking. When OTBN is already in StatusLocked,
+         * prim_ram_1p_scr suppresses the SRAM macro write (.intg_error_i(locking)),
+         * but u_mem_load_crc32 still advances on 32-bit bus writes.
+         */
         ot_otbn_update_checksum(s, doi, addr, value);
     }
     if (ot_otbn_is_locked(s)) {
