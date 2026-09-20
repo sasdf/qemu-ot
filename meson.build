@@ -4264,7 +4264,11 @@ foreach target : target_dirs
     target_type='system'
     t = target_system_arch[target_base_arch].apply(config_target, strict: false)
     arch_srcs += t.sources()
-    arch_noncov_srcs += t.sources()
+    if target == 'riscv32-softmmu'
+      ot_cov_hw_srcs += t.sources()
+    else
+      arch_noncov_srcs += t.sources()
+    endif
     arch_deps += t.dependencies()
 
     hw_dir = target_name == 'sparc64' ? 'sparc64' : target_base_arch
@@ -4274,7 +4278,7 @@ foreach target : target_dirs
       arch_deps += hw.dependencies()
       foreach f : hw.sources()
         p = f.full_path()
-        if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+        if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/riscv/dm.c') or p.contains('/hw/riscv/dtm.c') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
           ot_cov_hw_srcs += f
         else
           arch_noncov_srcs += f
@@ -4344,7 +4348,11 @@ foreach target : target_dirs
 
   t = target_arch[target_base_arch].apply(config_target, strict: false)
   arch_srcs += t.sources()
-  arch_noncov_srcs += t.sources()
+  if target == 'riscv32-softmmu'
+    ot_cov_hw_srcs += t.sources()
+  else
+    arch_noncov_srcs += t.sources()
+  endif
   arch_deps += t.dependencies()
 
   target_common = common_ss.apply(config_target, strict: false)
@@ -4365,7 +4373,7 @@ foreach target : target_dirs
     if target == 'riscv32-softmmu'
       foreach f : src.sources()
         p = f.full_path()
-        if (p.contains('/hw/opentitan/ot_') or p.contains('/hw/misc/pulp_rv_dm.c') or p.contains('/hw/jtag/tap_ctrl_rbb.c') or p.contains('/hw/block/m25p80') or p.contains('/hw/nvram/eeprom_at24c.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+        if (p.contains('/hw/opentitan/ot_') or p.contains('/hw/misc/pulp_rv_dm.c') or p.contains('/hw/jtag/tap_ctrl_rbb.c') or p.contains('/hw/block/m25p80') or p.contains('/hw/nvram/eeprom_at24c.c') or p.contains('/accel/tcg/cputlb.c') or p.contains('/accel/tcg/icount-common.c') or p.contains('/system/cpus.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
           ot_cov_sys_srcs += f
         else
           ot_noncov_sys_srcs += f
@@ -4390,7 +4398,7 @@ foreach target : target_dirs
   arch_deps += target_specific.dependencies()
   foreach f : target_specific.sources()
     p = f.full_path()
-    if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
+    if target == 'riscv32-softmmu' and (p.contains('/hw/opentitan/ot_') or p.contains('/hw/riscv/ot_earlgrey.c') or p.contains('/hw/riscv/ibex_') or p.contains('/hw/riscv/dm.c') or p.contains('/hw/riscv/dtm.c') or p.contains('/hw/intc/sifive_plic.c')) and not (p.contains('_dj.c') or p.contains('ot_keymgr_dpe.c') or p.contains('ot_mbx.c') or p.contains('ot_dma.c') or p.contains('ot_soc_proxy.c') or p.contains('ot_soc_dbg_ctrl.c'))
       ot_cov_hw_srcs += f
     else
       arch_noncov_srcs += f
