@@ -1897,7 +1897,6 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     vaddr im_address;
     hwaddr pa = 0;
     int prot, prot2, prot_pmp;
-    int page_prot = 0;
     bool pmp_violation = false;
     bool first_stage_error = true;
     bool two_stage_lookup = mmuidx_2stage(mmu_idx);
@@ -1991,7 +1990,6 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 
         if (ret == TRANSLATE_SUCCESS) {
             hwaddr pmp_addr = env->vaddr_pmp ? address : pa;
-            int base_prot = prot;
 
             ret = get_physical_address_pmp(env, &prot_pmp, pmp_addr,
                                            size, access_type, mode);
@@ -2003,15 +2001,6 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                           __func__, pmp_addr, ret, prot_pmp, tlb_size);
 
             prot &= prot_pmp;
-            if (tlb_size < TARGET_PAGE_SIZE) {
-                page_prot = base_prot &
-                            pmp_get_page_min_prot(env, pmp_addr, mode);
-                if (page_prot == prot) {
-                    tlb_size = TARGET_PAGE_SIZE;
-                }
-            } else {
-                page_prot = prot;
-            }
         }
     }
 
@@ -2022,16 +2011,9 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     if (ret == TRANSLATE_SUCCESS) {
         if (env->tlb_subpage || ((address ^ pa) & ~TARGET_PAGE_MASK)) {
             tlb_size = 1;
-            page_prot = 0;
         }
-        CPUTLBEntryFull full = {
-            .phys_addr = pa & ~(tlb_size - 1),
-            .attrs = MEMTXATTRS_UNSPECIFIED,
-            .prot = prot,
-            .page_prot = (tlb_size >= TARGET_PAGE_SIZE) ? prot : page_prot,
-            .lg_page_size = ctz64(tlb_size),
-        };
-        tlb_set_page_full(cs, mmu_idx, address & ~(tlb_size - 1), &full);
+        tlb_set_page(cs, address & ~(tlb_size - 1), pa & ~(tlb_size - 1),
+                     prot, mmu_idx, tlb_size);
         return true;
     } else if (probe) {
         return false;
