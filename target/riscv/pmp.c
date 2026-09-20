@@ -770,51 +770,33 @@ target_ulong pmp_get_tlb_size(CPURISCVState *env, hwaddr addr)
  */
 vaddr pmp_get_page_exec_end(CPURISCVState *env, vaddr addr)
 {
-    hwaddr pmp_sa;
-    hwaddr pmp_ea;
-    vaddr tlb_ea = (addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE - 1;
-    hwaddr pmp_addr = addr;
-    int i;
+    vaddr pmp_end = (addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE - 1;
     uint8_t pmp_regions = riscv_cpu_cfg(env)->pmp_regions;
+    int i;
 
     if (!riscv_cpu_cfg(env)->pmp || !pmp_get_num_rules(env)) {
-        return tlb_ea;
+        return pmp_end;
     }
-
-    if (!env->vaddr_pmp && riscv_cpu_virt_mem_enabled(env)) {
-        hwaddr pa;
-        int prot;
-        RISCVCPUClass *cc = RISCV_CPU_GET_CLASS(env_cpu(env));
-        if (cc->riscv_get_physical_address(env, &pa, &prot, addr, NULL,
-                                           MMU_INST_FETCH,
-                                           riscv_env_mmu_index(env, true),
-                                           true, false, false, true) ==
-            TRANSLATE_SUCCESS) {
-            pmp_addr = pa;
-        }
-    }
-
-    hwaddr pmp_end = (pmp_addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE - 1;
 
     for (i = 0; i < pmp_regions; i++) {
         if (pmp_get_a_field(env->pmp_state.pmp[i].cfg_reg) == PMP_AMATCH_OFF) {
             continue;
         }
 
-        pmp_sa = env->pmp_state.addr[i].sa;
-        pmp_ea = env->pmp_state.addr[i].ea;
+        hwaddr pmp_sa = env->pmp_state.addr[i].sa;
+        hwaddr pmp_ea = env->pmp_state.addr[i].ea;
 
-        if (pmp_addr >= pmp_sa && pmp_addr <= pmp_ea) {
+        if (addr >= pmp_sa && addr <= pmp_ea) {
             if (pmp_ea < pmp_end) {
                 pmp_end = pmp_ea;
             }
             break;
-        } else if (pmp_sa > pmp_addr && pmp_sa <= pmp_end) {
+        } else if (pmp_sa > addr && pmp_sa <= pmp_end) {
             pmp_end = pmp_sa - 1;
         }
     }
 
-    return addr + (pmp_end - pmp_addr);
+    return pmp_end;
 }
 
 /*
