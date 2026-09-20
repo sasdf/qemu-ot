@@ -2192,8 +2192,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         if (old_start && !new_start && ot_entropy_src_is_fw_ov_mode(s) &&
             ot_entropy_src_is_fw_ov_entropy_insert(s) &&
             !ot_entropy_src_is_bypass_mode(s) &&
-            (!ot_entropy_src_can_condition_entropy(s) ||
-             !ot_fifo32_is_empty(&s->precon_fifo))) {
+            !ot_entropy_src_can_condition_entropy(s)) {
             ot_entropy_src_trigger_recov_alert(
                 s, R_RECOV_ALERT_STS_ES_FW_OV_DISABLE_ALERT_MASK);
         }
