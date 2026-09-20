@@ -126,9 +126,6 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
 
     /* AON clock frequency in Earlgrey QEMU is 250 kHz (4000 ns per tick) */
     uint64_t beat_ns = (uint64_t)(clk_div + 1u) * 4000ULL;
-    if (beat_ns == 0) {
-        beat_ns = 4000ULL;
-    }
 
     uint64_t elapsed_beats = (uint64_t)(now_ns - s->cntr_start_ns) / beat_ns;
     uint32_t beats_per_cycle = 1u << (dc_resn + 1u);
@@ -378,7 +375,7 @@ static void ot_pwm_init(Object *obj)
     OtPwmState *s = OT_PWM(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_pwm_regs_ops, s, TYPE_OT_PWM,
-                          REGS_SIZE);
+                          0x80u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
 }
