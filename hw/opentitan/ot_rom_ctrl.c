@@ -176,7 +176,6 @@ struct OtRomCtrlState {
     uint8_t kmac_app;
     char *nonce_xstr;
     char *key_xstr;
-    bool corrupt_digest;
 };
 
 static void ot_rom_ctrl_get_mem_bounds(OtRomCtrlState *s, hwaddr *minaddr,
@@ -543,9 +542,6 @@ ot_rom_ctrl_handle_kmac_response(void *opaque, const OtKMACAppRsp *rsp)
         if (s->scrambled.local_gen) {
             s->regs[R_EXP_DIGEST_0 + ix] = s->regs[R_DIGEST_0 + ix];
         }
-    }
-    if (s->corrupt_digest) {
-        s->regs[R_EXP_DIGEST_0] ^= 1u;
     }
 
     if (trace_event_get_state(TRACE_OT_ROM_CTRL_COMPUTED_DIGEST)) {
@@ -1189,7 +1185,6 @@ static const Property ot_rom_ctrl_properties[] = {
     DEFINE_PROP_UINT8("kmac-app", OtRomCtrlState, kmac_app, UINT8_MAX),
     DEFINE_PROP_STRING("nonce", OtRomCtrlState, nonce_xstr),
     DEFINE_PROP_STRING("key", OtRomCtrlState, key_xstr),
-    DEFINE_PROP_BOOL("corrupt-digest", OtRomCtrlState, corrupt_digest, false),
 };
 
 static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,

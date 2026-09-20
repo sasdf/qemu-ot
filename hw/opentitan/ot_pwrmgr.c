@@ -32,7 +32,6 @@
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
-#include "hw/opentitan/ot_adc_ctrl.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_aon_timer.h"
 #include "hw/opentitan/ot_clock_ctrl.h"
@@ -639,68 +638,6 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         "", TYPE_OT_SENSOR_EG, NULL);
                 if (sensor) {
                     ot_sensor_eg_trigger_recov_event(sensor, 0u);
-                    return;
-                }
-            }
-            if (!active_wkup &&
-                (s->slow_regs.wakeup_en & (1u << OT_PWRMGR_WAKEUP_ADC_CTRL))) {
-                OtAdcCtrlState *adc =
-                    (OtAdcCtrlState *)object_resolve_path_type(
-                        "", TYPE_OT_ADC_CTRL, NULL);
-                if (adc) {
-                    ot_adc_ctrl_trigger_wakeup(adc);
-                    if (!s->in_low_power) {
-                        return;
-                    }
-                    active_wkup =
-                        s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
-                }
-            }
-            if (!active_wkup &&
-                s->slow_regs.wakeup_en == (1u << OT_PWRMGR_WAKEUP_AON_TIMER)) {
-                OtAonTimerState *aon =
-                    (OtAonTimerState *)object_resolve_path_type(
-                        "", TYPE_OT_AON_TIMER, NULL);
-                if (aon && !ot_aon_timer_is_active(aon)) {
-                    s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
-                    ibex_irq_set(&s->alert, 1);
-                    ot_pwrmgr_set_low_power(s, false);
-                    s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                    s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                    ibex_irq_set(&s->cpu_enable, (int)false);
-                    if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
-                        ibex_irq_set(&s->reset_req,
-                                     OT_RSTMGR_RESET_REQUEST(
-                                         OT_PWRMGR_SLOW_DOMAIN,
-                                         OT_RSTMGR_RESET_LOW_POWER));
-                        ibex_irq_set(&s->reset_req, 0);
-                    }
-                    ibex_irq_set(&s->reset_req,
-                                 OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
-                                                         OT_RSTMGR_RESET_PWRMGR));
-                    return;
-                }
-            }
-            if (!active_wkup && s->slow_regs.wakeup_en == 0x3fu &&
-                s->slow_regs.reset_en == (1u << 1u)) {
-                OtAonTimerState *aon =
-                    (OtAonTimerState *)object_resolve_path_type(
-                        "", TYPE_OT_AON_TIMER, NULL);
-                if (aon && !ot_aon_timer_is_active(aon)) {
-                    ot_pwrmgr_set_low_power(s, false);
-                    s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                    s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                    ibex_irq_set(&s->cpu_enable, (int)false);
-                    if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
-                        ibex_irq_set(&s->reset_req,
-                                     OT_RSTMGR_RESET_REQUEST(
-                                         OT_PWRMGR_SLOW_DOMAIN,
-                                         OT_RSTMGR_RESET_LOW_POWER));
-                        ibex_irq_set(&s->reset_req, 0);
-                    }
-                    ibex_irq_set(&s->reset_req,
-                                 OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
-                                                         OT_RSTMGR_RESET_POR));
                     return;
                 }
             }

@@ -16,6 +16,4 @@ OBJECT_DECLARE_TYPE(OtAdcCtrlState, OtAdcCtrlClass, OT_ADC_CTRL)
 
 #define OT_ADC_CTRL_WKUP TYPE_OT_ADC_CTRL "-wkup"
 
-void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s);
-
 #endif /* HW_OPENTITAN_OT_ADC_CTRL_H */

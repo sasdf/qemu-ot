@@ -198,29 +198,6 @@ static bool ot_adc_ctrl_filter_match_chn(uint32_t filter_ctl, uint32_t chn_val)
     return (min_v > chn_val) || (chn_val > max_v);
 }
 
-static bool ot_adc_ctrl_pick_sample_chn(uint32_t filter_ctl, uint32_t def_val,
-                                        uint32_t *out_val)
-{
-    if (ot_adc_ctrl_filter_match_chn(filter_ctl, def_val)) {
-        *out_val = def_val;
-        return true;
-    }
-
-    uint32_t min_v =
-        (filter_ctl >> FILTER_CTL_MIN_V_SHIFT) & FILTER_CTL_MIN_V_MASK;
-    uint32_t max_v =
-        (filter_ctl >> FILTER_CTL_MAX_V_SHIFT) & FILTER_CTL_MAX_V_MASK;
-    bool out_of_range = (filter_ctl & FILTER_CTL_COND_MASK) != 0u;
-
-    uint32_t cand = out_of_range ? (max_v + 1u) : ((min_v + max_v) / 2u);
-    if (cand <= FILTER_CTL_MAX_V_MASK &&
-        ot_adc_ctrl_filter_match_chn(filter_ctl, cand)) {
-        *out_val = cand;
-        return true;
-    }
-    return false;
-}
-
 static void ot_adc_ctrl_update_chn_val(OtAdcCtrlState *s, uint32_t chn0_val,
                                        uint32_t chn1_val, bool intr_we)
 {
@@ -273,41 +250,6 @@ static void ot_adc_ctrl_eval_sample(OtAdcCtrlState *s, uint32_t chn0_val,
     }
 
     ot_adc_ctrl_update_irqs(s);
-}
-
-void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
-{
-    if (s->fsm_timer) {
-        timer_del(s->fsm_timer);
-    }
-    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
-        (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
-        return;
-    }
-
-    uint32_t chn0_val = DEFAULT_CHN0_VAL;
-    uint32_t chn1_val = DEFAULT_CHN1_VAL;
-
-    for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
-        uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
-        uint32_t f1 = s->regs[R_ADC_CHN1_FILTER_CTL_0 + k];
-        bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
-        bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
-        if (!en0 && !en1) {
-            continue;
-        }
-        uint32_t cand0 = DEFAULT_CHN0_VAL;
-        uint32_t cand1 = DEFAULT_CHN1_VAL;
-        bool ok0 = !en0 || ot_adc_ctrl_pick_sample_chn(f0, DEFAULT_CHN0_VAL, &cand0);
-        bool ok1 = !en1 || ot_adc_ctrl_pick_sample_chn(f1, DEFAULT_CHN1_VAL, &cand1);
-        if (ok0 && ok1) {
-            chn0_val = cand0;
-            chn1_val = cand1;
-            break;
-        }
-    }
-
-    ot_adc_ctrl_eval_sample(s, chn0_val, chn1_val);
 }
 
 static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
