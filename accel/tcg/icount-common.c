@@ -158,9 +158,6 @@ int64_t icount_to_ns(int64_t icount)
 {
     uint64_t freq = qatomic_read(&timers_state.cpu_freq_hz);
     if (freq > 0) {
-        if (icount < 0) {
-            return -(int64_t)muldiv64(-icount, NANOSECONDS_PER_SECOND, freq);
-        }
         return (int64_t)muldiv64(icount, NANOSECONDS_PER_SECOND, freq);
     }
     return icount << qatomic_read(&timers_state.icount_time_shift);
@@ -168,10 +165,6 @@ int64_t icount_to_ns(int64_t icount)
 
 void icount_set_clock_freq(uint64_t freq_hz)
 {
-    if (!icount_enabled()) {
-        qatomic_set(&timers_state.cpu_freq_hz, freq_hz);
-        return;
-    }
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     int64_t cur_icount = icount_get_locked();
@@ -225,7 +218,8 @@ static void icount_adjust(void)
     }
     timers_state.last_delta = delta;
     qatomic_set_i64(&timers_state.qemu_icount_bias,
-                    cur_icount - icount_to_ns(timers_state.qemu_icount));
+                    cur_icount - (timers_state.qemu_icount
+                                  << timers_state.icount_time_shift));
     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                          &timers_state.vm_clock_lock);
 }
