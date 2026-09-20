@@ -212,16 +212,10 @@ static bool ot_adc_ctrl_pick_sample_chn(uint32_t filter_ctl, uint32_t def_val,
         (filter_ctl >> FILTER_CTL_MAX_V_SHIFT) & FILTER_CTL_MAX_V_MASK;
     bool out_of_range = (filter_ctl & FILTER_CTL_COND_MASK) != 0u;
 
-    if (!out_of_range) {
-        if (min_v <= max_v) {
-            *out_val = (min_v + max_v) / 2u;
-            return true;
-        }
-        return false;
-    }
-
-    if (max_v < FILTER_CTL_MAX_V_MASK) {
-        *out_val = max_v + 1u;
+    uint32_t cand = out_of_range ? (max_v + 1u) : ((min_v + max_v) / 2u);
+    if (cand <= FILTER_CTL_MAX_V_MASK &&
+        ot_adc_ctrl_filter_match_chn(filter_ctl, cand)) {
+        *out_val = cand;
         return true;
     }
     return false;
