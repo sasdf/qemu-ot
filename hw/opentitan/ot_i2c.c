@@ -378,9 +378,12 @@ struct OtI2CState {
     bool in_target_transfer;
     bool restart_pending;
     bool target_read_mode;
+    bool expect_stop;
     bool nack_transaction;
     bool ack_ctrl_stretching;
     bool tx_stretching;
+    bool host_pending_stop;
+    bool host_pending_nakok;
     uint8_t acq_fifo_next_data;
     int last_ack_result;
 
@@ -1109,7 +1112,6 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: Invalid FDATA flags READB+RCONT+STOP\n",
                           __func__, s->ot_id);
-            return;
         }
 
         /* Read bytes from target device into host_rx_fifo. */
@@ -1165,6 +1167,9 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
 
             /* Try to send contents of TX FIFO to the target. */
             ot_i2c_host_send(s);
+            if (s->ack_ctrl_stretching) {
+                s->host_pending_nakok = nakok;
+            }
         }
     }
 
@@ -1190,15 +1195,19 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
     }
 
     if (stop) {
-        /* End the transaction. */
-        i2c_end_transfer(s->bus);
+        if (s->ack_ctrl_stretching) {
+            s->host_pending_stop = true;
+        } else {
+            /* End the transaction. */
+            i2c_end_transfer(s->bus);
 
-        /* Signal command completion. */
-        ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+            /* Signal command completion. */
+            ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
 
-        /* Allow target mode to process data. */
-        i2c_schedule_pending_master(s->bus);
-        ot_i2c_pump_async_bus(s);
+            /* Allow target mode to process data. */
+            i2c_schedule_pending_master(s->bus);
+            ot_i2c_pump_async_bus(s);
+        }
     }
 
     uint64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
@@ -1441,11 +1450,28 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             s->nack_transaction = true;
             ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, 0);
             if (s->ack_ctrl_stretching) {
-                ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
-                                          SIGNAL_NACK);
                 s->ack_ctrl_stretching = false;
-                s->last_ack_result = -1;
                 ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+                if (ot_i2c_host_enabled(s) && i2c_bus_busy(s->bus)) {
+                    uint32_t fval = 0;
+                    fval = FIELD_DP32(fval, FDATA, FBYTE,
+                                      s->acq_fifo_next_data);
+                    fval = FIELD_DP32(fval, FDATA, NAKOK,
+                                      s->host_pending_nakok);
+                    ot_fifo32_push(&s->host_tx_fifo, fval);
+                    ot_i2c_host_send(s);
+                } else {
+                    ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
+                                              SIGNAL_NACK);
+                    s->last_ack_result = -1;
+                }
+                if (s->host_pending_stop) {
+                    s->host_pending_stop = false;
+                    i2c_end_transfer(s->bus);
+                    ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+                    i2c_schedule_pending_master(s->bus);
+                    ot_i2c_pump_async_bus(s);
+                }
             }
         } else {
             if (s->ack_ctrl_stretching && nbytes > 0) {
@@ -1455,6 +1481,13 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
                 s->ack_ctrl_stretching = false;
                 s->last_ack_result = 0;
                 ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+                if (s->host_pending_stop) {
+                    s->host_pending_stop = false;
+                    i2c_end_transfer(s->bus);
+                    ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+                    i2c_schedule_pending_master(s->bus);
+                    ot_i2c_pump_async_bus(s);
+                }
             }
             ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, nbytes);
         }
@@ -1483,8 +1516,7 @@ static void ot_i2c_target_set_acqdata(OtI2CState *s, uint32_t data,
 {
     uint32_t val32 = 0;
 
-    if (signal == SIGNAL_NACK || signal == SIGNAL_NACK_START ||
-        signal == SIGNAL_NACK_STOP) {
+    if (signal == SIGNAL_NACK || signal == SIGNAL_NACK_START) {
         if (s->regs[R_TARGET_NACK_COUNT] < 0xffu) {
             s->regs[R_TARGET_NACK_COUNT]++;
         }
@@ -1556,6 +1588,7 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
         }
         s->restart_pending = false;
         s->in_target_transfer = true;
+        s->expect_stop = false;
         s->nack_transaction = false;
         s->ack_ctrl_stretching = false;
         ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
@@ -1587,22 +1620,30 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
     }
     case I2C_NACK:
         /* Host NACKs the last byte of a target read transfer before STOP. */
+        s->expect_stop = true;
         break;
     case I2C_FINISH:
-        /* Signal STOP or NACK_STOP as the last entry in the fifo. */
-        ot_i2c_target_set_acqdata(s, 0,
-                                  s->nack_transaction ? SIGNAL_NACK_STOP
-                                                      : SIGNAL_STOP);
+        if (s->in_target_transfer) {
+            if (s->target_read_mode && !s->expect_stop) {
+                ot_i2c_irq_set_state(s, UNEXP_STOP, true);
+            }
+            /* Signal STOP or NACK_STOP as the last entry in the fifo. */
+            ot_i2c_target_set_acqdata(s, 0,
+                                      s->nack_transaction ? SIGNAL_NACK_STOP
+                                                          : SIGNAL_STOP);
+            /* Assert command complete interrupt. */
+            ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+        }
         s->in_target_transfer = false;
         s->restart_pending = false;
         s->target_read_mode = false;
+        s->expect_stop = false;
         s->ack_ctrl_stretching = false;
         s->tx_stretching = false;
+        s->host_pending_stop = false;
+        s->host_pending_nakok = false;
         ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
         ot_i2c_irq_set_state(s, TX_STRETCH, false);
-
-        /* Assert command complete interrupt. */
-        ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: %s: I2C event %d unimplemented\n",
@@ -1893,9 +1934,12 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->in_target_transfer = false;
     s->restart_pending = false;
     s->target_read_mode = false;
+    s->expect_stop = false;
     s->nack_transaction = false;
     s->ack_ctrl_stretching = false;
     s->tx_stretching = false;
+    s->host_pending_stop = false;
+    s->host_pending_nakok = false;
     s->acq_fifo_next_data = 0;
     s->last_ack_result = 0;
     s->active_target_addr = 0x0u;
