@@ -283,7 +283,6 @@ struct OtAESState {
     unsigned pclk; /* Current input clock */
     unsigned reseed_count;
     bool fast_mode;
-    bool fatal_fault;
 
     char *ot_id;
     char *clock_name;
@@ -425,8 +424,7 @@ static inline bool ot_aes_is_manual(OtAESRegisters *r)
 
 static bool ot_aes_is_idle(OtAESState *s)
 {
-    return !s->fatal_fault &&
-           !(s->regs->status & R_STATUS_ALERT_FATAL_FAULT_MASK) &&
+    return !(s->regs->status & R_STATUS_ALERT_FATAL_FAULT_MASK) &&
            s->regs->trigger == 0u &&
            /* retard_timer is never used if fast_mode is enabled */
            (s->fast_mode || !timer_pending(s->retard_timer));
@@ -585,7 +583,6 @@ static void ot_aes_trigger_reseed(OtAESState *s)
 {
     ot_aes_reseed(s, OT_AES_PRNG_FULL_WORDS);
 }
-
 
 static void ot_aes_sideload_key(OtAESState *s)
 {
@@ -1070,8 +1067,9 @@ static void ot_aes_process_cond(OtAESState *s)
                 /*
                  * if fast mode is enabled, vCPU cannot resume execution before
                  * the AES round is completed, which increase throughput and
-                 * translates to deterministic behavior, at the expense of
-                 * accuracy.
+                 * reduce latency for AES compution, but may fail time-sensitive
+                 * OpenTitan library that expect the real CPU to execute code
+                 * while AES is performing in HW.
                  */
                 ot_aes_do_process(s);
             }
@@ -1083,7 +1081,7 @@ static void ot_aes_process_cond(OtAESState *s)
 
 static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
 {
-    (void)bits;
+    /* called from EDN */
     (void)fips;
 
     OtAESState *s = opaque;
@@ -1169,7 +1167,6 @@ static void ot_aes_lc_escalate(void *opaque, int irq, int level)
     g_assert(irq == 0);
 
     if (level) {
-        s->fatal_fault = true;
         timer_del(s->retard_timer);
         qemu_bh_cancel(s->process_bh);
         s->edn.scheduled = false;
@@ -1210,7 +1207,6 @@ static void ot_aes_push_key(OtKeySinkIf *ifd, const uint8_t *share0,
 static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtAESState *s = opaque;
-    (void)size;
     OtAESRegisters *r = s->regs;
 
     uint32_t val32;
@@ -1272,10 +1268,6 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
         val32 = r->ctrl_aux_regwen;
         break;
     case R_STATUS:
-        if (s->fatal_fault || (r->status & R_STATUS_ALERT_FATAL_FAULT_MASK)) {
-            val32 = R_STATUS_ALERT_FATAL_FAULT_MASK;
-            break;
-        }
         val32 = r->status;
         if (ot_aes_is_idle(s)) {
             val32 |= R_STATUS_IDLE_MASK;
@@ -1298,6 +1290,10 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_aes_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                              pc);
 
+    val32 >>= (addr & 3u) * 8u;
+    if (size < 4u) {
+        val32 &= (1u << (size * 8u)) - 1u;
+    }
     return (uint64_t)val32;
 };
 
@@ -1394,9 +1390,6 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_DATA_IN_1:
     case R_DATA_IN_2:
     case R_DATA_IN_3:
-        if (s->fatal_fault) {
-            break;
-        }
         r->data_in[reg - R_DATA_IN_0] = val32;
         if (s->ctx->di_full) {
             memcpy(s->ctx->src, r->data_in, sizeof(s->ctx->src));
@@ -1471,9 +1464,6 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         r->ctrl_aux_regwen &= val32;
         break;
     case R_TRIGGER:
-        if (s->fatal_fault) {
-            break;
-        }
         val32 &= R_TRIGGER_START_MASK | R_TRIGGER_KEY_IV_DATA_IN_CLEAR_MASK |
                  R_TRIGGER_DATA_OUT_CLEAR_MASK | R_TRIGGER_PRNG_RESEED_MASK;
         r->trigger |= val32;
@@ -1495,38 +1485,13 @@ static inline uint32_t ot_aes_byte_mask(hwaddr addr, unsigned size)
 static uint32_t ot_aes_reg_permit(hwaddr reg)
 {
     switch (reg) {
-    case R_ALERT_TEST:
-    case R_CTRL_AUX_SHADOWED:
-    case R_CTRL_AUX_REGWEN:
-    case R_TRIGGER:
-    case R_STATUS:
-        return 0x1u;
     case R_CTRL_SHADOWED:
         return 0x3u;
     case R_KEY_SHARE0_0 ... R_DATA_OUT_3:
         return 0xfu;
     default:
-        return 0u;
+        return 0x1u;
     }
-}
-
-static MemTxResult ot_aes_read_with_attrs(void *opaque, hwaddr addr,
-                                          uint64_t *data, unsigned size,
-                                          MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        *data = 0xffffffffu;
-        return MEMTX_DECODE_ERROR;
-    }
-    uint32_t val32 = (uint32_t)ot_aes_read(opaque, addr & ~3ull, 4u);
-    val32 >>= (addr & 3u) * 8u;
-    if (size < 4u) {
-        val32 &= (1u << (size * 8u)) - 1u;
-    }
-    *data = (uint64_t)val32;
-    return MEMTX_OK;
 }
 
 static MemTxResult ot_aes_write_with_attrs(void *opaque, hwaddr addr,
@@ -1535,9 +1500,6 @@ static MemTxResult ot_aes_write_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t be = ot_aes_byte_mask(addr, size);
     uint32_t permit = ot_aes_reg_permit(reg);
     if ((permit & ~be) != 0u) {
@@ -1567,7 +1529,7 @@ static const Property ot_aes_properties[] = {
 };
 
 static const MemoryRegionOps ot_aes_regs_ops = {
-    .read_with_attrs = &ot_aes_read_with_attrs,
+    .read = &ot_aes_read,
     .write_with_attrs = &ot_aes_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
@@ -1599,7 +1561,6 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     r->trigger = 0xeu;
     r->status = 0u;
     r->data_out_rdy = false;
-    s->fatal_fault = false;
     e->scheduled = false;
     e->pending_words = 0u;
     ot_aes_load_reseed_rate(s);
