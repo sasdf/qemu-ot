@@ -339,51 +339,39 @@ void ot_uart_update_pinmux(const uint32_t *mio_outsel,
     static const unsigned out_pads[4] = { 26u, 14u, 5u, 1u };
     static const unsigned in_sels[4] = { 27u, 15u, 6u, 2u };
 
-    if (!mio_outsel || !mio_periph_insel) {
-        for (int i = 0; i < 4; i++) {
-            if (ot_uart_instances[i]) {
-                ot_uart_instances[i]->tx_chr_owner = ot_uart_instances[i];
-                ot_uart_instances[i]->rx_target_uart = ot_uart_instances[i];
-            }
-        }
-        return;
-    }
-
     for (int u = 0; u < 4; u++) {
         OtUARTState *s = ot_uart_instances[u];
-        if (!s) {
-            continue;
-        }
-        OtUARTState *owner = NULL;
-        for (int ch = 0; ch < 4; ch++) {
-            if (mio_outsel[out_pads[ch]] == (uint32_t)(45 + u)) {
-                owner = ot_uart_instances[ch];
-                break;
+        if (s) {
+            OtUARTState *owner = NULL;
+            for (int ch = 0; ch < 4; ch++) {
+                if (mio_outsel[out_pads[ch]] == (uint32_t)(45 + u)) {
+                    owner = ot_uart_instances[ch];
+                    break;
+                }
             }
+            if (!owner && mio_outsel[out_pads[u]] <= 2u) {
+                owner = s;
+            }
+            s->tx_chr_owner = owner;
         }
-        if (!owner && mio_outsel[out_pads[u]] <= 2u) {
-            owner = s;
-        }
-        s->tx_chr_owner = owner;
     }
 
     for (int ch = 0; ch < 4; ch++) {
         OtUARTState *ch_dev = ot_uart_instances[ch];
-        if (!ch_dev) {
-            continue;
-        }
-        OtUARTState *target = NULL;
-        for (int u = 0; u < 4; u++) {
-            if (mio_periph_insel[42 + u] == in_sels[ch]) {
-                target = ot_uart_instances[u];
-                break;
+        if (ch_dev) {
+            OtUARTState *target = NULL;
+            for (int u = 0; u < 4; u++) {
+                if (mio_periph_insel[42 + u] == in_sels[ch]) {
+                    target = ot_uart_instances[u];
+                    break;
+                }
             }
+            if (!target && mio_periph_insel[42 + ch] <= 1u &&
+                mio_outsel[out_pads[ch]] <= 2u) {
+                target = ch_dev;
+            }
+            ch_dev->rx_target_uart = target;
         }
-        if (!target && mio_periph_insel[42 + ch] <= 1u &&
-            mio_outsel[out_pads[ch]] <= 2u) {
-            target = ch_dev;
-        }
-        ch_dev->rx_target_uart = target;
     }
 
     for (int ch = 0; ch < 4; ch++) {
@@ -411,11 +399,11 @@ static bool ot_uart_check_pty_parity(OtUARTState *s, OtUARTState *rx_owner)
         return true;
     }
     OtPtyChardev *pty = (OtPtyChardev *)rx_owner->chr.chr;
-    if (!pty->ioc ||
-        !object_dynamic_cast(OBJECT(pty->ioc), TYPE_QIO_CHANNEL_FILE)) {
-        return true;
-    }
-    int master_fd = QIO_CHANNEL_FILE(pty->ioc)->fd;
+    int master_fd =
+        (pty->ioc &&
+         object_dynamic_cast(OBJECT(pty->ioc), TYPE_QIO_CHANNEL_FILE)) ?
+            QIO_CHANNEL_FILE(pty->ioc)->fd :
+            -1;
     if (master_fd >= 0) {
         struct termios tio;
         if (tcgetattr(master_fd, &tio) == 0) {
@@ -567,35 +555,23 @@ static void ot_uart_step_rx(OtUARTState *s)
         return;
     }
 
-    bool can_push = !fifo8_is_full(&s->rx_fifo);
-    if (!can_push) {
-        if ((s->regs[R_INTR_ENABLE] & INTR_RX_OVERFLOW_MASK) &&
-            !(s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
-            !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK)) {
-            can_push = true;
-        }
+    bool can_push = !fifo8_is_full(&s->rx_fifo) ||
+                    ((s->regs[R_INTR_ENABLE] & INTR_RX_OVERFLOW_MASK) &&
+                     !(s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
+                     !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK));
+    if (can_push) {
+        uint8_t ch = fifo8_pop(&s->rx_staging_fifo);
+        OtUARTState *rx_owner = ot_uart_get_rx_owner(s);
+        ot_uart_receive_bytes(s, rx_owner, &ch, 1);
+
+        uint64_t char_ns = ot_uart_char_ns(s);
+        s->rx_next_ns = now + (int64_t)char_ns;
     }
-    if (!can_push) {
-        timer_del(s->rx_timer);
-        return;
-    }
 
-    bool was_full = fifo8_is_full(&s->rx_staging_fifo);
-    uint8_t ch = fifo8_pop(&s->rx_staging_fifo);
-    OtUARTState *rx_owner = ot_uart_get_rx_owner(s);
-    ot_uart_receive_bytes(s, rx_owner, &ch, 1);
-
-    uint64_t char_ns = ot_uart_char_ns(s);
-    s->rx_next_ns = now + (int64_t)char_ns;
-
-    if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+    if (can_push && !fifo8_is_empty(&s->rx_staging_fifo)) {
         timer_mod(s->rx_timer, s->rx_next_ns);
     } else {
         timer_del(s->rx_timer);
-    }
-
-    if (was_full && !fifo8_is_full(&s->rx_staging_fifo)) {
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
 }
 
@@ -603,9 +579,8 @@ static void ot_uart_rx_timer_cb(void *opaque)
 {
     OtUARTState *s = opaque;
     ot_uart_step_rx(s);
-    if (fifo8_is_empty(&s->rx_staging_fifo) &&
-        (ot_uart_is_rx_enabled(s) ||
-         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+    bool rx_or_llpbk = ot_uart_is_rx_enabled(s) || (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK);
+    if (fifo8_is_empty(&s->rx_staging_fifo) && rx_or_llpbk &&
         !ot_uart_is_sys_loopack_enabled(s)) {
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
@@ -767,24 +742,19 @@ static void ot_uart_tx_timer_cb(void *opaque)
 {
     OtUARTState *s = opaque;
 
-    if (!ot_uart_is_tx_enabled(s)) {
-        s->tx_busy = false;
-        ot_uart_update_irqs(s);
-        return;
-    }
-
-    if (!fifo8_is_empty(&s->tx_fifo)) {
+    if (ot_uart_is_tx_enabled(s) && !fifo8_is_empty(&s->tx_fifo)) {
         uint8_t ch = fifo8_pop(&s->tx_fifo);
         s->tx_busy = true;
         ot_uart_send_byte(s, ch);
         timer_mod(s->tx_timer,
                   qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + ot_uart_char_ns(s));
-        ot_uart_update_irqs(s);
     } else {
         s->tx_busy = false;
-        s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
-        ot_uart_update_irqs(s);
+        if (ot_uart_is_tx_enabled(s)) {
+            s->regs[R_INTR_STATE] |= INTR_TX_DONE_MASK;
+        }
     }
+    ot_uart_update_irqs(s);
 }
 
 static gboolean ot_uart_watch_cb(void *do_not_use, GIOCondition cond,
@@ -804,7 +774,7 @@ static void ot_uart_xmit(OtUARTState *s)
         /* system loopback mode, just forward to RX FIFO */
         uint32_t count = fifo8_num_used(&s->tx_fifo);
         buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-        ot_uart_receive(s, buf, size);
+        ot_uart_receive(s, buf, (int)size);
         count -= size;
         /*
          * there may be more data to send if data wraps around the end of TX
@@ -812,7 +782,7 @@ static void ot_uart_xmit(OtUARTState *s)
          */
         if (count) {
             buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-            ot_uart_receive(s, buf, size);
+            ot_uart_receive(s, buf, (int)size);
         }
     } else {
         CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
