@@ -1003,9 +1003,6 @@ static void ot_flash_update_alerts(OtFlashState *s)
     if (s->regs[R_FAULT_STATUS]) {
         fault_alerts |= ALERT_FATAL_ERR_MASK;
     }
-    if (s->regs[R_STD_FAULT_STATUS]) {
-        fault_alerts |= ALERT_FATAL_STD_ERR_MASK;
-    }
 
     uint32_t levels = s->regs[R_ALERT_TEST] | s->latched_alerts | fault_alerts;
 
@@ -2436,9 +2433,7 @@ static void ot_flash_process_control_op(OtFlashState *s)
     if (ot_flash_is_disabled(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: flash has been disabled\n",
                       __func__, s->ot_id);
-        ot_flash_set_error(s, R_ERR_CODE_MP_ERR_MASK,
-                           WORD_ALIGN_ADDR(s->regs[R_ADDR]));
-        ot_flash_op_complete(s);
+        ot_flash_set_error(s, R_ERR_CODE_MP_ERR_MASK, 0u);
         return;
     }
 
@@ -2635,16 +2630,6 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
         val32 = ot_shadow_reg_read(&s->mp_bank_cfg);
         break;
     case R_RD_FIFO:
-        if (ot_flash_is_disabled(s) ||
-            (ot_fifo32_is_empty(&s->rd_fifo) &&
-             !(s->op.kind == OP_READ && !s->op.hw))) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: %s: Read RD_FIFO when empty with no active SW "
-                          "read op or disabled\n",
-                          __func__, s->ot_id);
-            *val64 = 0u;
-            return MEMTX_ERROR;
-        }
         if (!ot_fifo32_is_empty(&s->rd_fifo)) {
             val32 = ot_fifo32_pop(&s->rd_fifo);
             s->regs[R_STATUS] &= ~R_STATUS_RD_FULL_MASK;
@@ -2658,6 +2643,20 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
                 ot_flash_op_execute(s);
             }
         } else {
+            /**
+             * @todo: technically, the hardware appears to stall the bus read
+             * from the read FIFO until there is valid data to read; this is
+             * fine in QEMU for most cases as we complete synchronously, except
+             * for initialisation, where we cannot trivially stall for
+             * completion to avoid blocking the main IO thread.
+             *
+             * For now, the initialization delay is set sufficiently small so
+             * as to make it unlikely that this case will be hit in OT testing;
+             * a better long term solution might be removing the initialisation
+             * delay entirely, or introducing some logic here to cancel the
+             * timer and complete init, though this would need to be careful
+             * with races and incomplete operations.
+             */
             if (!ot_flash_is_initialized(s)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "%s: %s: Bus stalling on reads from uninit FIFO "
@@ -2667,7 +2666,8 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Read empty FIFO\n",
                               __func__, s->ot_id);
             }
-            if (!(ot_flash_operation_ongoing(s) && s->op.kind == OP_READ)) {
+            if (ot_flash_is_disabled(s) ||
+                !(ot_flash_operation_ongoing(s) && s->op.kind == OP_READ)) {
                 *val64 = 0u;
                 return MEMTX_ERROR;
             }
@@ -2695,8 +2695,8 @@ static MemTxResult ot_flash_regs_read_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        *val64 = 0u;
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
@@ -2746,7 +2746,7 @@ static uint32_t ot_flash_core_reg_permit(hwaddr reg)
     case R_CURR_FIFO_LVL:
         return 0x3u;
     default:
-        return (reg < REGS_COUNT) ? 0x1u : 0u;
+        return 0x1u;
     }
 }
 
@@ -2757,9 +2757,6 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
     OtFlashState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     if (reg != R_RD_FIFO) {
         uint32_t be = ot_flash_byte_mask(addr, size);
         uint32_t permit = ot_flash_core_reg_permit(reg);
@@ -3077,12 +3074,6 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
         }
         break;
     case R_PROG_FIFO:
-        if (ot_flash_is_disabled(s)) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: %s: write prog fifo when flash is disabled\n",
-                          __func__, s->ot_id);
-            return MEMTX_ERROR;
-        }
         if (s->op.kind != OP_PROG || s->op.hw) {
             /*
              * "This FIFO can only be programmed by software after a program
@@ -3147,7 +3138,7 @@ static MemTxResult ot_flash_regs_write_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
+        break;
     }
 
     return MEMTX_OK;
@@ -3325,11 +3316,6 @@ static MemTxResult ot_flash_csrs_read_with_attrs(void *opaque, hwaddr addr,
                                                  MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr csr = R32_OFF(addr);
-    if (csr >= CSRS_COUNT) {
-        *data = 0xffffffffu;
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t val32 = (uint32_t)ot_flash_csrs_read(opaque, addr & ~3ull, 4u);
     val32 >>= (addr & 3u) * 8u;
     if (size < 4u) {
@@ -3345,9 +3331,6 @@ static MemTxResult ot_flash_csrs_write_with_attrs(void *opaque, hwaddr addr,
 {
     (void)attrs;
     hwaddr csr = R32_OFF(addr);
-    if (csr >= CSRS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     uint32_t be = ot_flash_byte_mask(addr, size);
     uint32_t permit = ot_flash_prim_csr_permit(csr);
     if ((permit & ~be) != 0u) {
@@ -3440,6 +3423,7 @@ static void ot_flash_lc_broadcast(void *opaque)
         case OT_FLASH_LC_OWNER_SEED_SW_RW_EN:
         case OT_FLASH_LC_ISO_PART_SW_RD_EN:
         case OT_FLASH_LC_ISO_PART_SW_WR_EN:
+        case OT_FLASH_LC_RMA:
             /* nothing to do here, flag is latched in current_level */
             break;
         case OT_FLASH_LC_ESCALATE_EN:
@@ -3455,11 +3439,6 @@ static void ot_flash_lc_broadcast(void *opaque)
                 LOG_UNIMP,
                 "%s: %s: lc_nvm_debug_en for JTAG connection is ignored\n",
                 __func__, s->ot_id);
-            break;
-        case OT_FLASH_LC_RMA:
-            if (level) {
-                ot_flash_rma_wipe(s);
-            }
             break;
         default:
             error_setg(&error_fatal, "%s: %s: unexpected LC broadcast %d",
