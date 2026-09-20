@@ -1275,13 +1275,8 @@ uint64_t ot_gpio_eg_get_total_us(OtGpioEgState *s)
     }
     uint64_t rt_us =
         (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
-    uint64_t total_us = rt_us + s->time_offset_us;
-    if (total_us < s->last_total_us) {
-        s->time_offset_us = s->last_total_us - rt_us;
-        total_us = s->last_total_us;
-    }
-    s->last_total_us = total_us;
-    return total_us;
+    s->last_total_us = MAX(s->last_total_us, rt_us + s->time_offset_us);
+    return s->last_total_us;
 }
 
 void ot_gpio_eg_set_total_us(OtGpioEgState *s, uint64_t total_us)
@@ -1372,10 +1367,7 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
             return;
         }
         unsigned eolpos = (unsigned)(eol - s->ibuf);
-        char *line = g_strndup(s->ibuf, eolpos);
-        if (eolpos > 0 && line[eolpos - 1] == '\r') {
-            line[eolpos - 1] = '\0';
-        }
+        char *line = g_strchomp(g_strndup(s->ibuf, eolpos));
 
         const char *next = eol + 1u;
         unsigned rem = (unsigned)(&s->ibuf[s->ipos] - next);
