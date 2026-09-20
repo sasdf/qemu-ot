@@ -812,7 +812,7 @@ static void ot_sysrst_ctrl_init(Object *obj)
     OtSysrstCtrlState *s = OT_SYSRST_CTRL(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_sysrst_ctrl_ops, s,
-                          TYPE_OT_SYSRST_CTRL, REGS_SIZE);
+                          TYPE_OT_SYSRST_CTRL, 0x100u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     ibex_sysbus_init_irq(obj, &s->irq);
