@@ -989,9 +989,7 @@ static bool do_csrr(DisasContext *ctx, int rd, int rc)
     translator_io_start(&ctx->base);
     gen_helper_csrr(dest, tcg_env, csr);
     gen_set_gpr(ctx, rd, dest);
-    /* The helper may raise ILLEGAL_INSN -- record binv for unwind. */
-    decode_save_opc(ctx, 0);
-    return true;
+    return do_csr_post(ctx);
 }
 
 static bool do_csrw(DisasContext *ctx, int rc, TCGv src)
