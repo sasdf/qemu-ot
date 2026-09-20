@@ -743,7 +743,10 @@ static void ot_entropy_src_update_irqs(OtEntropySrcState *s)
 static bool
 ot_entropy_src_is_final_fifo_slot_available(const OtEntropySrcState *s)
 {
-    return ot_fifo32_num_free(&s->final_fifo) >= ES_WORD_COUNT;
+    unsigned used_words =
+        ot_fifo32_num_used(&s->final_fifo) +
+        (!ot_fifo32_is_empty(&s->swread_fifo) ? ES_WORD_COUNT : 0u);
+    return (used_words + ES_WORD_COUNT) <= ES_FINAL_FIFO_WORD_COUNT;
 }
 
 static bool ot_entropy_src_is_hw_route(const OtEntropySrcState *s)
@@ -1014,7 +1017,7 @@ static void ot_entropy_src_update_filler(OtEntropySrcState *s)
     /* fill granule is OT_ENTROPY_SRC_FILL_WORD_COUNT bits */
     bool input =
         ot_fifo32_num_free(&s->input_fifo) >= OT_ENTROPY_SRC_FILL_WORD_COUNT;
-    bool output = ot_fifo32_num_free(&s->final_fifo) >= ES_WORD_COUNT;
+    bool output = ot_entropy_src_is_final_fifo_slot_available(s);
     if (ot_entropy_src_is_fw_ov_mode(s)) {
         bool obs_output = s->obs_fifo_en ||
                           !(s->regs_hi[R_FW_OV_RD_FIFO_OVERFLOW] &
@@ -1130,13 +1133,14 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
      * If the esfinal FIFO is already full and a new seed is pushed, the push is
      * ignored and the seed is lost."
      */
-    if (ot_fifo32_num_free(&s->final_fifo) >= OT_ENTROPY_SRC_WORD_COUNT) {
+    if (ot_entropy_src_is_final_fifo_slot_available(s)) {
         for (unsigned ix = 0; ix < OT_ENTROPY_SRC_WORD_COUNT; ix++) {
             ot_fifo32_push(&s->final_fifo, hash[ix]);
         }
     }
     s->packet_count += 1u;
-    if (ot_entropy_src_is_fw_ov_entropy_insert(s)) {
+    if (ot_entropy_src_is_fw_ov_mode(s) &&
+        ot_entropy_src_is_fw_ov_entropy_insert(s)) {
         ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
         if (ot_entropy_src_is_module_enabled(s) &&
             !ot_entropy_src_is_bypass_mode(s)) {
@@ -1149,8 +1153,6 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
                        ENTROPY_SRC_FW_INSERT_MSG :
                        ENTROPY_SRC_FW_INSERT_START);
         }
-    } else if (REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START, FW_OV_INSERT_START)) {
-        ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
     } else {
         ot_entropy_src_change_state(s, ENTROPY_SRC_CONT_HT_START);
         ot_entropy_src_change_state(s, ENTROPY_SRC_CONT_HT_RUNNING);
@@ -1169,7 +1171,7 @@ ot_entropy_src_push_bypass_entropy(OtEntropySrcState *s, uint32_t word)
     }
 
     /* bypass conditioner full/ready, empty it into the final FIFO */
-    if (ot_fifo32_num_free(&s->final_fifo) >= OT_ENTROPY_SRC_WORD_COUNT) {
+    if (ot_entropy_src_is_final_fifo_slot_available(s)) {
         while (!ot_fifo32_is_empty(&s->bypass_fifo)) {
             ot_fifo32_push(&s->final_fifo, ot_fifo32_pop(&s->bypass_fifo));
         }
@@ -2186,44 +2188,21 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             ot_entropy_src_trigger_recov_alert(
                 s, R_RECOV_ALERT_STS_ES_FW_OV_DISABLE_ALERT_MASK);
         }
-        if (!ot_entropy_src_is_module_enabled(s)) {
+        if (!ot_entropy_src_is_module_enabled(s) ||
+            !ot_entropy_src_is_fw_ov_mode(s) ||
+            !ot_entropy_src_is_fw_ov_entropy_insert(s) ||
+            ot_entropy_src_is_bypass_mode(s)) {
             break;
         }
         if (new_start) {
-            if (ot_entropy_src_is_bypass_mode(s)) {
-                ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
-            } else if (s->state == ENTROPY_SRC_FW_INSERT_START ||
-                       s->state == ENTROPY_SRC_FW_INSERT_MSG) {
-                ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_MSG);
-            } else {
-                int res = sha3_384_init(&s->sha3_state);
-                g_assert(res == CRYPT_OK);
-                s->cond_word = 0;
-                ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_START);
-                ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_MSG);
+            ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_MSG);
+        } else if (s->state == ENTROPY_SRC_FW_INSERT_MSG) {
+            /* handle SHA3 processing */
+            ot_entropy_src_perform_hash(s);
+            if (ot_entropy_src_is_fw_route(s)) {
+                ot_entropy_src_update_fw_route(s);
             }
-        } else { /* default to false */
-            if (s->state == ENTROPY_SRC_FW_INSERT_MSG ||
-                s->state == ENTROPY_SRC_SHA3_PROCESS) {
-                /* handle SHA3 processing */
-                ot_entropy_src_perform_hash(s);
-                if (ot_entropy_src_is_fw_route(s)) {
-                    ot_entropy_src_update_fw_route(s);
-                }
-                ot_entropy_src_update_irqs(s);
-            } else if (s->state == ENTROPY_SRC_FW_INSERT_START) {
-                /* remain in ENTROPY_SRC_FW_INSERT_START waiting for start */
-            } else {
-                OtEntropySrcFsmState new_state;
-                if (ot_entropy_src_is_fw_ov_entropy_insert(s)) {
-                    new_state = ENTROPY_SRC_IDLE;
-                } else {
-                    new_state = ot_entropy_src_is_bypass_mode(s) ?
-                                    ENTROPY_SRC_BOOT_HT_RUNNING :
-                                    ENTROPY_SRC_STARTUP_HT_START;
-                }
-                ot_entropy_src_change_state(s, new_state);
-            }
+            ot_entropy_src_update_irqs(s);
         }
     } break;
     case R_FW_OV_WR_DATA:
