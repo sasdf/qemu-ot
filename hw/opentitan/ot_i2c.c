@@ -514,24 +514,22 @@ static bool ot_i2c_target_enabled(const OtI2CState *s)
 
 static uint32_t ot_i2c_get_fmt_threshold(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_HOST_FIFO_CONFIG], HOST_FIFO_CONFIG, FMT_THRESH);
+    return ARRAY_FIELD_EX32(s->regs, HOST_FIFO_CONFIG, FMT_THRESH);
 }
 
 static uint32_t ot_i2c_get_rx_threshold(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_HOST_FIFO_CONFIG], HOST_FIFO_CONFIG, RX_THRESH);
+    return ARRAY_FIELD_EX32(s->regs, HOST_FIFO_CONFIG, RX_THRESH);
 }
 
 static uint32_t ot_i2c_get_acq_threshold(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_TARGET_FIFO_CONFIG], TARGET_FIFO_CONFIG,
-                      ACQ_THRESH);
+    return ARRAY_FIELD_EX32(s->regs, TARGET_FIFO_CONFIG, ACQ_THRESH);
 }
 
 static uint32_t ot_i2c_get_tx_threshold(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_TARGET_FIFO_CONFIG], TARGET_FIFO_CONFIG,
-                      TX_THRESH);
+    return ARRAY_FIELD_EX32(s->regs, TARGET_FIFO_CONFIG, TX_THRESH);
 }
 
 static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
@@ -1370,11 +1368,6 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         if (val32 & R_OVRD_TXOVRDEN_MASK) {
             bool scl = (bool)(val32 & R_OVRD_SCLVAL_MASK);
             bool sda = (bool)(val32 & R_OVRD_SDAVAL_MASK);
-            if (s->ovrd_consumed && val32 == R_OVRD_TXOVRDEN_MASK) {
-                s->ovrd_len = 0;
-                s->ovrd_consumed = false;
-                s->ovrd_start_ns = INT64_MAX;
-            }
             if (!s->ovrd_consumed) {
                 int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
                 if (s->ovrd_len == 0) {
@@ -2340,9 +2333,6 @@ static int pmod_i2c_stretch_send(I2CSlave *i2c, uint8_t data)
         return 0;
     }
     switch (s->reg_ptr) {
-    case 0xdfu:
-        pmod_i2c_stretch_sw_reset(s);
-        break;
     case 0xdcu:
         s->rx_delay_ms = data;
         break;
@@ -2368,16 +2358,11 @@ static uint8_t pmod_i2c_stretch_recv(I2CSlave *i2c)
         return 0xa1u;
     case 0xddu:
         return 0xa2u;
-    case 0xdcu:
-        return s->rx_delay_ms;
-    case 0xdbu:
-        return s->tx_delay_ms;
     case 0xcfu:
+    default:
         if (s->cache_idx < sizeof(s->cache)) {
             return s->cache[s->cache_idx++];
         }
-        return 0;
-    default:
         return 0;
     }
 }
@@ -2423,10 +2408,6 @@ static void pmod_i2c_sensor_reset(DeviceState *dev)
         s->regs[0x04u] = 0x55u; /* Zout Low */
         s->regs[0x05u] = 0x66u; /* Zout High */
         break;
-    case 0x40u: /* HDC1080 Humidity/Temp */
-        s->regs[0x02u] = 0x10u; /* Config MSB */
-        s->regs[0x03u] = 0x00u; /* Config LSB */
-        break;
     default:
         break;
     }
@@ -2456,21 +2437,14 @@ static int pmod_i2c_sensor_event(I2CSlave *i2c, enum i2c_event event)
                 s->rx_buf[0] = 0x80u;
                 s->rx_buf[1] = 0x00u;
                 break;
-            case 0x02u: /* Configuration */
-                s->rx_buf[0] = s->regs[0x02u];
-                s->rx_buf[1] = s->regs[0x03u];
-                break;
             case 0xfeu: /* Manufacturer ID 0x5449 */
                 s->rx_buf[0] = 0x54u;
                 s->rx_buf[1] = 0x49u;
                 break;
             case 0xffu: /* Device ID 0x1050 */
+            default:
                 s->rx_buf[0] = 0x10u;
                 s->rx_buf[1] = 0x50u;
-                break;
-            default:
-                s->rx_buf[0] = 0;
-                s->rx_buf[1] = 0;
                 break;
             }
         } else if (addr == 0x59u) {
@@ -2496,14 +2470,11 @@ static int pmod_i2c_sensor_event(I2CSlave *i2c, enum i2c_event event)
                 s->rx_len = 3u;
                 break;
             case 0x280eu: /* kExecSelfTestCmd (3 bytes, 0xD4 = Pass) */
+            default:
                 s->rx_buf[0] = 0xd4u;
                 s->rx_buf[1] = 0x00u;
                 s->rx_buf[2] = 0x00u;
                 s->rx_len = 3u;
-                break;
-            default:
-                s->rx_buf[0] = 0;
-                s->rx_len = 1u;
                 break;
             }
         }
@@ -2530,17 +2501,6 @@ static int pmod_i2c_sensor_send(I2CSlave *i2c, uint8_t data)
     if (!s->has_reg_ptr) {
         s->reg_ptr = data;
         s->has_reg_ptr = true;
-        return 0;
-    }
-
-    if (addr == 0x40u) {
-        if (s->reg_ptr == 0x02u) {
-            if (s->tx_len == 2u) {
-                s->regs[0x02u] = data;
-            } else if (s->tx_len == 3u) {
-                s->regs[0x03u] = data;
-            }
-        }
         return 0;
     }
 
