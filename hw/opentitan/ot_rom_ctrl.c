@@ -453,13 +453,14 @@ static void ot_rom_ctrl_unscramble(OtRomCtrlState *s, const uint64_t *src,
 static void ot_rom_ctrl_scramble(OtRomCtrlState *s, const uint32_t *src,
                                  uint64_t *dst)
 {
+    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
+    memset(&dst[scr_word_size], 0, ROM_DIGEST_WORDS * sizeof(uint64_t));
     if (!s->key_xstr || !s->nonce_xstr) {
         trace_ot_rom_ctrl_missing(s->ot_id,
                                   "missing key/nonce to fake scrambling");
         return;
     }
 
-    unsigned scr_word_size = (s->size - OT_ROM_DIGEST_BYTES) / sizeof(uint32_t);
     for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
         uint64_t clrdata = src[log_addr];
         uint64_t eclrdata = ot_rom_ctrl_add_ecc_39_32_u64(clrdata);
