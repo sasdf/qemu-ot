@@ -603,8 +603,8 @@ static MemTxResult ot_otp_eg_reg_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        *data = 0ull;
-        return MEMTX_DECODE_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
@@ -624,12 +624,6 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
 
     hwaddr reg = R32_OFF(addr);
     uint8_t permit = ot_otp_eg_core_reg_permit(reg);
-    if (permit == 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
     uint32_t byte_offset = (uint32_t)(addr & 3u);
     uint32_t byte_mask = ((1u << size) - 1u) << byte_offset;
     if ((permit & ~byte_mask) != 0u) {
@@ -763,7 +757,7 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%03x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        break;
     }
 
     return MEMTX_OK;
