@@ -1185,13 +1185,9 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
         uint32_t val = FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, VAL);
         uint64_t timeout_ns =
             s->pclk ? ((uint64_t)val * NANOSECONDS_PER_SECOND / s->pclk) : 0;
-        if (stretch_ns > timeout_ns) {
-            if (FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, MODE)) {
-                ARRAY_FIELD_DP32(s->regs, CONTROLLER_EVENTS, BUS_TIMEOUT, 1);
-                ot_i2c_irq_set_state(s, CONTROLLER_HALT, true);
-            } else {
-                ot_i2c_irq_set_state(s, STRETCH_TIMEOUT, true);
-            }
+        if (stretch_ns > timeout_ns &&
+            !FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, MODE)) {
+            ot_i2c_irq_set_state(s, STRETCH_TIMEOUT, true);
         }
     }
 
@@ -1967,12 +1963,6 @@ I2CBus *ot_i2c_get_active_target_bus(I2CBus *default_bus, uint8_t address)
             return inst->bus;
         }
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(ot_i2c_instances); i++) {
-        OtI2CState *inst = ot_i2c_instances[i];
-        if (inst && ot_i2c_target_enabled(inst)) {
-            return inst->bus;
-        }
-    }
     return default_bus;
 }
 
@@ -2062,15 +2052,14 @@ bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in)
         case OT_I2C_BB_ADDR:
             if (s->bb_bit_count == 8u) {
                 uint8_t addr = s->bb_shift_reg >> 1u;
-                if (ot_i2c_check_address_match(s, addr)) {
-                    s->bb_drive_sda_low = true;
+                bool match = ot_i2c_check_address_match(s, addr);
+                s->bb_drive_sda_low = match;
+                s->bb_state = match ? OT_I2C_BB_ADDR : OT_I2C_BB_IGNORE;
+                if (match) {
                     OtI2CSignal sig = s->bb_seen_valid_start ? SIGNAL_RESTART :
                                                                SIGNAL_START;
                     ot_i2c_target_set_acqdata(s, s->bb_shift_reg, sig);
                     s->bb_seen_valid_start = true;
-                } else {
-                    s->bb_drive_sda_low = false;
-                    s->bb_state = OT_I2C_BB_IGNORE;
                 }
             } else if (s->bb_bit_count == 9u) {
                 bool is_read = (s->bb_shift_reg & 1u) != 0;
@@ -2137,13 +2126,8 @@ bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns)
     if (!s || s->ovrd_consumed) {
         return false;
     }
-    if (s->ovrd_len >= 31u) {
-        return true;
-    }
-    if (s->ovrd_len > 0u && (now_ns - s->ovrd_last_ns) > 200000LL) {
-        return true;
-    }
-    return false;
+    return s->ovrd_len >= 31u ||
+           (s->ovrd_len > 0u && (now_ns - s->ovrd_last_ns) > 200000LL);
 }
 
 bool ot_i2c_is_override_enabled(OtI2CState *s)
@@ -2327,9 +2311,6 @@ static int pmod_i2c_stretch_send(I2CSlave *i2c, uint8_t data)
         s->reg_ptr = data;
         s->has_reg_ptr = true;
         s->cache_idx = 0;
-        if (s->reg_ptr == 0xdfu) {
-            pmod_i2c_stretch_sw_reset(s);
-        }
         return 0;
     }
     switch (s->reg_ptr) {
