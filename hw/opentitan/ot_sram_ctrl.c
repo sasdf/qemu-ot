@@ -375,13 +375,8 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
     }
 
     if (!escalated) {
-        uint32_t new_key = ot_prng_random_u32(s->prng);
-        if (!new_key || new_key == s->scr_key) {
-            new_key ^= 0xa5a5a5a5u;
-            if (!new_key) {
-                new_key = 1u;
-            }
-        }
+        uint32_t new_key = (ot_prng_random_u32(s->prng) | 1u) ^
+                           ((s->scr_key & 1u) ? 2u : 0u);
         ot_sram_ctrl_apply_scr_key(s, new_key);
         if (!s->noinit && s->scr_invalid_bm) {
             size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
@@ -392,8 +387,6 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
 
         s->regs[R_STATUS] |= R_STATUS_SCR_KEY_VALID_MASK;
         s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_TRUE;
-    } else {
-        s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_FALSE;
     }
 
     s->regs[R_CTRL] &= ~R_CTRL_RENEW_SCR_KEY_MASK;
@@ -454,7 +447,7 @@ static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
                                R_STATUS_INIT_DONE_MASK);
         s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_FALSE;
         ot_sram_ctrl_apply_scr_key(s, 0u);
-        ot_sram_ctrl_mem_switch_to_init(s);
+        memory_region_set_enabled(&s->mem->alias, false);
     }
 }
 
@@ -528,7 +521,7 @@ static uint64_t ot_sram_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_sram_ctrl_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                    val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
 
 static void ot_sram_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -644,13 +637,6 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
     (void)size;
     (void)attrs;
 
-    if (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: attempt to read from escalated SRAM @ 0x%06x\n",
-                      __func__, s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
     uint32_t pc = ibex_get_current_pc();
 
     unsigned cell = addr >> 2u;
@@ -721,13 +707,6 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
 {
     OtSramCtrlState *s = opaque;
     (void)attrs;
-
-    if (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: attempt to write to escalated SRAM @ 0x%06x\n",
-                      __func__, s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sram_ctrl_mem_io_write(s->ot_id, (uint32_t)addr, size,
@@ -826,30 +805,10 @@ static const Property ot_sram_ctrl_properties[] = {
     DEFINE_PROP_BOOL("noswitch", OtSramCtrlState, noswitch, false),
 };
 
-static MemTxResult ot_sram_ctrl_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        *data = 0u;
-        return MEMTX_DECODE_ERROR;
-    }
-    uint64_t val64 = ot_sram_ctrl_regs_read(opaque, addr & ~3ULL, 4u);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
 static MemTxResult ot_sram_ctrl_regs_write_with_attrs(
     void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_DECODE_ERROR;
-    }
     /* SRAM_CTRL_REGS_PERMIT[0..8] = 4'b0001 (sram_ctrl_reg_pkg.sv:152-162) */
     uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     if ((0x1u & ~byte_mask) != 0u) {
@@ -861,7 +820,7 @@ static MemTxResult ot_sram_ctrl_regs_write_with_attrs(
 }
 
 static const MemoryRegionOps ot_sram_ctrl_regs_ops = {
-    .read_with_attrs = &ot_sram_ctrl_regs_read_with_attrs,
+    .read = &ot_sram_ctrl_regs_read,
     .write_with_attrs = &ot_sram_ctrl_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
@@ -902,6 +861,7 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
         memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
     }
     s->scr_invalid = false;
+    memory_region_set_enabled(&s->mem->alias, true);
 
     memset(s->regs, 0, REGS_SIZE);
 
