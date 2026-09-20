@@ -139,8 +139,8 @@ REG32(WKUP_CAUSE,
       A_WKUP_DETECTOR_PADSEL + REG_SIZE(PARAM_N_WKUP_DETECT))
 /* clang-format on */
 
-#define MIO_PAD_ATTR_MASK               OT_PINMUX_PAD_ATTR_MASK
-#define DIO_PAD_ATTR_MASK               OT_PINMUX_PAD_ATTR_MASK
+#define MIO_PAD_ATTR_MASK               0x0010008fu
+#define DIO_PAD_ATTR_MASK               0x0010008fu
 #define MIO_PAD_SLEEP_MODE_OUT_TIE_LOW  0x0u
 #define MIO_PAD_SLEEP_MODE_OUT_TIE_HIGH 0x1u
 #define MIO_PAD_SLEEP_MODE_OUT_HIGH_Z   0x2u
@@ -719,7 +719,7 @@ static uint64_t ot_pinmux_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = regs->mio_pad_attr_regwen[reg - R_MIO_PAD_ATTR_REGWEN];
         break;
     case CASE_RANGE(MIO_PAD_ATTR, PARAM_N_MIO_PADS):
-        val32 = regs->mio_pad_attr[reg - R_MIO_PAD_ATTR] & 0x00000083u;
+        val32 = regs->mio_pad_attr[reg - R_MIO_PAD_ATTR];
         break;
     case CASE_RANGE(DIO_PAD_ATTR_REGWEN, PARAM_N_DIO_PADS):
         val32 = regs->dio_pad_attr_regwen[reg - R_DIO_PAD_ATTR_REGWEN];
