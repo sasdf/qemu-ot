@@ -2841,7 +2841,12 @@ static void ot_otp_engine_reset_enter(Object *obj, ResetType type)
         }
     }
     DAI_CHANGE_STATE(s, OT_OTP_DAI_RESET);
+    s->dai->partition = -1;
     LCI_CHANGE_STATE(s, OT_OTP_LCI_RESET);
+    s->lci->error = OT_OTP_NO_ERROR;
+    s->lci->ack_fn = NULL;
+    s->lci->ack_data = NULL;
+    s->lci->hpos = 0u;
 }
 
 static void ot_otp_engine_reset_exit(Object *obj, ResetType type)
