@@ -904,12 +904,17 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
         ot_hmac_update_alert(s);
         break;
     case R_CFG:
-        /* ignore write if engine is not idle */
+        /*
+         * In RTL (hmac.sv:354-400), cfg_reg writes are gated by !cfg_block,
+         * where cfg_block is cleared by reg_hash_done or reg_hash_stop.
+         */
         if (s->regs->cmd) {
-            if (s->ctx->msg_length_overflow && !(val32 & R_CFG_SHA_EN_MASK)) {
-                s->regs->cmd = 0;
-                s->ctx->msg_length_overflow = false;
-                fifo8_reset(&s->input_fifo);
+            if (s->regs->cmd & R_CMD_HASH_STOP_MASK) {
+                if (!(val32 & R_CFG_SHA_EN_MASK)) {
+                    s->regs->cmd = 0;
+                    s->ctx->msg_length_overflow = false;
+                    fifo8_reset(&s->input_fifo);
+                }
             } else {
                 break;
             }
