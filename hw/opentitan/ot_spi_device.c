@@ -2121,11 +2121,9 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             val32 |= R_STATUS_CSB_MASK;
             break;
         case CSB_ACTIVE_LOW_UNSEEN:
-            val32 &= ~R_STATUS_CSB_MASK;
-            s->csb_sync = CSB_ACTIVE_LOW_SEEN;
-            break;
         case CSB_ACTIVE_LOW_SEEN:
             val32 &= ~R_STATUS_CSB_MASK;
+            s->csb_sync = CSB_ACTIVE_LOW_SEEN;
             break;
         case CSB_RELEASED_LOW_UNSEEN:
             val32 &= ~R_STATUS_CSB_MASK;
