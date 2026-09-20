@@ -560,8 +560,13 @@ static void ot_gpio_eg_in_change(void *opaque, int no, int level)
     bool on = (bool)level;
     uint32_t bit = 1u << no;
 
+    /*
+     * any time a signal is received from a remote device the pin is considered
+     * as connected and backend no longer may update its state.
+     */
+    s->connected |= bit;
+
     if (!ignore) {
-        s->connected |= bit;
         if (on) {
             s->data_ii |= bit;
         } else {
@@ -569,7 +574,6 @@ static void ot_gpio_eg_in_change(void *opaque, int no, int level)
         }
         s->data_gi &= ~bit;
     } else {
-        s->connected &= ~bit;
         s->data_gi |= bit;
     }
 
