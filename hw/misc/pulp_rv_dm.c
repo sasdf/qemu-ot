@@ -528,30 +528,32 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
         res = MEMTX_OK;
         break;
     default:
-        res = MEMTX_DECODE_ERROR;
-        break;
+        g_assert_not_reached();
     }
 
     return res;
 };
 
-static MemTxResult pulp_rv_dm_prog_read_with_attrs(
+static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
-    PulpRVDMState *s = opaque;
+    (void)opaque;
+    (void)addr;
+    (void)val64;
+    (void)size;
     (void)attrs;
+    return MEMTX_ERROR;
+}
 
-    hwaddr word_addr = addr & ~3ULL;
-    if (word_addr + sizeof(uint32_t) > PULP_RV_DM_PROG_SIZE) {
-        return MEMTX_ERROR;
-    }
-
-    const uint8_t *ram = memory_region_get_ram_ptr(&s->prog);
-    uint32_t val32 = ldl_le_p(ram + word_addr);
-    unsigned shift = (unsigned)((addr & 0x3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (val32 >> shift) & mask;
-    return MEMTX_OK;
+static MemTxResult pulp_rv_dm_disabled_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)addr;
+    (void)val64;
+    (void)size;
+    (void)attrs;
+    return MEMTX_ERROR;
 }
 
 static MemTxResult pulp_rv_dm_prog_write_with_attrs(
@@ -598,6 +600,9 @@ static MemTxResult pulp_rv_dm_dmflag_read_with_attrs(
 
     if (reg >= R_FLAGS_0 && reg <= R_FLAGS_LAST) {
         val32 = s->dmflag_regs[reg - R_FLAGS_0];
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, word_addr);
     }
 
     unsigned shift = (unsigned)((addr & 0x3u) * 8u);
@@ -634,6 +639,9 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
                           "%s: R/O register 0x%" HWADDR_PRIx "\n", __func__,
                           addr);
         }
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
     }
 
     return MEMTX_OK;
@@ -668,7 +676,7 @@ static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
 };
 
 static const MemoryRegionOps pulp_rv_dm_prog_ops = {
-    .read_with_attrs = &pulp_rv_dm_prog_read_with_attrs,
+    .read_with_attrs = &pulp_rv_dm_disabled_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_prog_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
@@ -694,28 +702,6 @@ static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
         .max_access_size = 4u,
     },
 };
-
-static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)opaque;
-    (void)addr;
-    (void)val64;
-    (void)size;
-    (void)attrs;
-    return MEMTX_ERROR;
-}
-
-static MemTxResult pulp_rv_dm_disabled_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)opaque;
-    (void)addr;
-    (void)val64;
-    (void)size;
-    (void)attrs;
-    return MEMTX_ERROR;
-}
 
 static const MemoryRegionOps pulp_rv_dm_disabled_ops = {
     .read_with_attrs = &pulp_rv_dm_disabled_read_with_attrs,

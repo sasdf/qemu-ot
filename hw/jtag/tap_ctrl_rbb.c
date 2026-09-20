@@ -37,14 +37,11 @@
 #include "chardev/char-fe.h"
 #include "chardev/char-socket.h"
 #include "chardev/char.h"
-#include "hw/core/cpu.h"
 #include "hw/jtag/tap_ctrl.h"
 #include "hw/jtag/tap_ctrl_rbb.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/resettable.h"
-#include "qemu/main-loop.h"
-#include "qemu/timer.h"
 #include "system/runstate.h"
 #include "trace.h"
 
@@ -96,9 +93,6 @@ typedef struct TapCtrlRbbState {
     GHashTable *tdhtable; /* Registered handlers */
 
     guint watch_tag; /* tracker for comm device change */
-    QEMUTimer *pace_timer;
-    bool halt_seen;
-    unsigned pace_count;
 
     /* properties */
     CharFrontend chr;
@@ -106,7 +100,6 @@ typedef struct TapCtrlRbbState {
     uint8_t ir_length; /* count of meaningful bits in ir */
     uint8_t idcode_inst; /* instruction to get ID code */
     bool enable_quit; /* whether VM quit can be remotely triggered */
-    bool wait_cpu_halt; /* whether to pace virtual time until CPU halts */
 } TapCtrlRbbState;
 
 typedef struct _TAPRegisterState {
@@ -511,44 +504,6 @@ static void tap_ctrl_rbb_chr_receive(void *opaque, const uint8_t *buf, int size)
     }
 }
 
-static void tap_ctrl_rbb_update_pace(TapCtrlRbbState *tap)
-{
-    if (!tap->pace_timer) {
-        return;
-    }
-    if (first_cpu && (first_cpu->halted || first_cpu->stopped)) {
-        tap->halt_seen = true;
-    }
-    if (!tap->wait_cpu_halt || !tap->enabled ||
-        !qemu_chr_fe_backend_open(&tap->chr) || tap->halt_seen ||
-        tap->pace_count >= 500u) {
-        timer_del(tap->pace_timer);
-        return;
-    }
-    int64_t step_ns =
-        qemu_chr_fe_backend_connected(&tap->chr) ? 10000 : 100000;
-    timer_mod(tap->pace_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + step_ns);
-}
-
-static void tap_ctrl_rbb_pace_cb(void *opaque)
-{
-    TapCtrlRbbState *tap = opaque;
-    if (first_cpu && (first_cpu->halted || first_cpu->stopped)) {
-        tap->halt_seen = true;
-        return;
-    }
-    if (!tap->wait_cpu_halt || !tap->enabled ||
-        !qemu_chr_fe_backend_open(&tap->chr) || tap->halt_seen ||
-        tap->pace_count >= 500u) {
-        return;
-    }
-    tap->pace_count++;
-    g_usleep(4000);
-    qemu_notify_event();
-    tap_ctrl_rbb_update_pace(tap);
-}
-
 static void tap_ctrl_rbb_chr_event_hander(void *opaque, QEMUChrEvent event)
 {
     TapCtrlRbbState *tap = opaque;
@@ -564,9 +519,7 @@ static void tap_ctrl_rbb_chr_event_hander(void *opaque, QEMUChrEvent event)
             qio_channel_set_delay(SOCKET_CHARDEV(sock)->ioc, false);
         }
 
-        tap->pace_count = 0u;
         tap_ctrl_rbb_tap_reset(tap);
-        tap_ctrl_rbb_update_pace(tap);
     }
 }
 
@@ -676,7 +629,6 @@ static const Property tap_ctrl_rbb_properties[] = {
     DEFINE_PROP_UINT8("idcode_inst", TapCtrlRbbState, idcode_inst, 1u),
     DEFINE_PROP_BOOL("quit", TapCtrlRbbState, enable_quit, true),
     DEFINE_PROP_BOOL("enabled", TapCtrlRbbState, enabled, true),
-    DEFINE_PROP_BOOL("wait_cpu_halt", TapCtrlRbbState, wait_cpu_halt, false),
     DEFINE_PROP_CHR("chardev", TapCtrlRbbState, chr),
 };
 
@@ -727,10 +679,6 @@ static void tap_ctrl_rbb_realize(DeviceState *dev, Error **errp)
 
     tap_ctrl_rbb_tap_reset(tap);
 
-    tap->pace_timer =
-        timer_new_ns(QEMU_CLOCK_VIRTUAL, &tap_ctrl_rbb_pace_cb, tap);
-    tap_ctrl_rbb_update_pace(tap);
-
     qemu_chr_fe_accept_input(&tap->chr);
 }
 
@@ -745,7 +693,6 @@ static void tap_ctrl_rbb_enable_in(void *opaque, int n, int level)
             tap_ctrl_rbb_tap_reset(tap);
             tap->tdo = true;
         }
-        tap_ctrl_rbb_update_pace(tap);
     }
 }
 
