@@ -290,6 +290,8 @@ typedef enum {
     LC_IF_DMI, /* DMI requester */
 } OtLcCtrlIf;
 
+#define LC_XSLOT(_ifreq_) (((unsigned)(_ifreq_)) - 1u)
+
 typedef enum {
     ST_RESET,
     ST_IDLE,
@@ -404,7 +406,7 @@ struct OtLcCtrlState {
     bool ext_clock_en; /* request for external clock */
     bool volatile_unlocked; /* set on successful volatile unlock */
     bool force_raw; /* survivability mode */
-    uint8_t volatile_raw_unlock_bm; /* volatile raw unlock enabled */
+    uint8_t volatile_raw_unlock_bm; /* xslot-indexed bitmap */
     uint8_t state_invalid_error_bm; /* error bitmap */
     uint8_t claim_if[2]; /* SW and DMI CLAIM_TRANSITION_IF mubi8 values */
     uint8_t claim_if_regwen[2]; /* SW and DMI CLAIM_TRANSITION_IF_REGWEN */
@@ -741,13 +743,6 @@ static void ot_lc_ctrl_update_alerts(OtLcCtrlState *s)
 
     if (s->regs[R_STATUS] & R_STATUS_OTP_ERROR_MASK) {
         fatal_level |= ALERT_FATAL_PROG_ERROR_MASK;
-    }
-    if (s->regs[R_STATUS] &
-        (R_STATUS_STATE_ERROR_MASK | R_STATUS_OTP_PARTITION_ERROR_MASK)) {
-        fatal_level |= ALERT_FATAL_STATE_ERROR_MASK;
-    }
-    if (s->regs[R_STATUS] & R_STATUS_BUS_INTEG_ERROR_MASK) {
-        fatal_level |= ALERT_FATAL_BUS_INTEG_ERROR_MASK;
     }
 
     uint32_t level = fatal_level | s->regs[R_ALERT_TEST];
@@ -1304,7 +1299,6 @@ static void ot_lc_ctrl_handle_otp_ack(void *opaque, bool ack)
         } else {
             trace_ot_lc_ctrl_info(s->ot_id, "Failed to program transition");
             s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
-            ot_lc_ctrl_update_alerts(s);
         }
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
@@ -1326,7 +1320,6 @@ static void ot_lc_ctrl_program_otp(OtLcCtrlState *s, unsigned lc_tcount,
                       "%s: %s: OTP implementation does not support programming",
                       __func__, s->ot_id);
         s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
-        ot_lc_ctrl_update_alerts(s);
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
         return;
@@ -1344,7 +1337,6 @@ static void ot_lc_ctrl_program_otp(OtLcCtrlState *s, unsigned lc_tcount,
                          &ot_lc_ctrl_handle_otp_ack, s)) {
         trace_ot_lc_ctrl_error(s->ot_id, "OTP program request rejected");
         s->regs[R_STATUS] |= R_STATUS_STATE_ERROR_MASK;
-        ot_lc_ctrl_update_alerts(s);
         LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
         s->lc_state = LC_STATE_POST_TRANSITION;
         return;
@@ -1357,7 +1349,8 @@ static void ot_lc_ctrl_start_transition(OtLcCtrlState *s)
 
     s->regs[R_STATUS] &= ~R_STATUS_READY_MASK;
 
-    bool tvolatile = (bool)(s->volatile_raw_unlock_bm & 1u);
+    bool tvolatile =
+        (bool)(s->volatile_raw_unlock_bm & LC_XSLOT(1u << s->owner));
 
     uint32_t target_code = ot_lc_ctrl_get_target_state(s);
     OtLcState target = ot_lc_ctrl_safe_convert_code_to_state(target_code);
@@ -1521,43 +1514,39 @@ static inline size_t ot_lc_ctrl_get_keccak_rate_bytes(size_t kstrength)
 
 static void ot_lc_ctrl_compute_predefined_tokens(OtLcCtrlState *s)
 {
+    if (!s->raw_unlock_token_xstr) {
+        trace_ot_lc_ctrl_token_missing(s->ot_id, "raw_unlock_token");
+        return;
+    }
+
     uint8_t all_zero_token[sizeof(OtOTPTokenValue)];
     uint8_t raw_unlock_token[sizeof(OtOTPTokenValue)];
+
+    size_t len = strlen(s->raw_unlock_token_xstr);
+    if (len != sizeof(OtOTPTokenValue) * 2u) {
+        error_setg(&error_fatal, "%s: %s invalid raw_unlock_token length\n",
+                   __func__, s->ot_id);
+        return;
+    }
+
+    if (ot_common_parse_hexa_str(raw_unlock_token, s->raw_unlock_token_xstr,
+                                 sizeof(OtOTPTokenValue), true, false)) {
+        error_setg(&error_fatal, "%s: %s unable to parse raw_unlock_token\n",
+                   __func__, s->ot_id);
+        return;
+    }
 
     memset(all_zero_token, 0, sizeof(all_zero_token));
 
     const uint8_t *srcs[] = {
         [LC_TK_INVALID] = NULL,
         [LC_TK_ZERO] = all_zero_token,
-        [LC_TK_RAW_UNLOCK] = NULL,
+        [LC_TK_RAW_UNLOCK] = raw_unlock_token,
     };
-
-    if (s->raw_unlock_token_xstr) {
-        size_t len = strlen(s->raw_unlock_token_xstr);
-        if (len != sizeof(OtOTPTokenValue) * 2u) {
-            error_setg(&error_fatal, "%s: %s invalid raw_unlock_token length\n",
-                       __func__, s->ot_id);
-            return;
-        }
-
-        if (ot_common_parse_hexa_str(raw_unlock_token, s->raw_unlock_token_xstr,
-                                     sizeof(OtOTPTokenValue), true, false)) {
-            error_setg(&error_fatal, "%s: %s unable to parse raw_unlock_token\n",
-                       __func__, s->ot_id);
-            return;
-        }
-        srcs[LC_TK_RAW_UNLOCK] = raw_unlock_token;
-    } else {
-        trace_ot_lc_ctrl_token_missing(s->ot_id, "raw_unlock_token");
-    }
-
     hash_state ltc_state;
     uint8_t keccak_state[KECCAK_STATE_BYTES];
 
     for (OtLcCtrlToken tk = LC_TK_RAW_UNLOCK; tk > LC_TK_INVALID; tk--) {
-        if (!srcs[tk]) {
-            continue;
-        }
         sha3_cshake_init(&ltc_state, (int)OT_LC_CTRL_KMAC_CONFIG.strength,
                          OT_LC_CTRL_KMAC_CONFIG.prefix.funcname,
                          OT_LC_CTRL_KMAC_CONFIG.prefix.funcname_len,
@@ -1575,8 +1564,15 @@ static void ot_lc_ctrl_compute_predefined_tokens(OtLcCtrlState *s)
 
 static void ot_lc_ctrl_initialize(OtLcCtrlState *s)
 {
+    /*
+     * initialize is invoked after the first machine reset, following the end of
+     * the OTP initialization sequence.
+     */
     s->regs[R_HW_REVISION0] =
-        (((uint32_t)s->silicon_creator_id) << 16u) | ((uint32_t)s->product_id);
+        FIELD_DP32(0, HW_REVISION0, PRODUCT_ID, (uint32_t)s->product_id);
+    s->regs[R_HW_REVISION0] = FIELD_DP32(s->regs[R_HW_REVISION0], HW_REVISION0,
+                                         SILICON_CREATOR_ID,
+                                         (uint32_t)s->silicon_creator_id);
     s->regs[R_HW_REVISION1] = (uint32_t)s->revision_id;
 
     OtKMACClass *kc = OT_KMAC_GET_CLASS(s->kmac);
@@ -1642,9 +1638,6 @@ static void ot_lc_ctrl_initialize(OtLcCtrlState *s)
             LC_FSM_CHANGE_STATE(s, ST_SCRAP);
         }
     } else {
-        s->regs[R_STATUS] |= R_STATUS_STATE_ERROR_MASK;
-        ot_lc_ctrl_update_alerts(s);
-        s->lc_state = LC_STATE_INVALID;
         LC_FSM_CHANGE_STATE(s, ST_INVALID);
     }
 
@@ -1689,7 +1682,7 @@ static void ot_lc_ctrl_a0_force_raw(void *opaque, int n, int level)
     trace_ot_lc_ctrl_force_raw(s->ot_id, (bool)level);
 
     if (level) {
-        ot_lc_ctrl_escalate_bh(s);
+        qemu_bh_schedule(s->escalate_bh);
     }
 }
 
@@ -1776,7 +1769,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
             if (s->ext_clock_en) {
                 val32 |= R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK;
             }
-            if (s->volatile_raw_unlock_bm & 1u) {
+            if (s->volatile_raw_unlock_bm & (1u << LC_XSLOT(ifreq))) {
                 val32 |= R_TRANSITION_CTRL_VOLATILE_RAW_UNLOCK_MASK;
             }
         }
@@ -1955,9 +1948,9 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         }
         if (s->volatile_raw_unlock) {
             if (val32 & R_TRANSITION_CTRL_VOLATILE_RAW_UNLOCK_MASK) {
-                s->volatile_raw_unlock_bm |= 1u;
+                s->volatile_raw_unlock_bm |= 1u << LC_XSLOT(ifreq);
             } else {
-                s->volatile_raw_unlock_bm &= ~1u;
+                s->volatile_raw_unlock_bm &= ~(1u << LC_XSLOT(ifreq));
             }
         }
         break;
@@ -2071,14 +2064,6 @@ static MemTxResult ot_lc_ctrl_regs_read_with_attrs(OtLcCtrlState *s,
                                                    unsigned size,
                                                    OtLcCtrlIf ifreq)
 {
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        *data = 0u;
-        return MEMTX_DECODE_ERROR;
-    }
-
     uint64_t val64 = ot_lc_ctrl_regs_read(s, addr & ~3ULL, ifreq);
     unsigned shift = (unsigned)((addr & 3u) * 8u);
     uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
@@ -2092,12 +2077,6 @@ static MemTxResult ot_lc_ctrl_regs_write_with_attrs(OtLcCtrlState *s,
                                                     OtLcCtrlIf ifreq)
 {
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
     uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     if ((LC_CTRL_PERMIT[reg] & ~byte_mask) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
