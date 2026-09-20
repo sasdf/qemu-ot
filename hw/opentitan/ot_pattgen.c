@@ -270,12 +270,11 @@ static MemTxResult ot_pattgen_read_with_attrs(void *opaque, hwaddr addr,
         break;
     case R_INTR_TEST:
     case R_ALERT_TEST:
+    default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02" HWADDR_PRIx "\n",
                       __func__, addr);
         val32 = 0;
         break;
-    default:
-        g_assert_not_reached();
     }
 
     uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
@@ -332,7 +331,8 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
     case R_DATA_CH0_1:
     case R_DATA_CH1_0:
     case R_DATA_CH1_1:
-    case R_SIZE: {
+    case R_SIZE:
+    default: {
         uint32_t old_ctrl = s->regs[R_CTRL];
         s->regs[reg] = val32;
         bool schedule_timer = false;
@@ -382,8 +382,6 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
         }
         break;
     }
-    default:
-        g_assert_not_reached();
     }
 
     return MEMTX_OK;
