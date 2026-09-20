@@ -752,12 +752,7 @@ static const Property ot_sysrst_ctrl_properties[] = {
 
 static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
 {
-    OtSysrstCtrlClass *c = OT_SYSRST_CTRL_GET_CLASS(obj);
     OtSysrstCtrlState *s = OT_SYSRST_CTRL(obj);
-
-    if (c->parent_phases.enter) {
-        c->parent_phases.enter(obj, type);
-    }
 
     if (type != RESET_TYPE_COLD && ot_rstmgr_is_low_power_exit()) {
         /*
