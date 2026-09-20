@@ -605,12 +605,6 @@ static MemTxResult ot_otbn_regs_read_with_attrs(
     uint32_t pc = ibex_get_current_pc();
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -660,7 +654,10 @@ static MemTxResult ot_otbn_regs_read_with_attrs(
                       s->ot_id, REG_NAME(reg));
         break;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        *data = 0xffffffffu;
+        return MEMTX_ERROR;
     }
 
     trace_ot_otbn_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -681,12 +678,6 @@ static MemTxResult ot_otbn_regs_write_with_attrs(
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otbn_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
 
     uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
     if ((ot_otbn_reg_permit(reg) & ~reg_be) != 0u) {
@@ -758,7 +749,9 @@ static MemTxResult ot_otbn_regs_write_with_attrs(
                       s->ot_id, REG_NAME(reg));
         break;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n", __func__,
+                      s->ot_id, (uint32_t)addr);
+        return MEMTX_ERROR;
     }
 
     return MEMTX_OK;
@@ -779,11 +772,6 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
     hwaddr word_addr = addr & ~3ULL;
-    if (s->lc_escalated) {
-        trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
-                               0u);
-        return 0u;
-    }
     bool valid = true;
     uint32_t value =
         ot_otbn_proxy_read_memory(s->proxy, doi, word_addr, &valid);
