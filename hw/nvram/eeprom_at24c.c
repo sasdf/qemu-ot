@@ -98,23 +98,20 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
     EEPROMState *ee = AT24C_EE(s);
 
     if (ee->in_dev_id) {
-        switch (event) {
-        case I2C_START_SEND:
+        if (event == I2C_START_SEND) {
             ee->dev_id_idx = 0;
             ee->dev_id_matched = false;
             return 0;
-        case I2C_START_RECV:
+        }
+        if (event == I2C_START_RECV) {
             ee->dev_id_idx = 0;
             return ee->dev_id_matched ? 0 : 1;
-        case I2C_FINISH:
+        }
+        if (event == I2C_FINISH) {
             ee->in_dev_id = false;
             ee->dev_id_matched = false;
-            return 0;
-        case I2C_NACK:
-            return 0;
-        default:
-            return -1;
         }
+        return 0;
     }
 
     switch (event) {
@@ -131,17 +128,17 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
     case I2C_FINISH:
         ee->haveaddr = 0;
         DPRINTK("clear\n");
-        if (ee->changed) {
-            if (ee->blk) {
-                int ret = blk_pwrite(ee->blk, 0, ee->rsize, ee->mem, 0);
-                if (ret < 0) {
-                    error_report("%s: failed to write backing file", __func__);
-                }
-                DPRINTK("Wrote to backing file\n");
+        if (ee->blk && ee->changed) {
+            int ret = blk_pwrite(ee->blk, 0, ee->rsize, ee->mem, 0);
+            if (ret < 0) {
+                error_report("%s: failed to write backing file", __func__);
             }
-            ee->pending_naks = ee->write_naks;
-            ee->changed = false;
+            DPRINTK("Wrote to backing file\n");
         }
+        if (ee->changed) {
+            ee->pending_naks = ee->write_naks;
+        }
+        ee->changed = false;
         break;
     case I2C_NACK:
         break;
@@ -160,20 +157,7 @@ uint8_t at24c_eeprom_recv(I2CSlave *s)
     if (ee->in_dev_id) {
         uint8_t val = 0xff;
         if (ee->dev_id_matched) {
-            switch (ee->dev_id_idx) {
-            case 0:
-                val = (ee->device_id >> 16) & 0xff;
-                break;
-            case 1:
-                val = (ee->device_id >> 8) & 0xff;
-                break;
-            case 2:
-                val = ee->device_id & 0xff;
-                break;
-            default:
-                val = 0xff;
-                break;
-            }
+            val = extract32(ee->device_id, (2 - ee->dev_id_idx) * 8, 8);
             ee->dev_id_idx = (ee->dev_id_idx + 1) % 3;
         }
         return val;
