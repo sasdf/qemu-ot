@@ -533,20 +533,17 @@ static MemTxResult ot_aon_timer_read_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        *val64 = 0u;
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_aon_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                    val32, pc);
 
-    unsigned byte_off = (unsigned)(addr & 3u);
-    val32 >>= (byte_off * 8u);
-    if (size < 4u) {
-        val32 &= (1u << (size * 8u)) - 1u;
-    }
-    *val64 = (uint64_t)val32;
+    uint32_t shift = (uint32_t)((addr & 3u) * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    *val64 = (val32 >> shift) & size_mask;
     return MEMTX_OK;
 }
 
@@ -565,12 +562,6 @@ static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
     ot_aon_timer_sync_wdog(s, now);
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
     unsigned byte_off = (unsigned)(addr & 3u);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
     if ((AON_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
@@ -580,9 +571,9 @@ static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
         return MEMTX_ERROR;
     }
 
-    if (size < 4u) {
-        val32 = (val32 & ((1u << (size * 8u)) - 1u)) << (byte_off * 8u);
-    }
+    uint32_t shift = (uint32_t)(byte_off * 8u);
+    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
+    val32 = (val32 & size_mask) << shift;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_aon_timer_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -653,7 +644,6 @@ static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
     }
 
     return MEMTX_OK;
