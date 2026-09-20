@@ -177,8 +177,12 @@ static void ot_adc_ctrl_update_irqs(OtAdcCtrlState *s)
     ibex_irq_set(&s->wkup, wkup_level);
 }
 
-#define DEFAULT_CHN0_VAL 0x155u
-#define DEFAULT_CHN1_VAL 0x2aau
+/*
+ * In chip_earlgrey_cw340.sv, AST inputs adc_a0_ai and adc_a1_ai are tied to '0,
+ * so adc_ana.sv outputs adc_d_ch0_o = 10'h000 and adc_d_ch1_o = 10'h000.
+ */
+#define DEFAULT_CHN0_VAL 0x000u
+#define DEFAULT_CHN1_VAL 0x000u
 
 static bool ot_adc_ctrl_filter_match_chn(uint32_t filter_ctl, uint32_t chn_val)
 {
@@ -244,59 +248,9 @@ static void ot_adc_ctrl_update_chn_val(OtAdcCtrlState *s, uint32_t chn0_val,
     s->regs[R_ADC_CHN_VAL_1] = (chn1_val << CHN_VAL_VALUE_SHIFT) | intr1;
 }
 
-void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
+static void ot_adc_ctrl_eval_sample(OtAdcCtrlState *s, uint32_t chn0_val,
+                                    uint32_t chn1_val)
 {
-    if (s->fsm_timer) {
-        timer_del(s->fsm_timer);
-    }
-    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
-        (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
-        return;
-    }
-
-    uint32_t chn0_val = DEFAULT_CHN0_VAL;
-    uint32_t chn1_val = DEFAULT_CHN1_VAL;
-
-    /*
-     * Select a single coherent (chn0_val, chn1_val) pair for the conversion,
-     * preferring the FPGA AST default (0x155, 0x2aa) if it matches at least
-     * one enabled filter, or the first satisfiable enabled filter otherwise.
-     */
-    bool default_matches_any = false;
-    for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
-        uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
-        uint32_t f1 = s->regs[R_ADC_CHN1_FILTER_CTL_0 + k];
-        bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
-        bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
-        if ((en0 || en1) &&
-            (!en0 || ot_adc_ctrl_filter_match_chn(f0, DEFAULT_CHN0_VAL)) &&
-            (!en1 || ot_adc_ctrl_filter_match_chn(f1, DEFAULT_CHN1_VAL))) {
-            default_matches_any = true;
-            break;
-        }
-    }
-
-    if (!default_matches_any) {
-        for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
-            uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
-            uint32_t f1 = s->regs[R_ADC_CHN1_FILTER_CTL_0 + k];
-            bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
-            bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
-            if (!en0 && !en1) {
-                continue;
-            }
-            uint32_t cand0 = DEFAULT_CHN0_VAL;
-            uint32_t cand1 = DEFAULT_CHN1_VAL;
-            bool ok0 = !en0 || ot_adc_ctrl_pick_sample_chn(f0, DEFAULT_CHN0_VAL, &cand0);
-            bool ok1 = !en1 || ot_adc_ctrl_pick_sample_chn(f1, DEFAULT_CHN1_VAL, &cand1);
-            if (ok0 && ok1) {
-                chn0_val = cand0;
-                chn1_val = cand1;
-                break;
-            }
-        }
-    }
-
     bool any_match = false;
     for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
         uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
@@ -331,9 +285,49 @@ void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
     ot_adc_ctrl_update_irqs(s);
 }
 
+void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
+{
+    if (s->fsm_timer) {
+        timer_del(s->fsm_timer);
+    }
+    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
+        (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
+        return;
+    }
+
+    uint32_t chn0_val = DEFAULT_CHN0_VAL;
+    uint32_t chn1_val = DEFAULT_CHN1_VAL;
+
+    for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
+        uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
+        uint32_t f1 = s->regs[R_ADC_CHN1_FILTER_CTL_0 + k];
+        bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
+        bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
+        if (!en0 && !en1) {
+            continue;
+        }
+        uint32_t cand0 = DEFAULT_CHN0_VAL;
+        uint32_t cand1 = DEFAULT_CHN1_VAL;
+        bool ok0 = !en0 || ot_adc_ctrl_pick_sample_chn(f0, DEFAULT_CHN0_VAL, &cand0);
+        bool ok1 = !en1 || ot_adc_ctrl_pick_sample_chn(f1, DEFAULT_CHN1_VAL, &cand1);
+        if (ok0 && ok1) {
+            chn0_val = cand0;
+            chn1_val = cand1;
+            break;
+        }
+    }
+
+    ot_adc_ctrl_eval_sample(s, chn0_val, chn1_val);
+}
+
 static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
 {
-    ot_adc_ctrl_trigger_wakeup(OT_ADC_CTRL(opaque));
+    OtAdcCtrlState *s = OT_ADC_CTRL(opaque);
+    if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
+        (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
+        return;
+    }
+    ot_adc_ctrl_eval_sample(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL);
 }
 
 static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
