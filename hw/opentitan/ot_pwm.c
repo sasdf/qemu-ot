@@ -71,7 +71,7 @@ REG32(BLINK_PARAM_5, 0x58u)
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define R_LAST_REG   (R_BLINK_PARAM_5)
 #define REGS_COUNT   (R_LAST_REG + 1u)
-#define REGS_SIZE    0x80u
+#define REGS_SIZE    (REGS_COUNT * sizeof(uint32_t))
 
 struct OtPwmState {
     SysBusDevice parent_obj;
@@ -87,6 +87,7 @@ struct OtPwmState {
 
 struct OtPwmClass {
     SysBusDeviceClass parent_class;
+    ResettablePhases parent_phases;
 };
 
 void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
@@ -350,7 +351,12 @@ static const Property ot_pwm_properties[] = {
 
 static void ot_pwm_reset_enter(Object *obj, ResetType type)
 {
+    OtPwmClass *c = OT_PWM_GET_CLASS(obj);
     OtPwmState *s = OT_PWM(obj);
+
+    if (c->parent_phases.enter) {
+        c->parent_phases.enter(obj, type);
+    }
 
     if (type != RESET_TYPE_COLD && ot_rstmgr_is_low_power_exit()) {
         ibex_irq_set(&s->alert, 0);
@@ -383,7 +389,9 @@ static void ot_pwm_class_init(ObjectClass *klass, const void *data)
     (void)data;
 
     ResettableClass *rc = RESETTABLE_CLASS(klass);
-    rc->phases.enter = &ot_pwm_reset_enter;
+    OtPwmClass *pc = OT_PWM_CLASS(klass);
+    resettable_class_set_parent_phases(rc, &ot_pwm_reset_enter, NULL, NULL,
+                                       &pc->parent_phases);
     device_class_set_props(dc, ot_pwm_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
