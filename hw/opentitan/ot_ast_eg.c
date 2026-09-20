@@ -349,7 +349,44 @@ static MemTxResult ot_ast_eg_regs_read_with_attrs(
     hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
-    case R_REGA0 ... R_REGA37:
+    case R_REGA0:
+    case R_REGA1:
+    case R_REGA2:
+    case R_REGA3:
+    case R_REGA4:
+    case R_REGA5:
+    case R_REGA6:
+    case R_REGA7:
+    case R_REGA8:
+    case R_REGA9:
+    case R_REGA10:
+    case R_REGA11:
+    case R_REGA12:
+    case R_REGA13:
+    case R_REGA14:
+    case R_REGA15:
+    case R_REGA16:
+    case R_REGA17:
+    case R_REGA18:
+    case R_REGA19:
+    case R_REGA20:
+    case R_REGA21:
+    case R_REGA22:
+    case R_REGA23:
+    case R_REGA24:
+    case R_REGA25:
+    case R_REGA26:
+    case R_REGA27:
+    case R_REGA28:
+    case R_REGA29:
+    case R_REGA30:
+    case R_REGA31:
+    case R_REGA32:
+    case R_REGA33:
+    case R_REGA34:
+    case R_REGA35:
+    case R_REGA36:
+    case R_REGA37:
         val32 = s->regsa[reg];
         break;
     case R_REGAL:
@@ -357,7 +394,11 @@ static MemTxResult ot_ast_eg_regs_read_with_attrs(
                       REG_NAME(reg));
         val32 = 0;
         break;
-    case R_REGB0 ... R_REGB4:
+    case R_REGB0:
+    case R_REGB1:
+    case R_REGB2:
+    case R_REGB3:
+    case R_REGB4:
         val32 = s->regsb[reg - R_REGB0];
         break;
     default:
@@ -386,12 +427,6 @@ static MemTxResult ot_ast_eg_regs_write_with_attrs(
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ast_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    if ((reg > R_REGAL && reg < R_REGB0) || reg > R_REGB4) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
     if (size != 4u || (addr & 3u) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Sub-word write error at 0x%03x (%s, size=%u)\n",
@@ -406,16 +441,55 @@ static MemTxResult ot_ast_eg_regs_write_with_attrs(
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is read-only\n", __func__,
                       REG_NAME(reg));
         break;
-    case R_REGA2 ... R_REGA27:
-    case R_REGA29 ... R_REGA37:
+    case R_REGA2:
+    case R_REGA3:
+    case R_REGA4:
+    case R_REGA5:
+    case R_REGA6:
+    case R_REGA7:
+    case R_REGA8:
+    case R_REGA9:
+    case R_REGA10:
+    case R_REGA11:
+    case R_REGA12:
+    case R_REGA13:
+    case R_REGA14:
+    case R_REGA15:
+    case R_REGA16:
+    case R_REGA17:
+    case R_REGA18:
+    case R_REGA19:
+    case R_REGA20:
+    case R_REGA21:
+    case R_REGA22:
+    case R_REGA23:
+    case R_REGA24:
+    case R_REGA25:
+    case R_REGA26:
+    case R_REGA27:
+    case R_REGA29:
+    case R_REGA30:
+    case R_REGA31:
+    case R_REGA32:
+    case R_REGA33:
+    case R_REGA34:
+    case R_REGA35:
+    case R_REGA36:
+    case R_REGA37:
     case R_REGAL:
         s->regsa[reg] = val32;
         break;
-    case R_REGB0 ... R_REGB4:
+    case R_REGB0:
+    case R_REGB1:
+    case R_REGB2:
+    case R_REGB3:
+    case R_REGB4:
         s->regsb[reg - R_REGB0] = val32;
         break;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_ERROR;
     }
 
     return MEMTX_OK;
