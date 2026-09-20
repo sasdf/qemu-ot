@@ -72,7 +72,6 @@ typedef enum {
 struct OtI2CHostProxyState {
     I2CSlave parent_obj;
     I2CBus *bus;
-    I2CBus *active_bus;
 
     /* chardev i2c command parser state */
     CmdParserState parser_state;
@@ -125,6 +124,7 @@ static void ot_i2c_host_proxy_stall(OtI2CHostProxyState *s)
 static void
 ot_i2c_host_proxy_start_transfer(OtI2CHostProxyState *s, bool read_transfer)
 {
+    s->pending_op = PROXY_PENDING_NONE;
     if (ot_pinmux_eg_trigger_mio_wkup(7u)) {
         ot_i2c_host_proxy_put_nack(s);
         s->parser_state = CMD_I2C_INIT;
@@ -132,10 +132,10 @@ ot_i2c_host_proxy_start_transfer(OtI2CHostProxyState *s, bool read_transfer)
         return;
     }
 
-    s->active_bus = ot_i2c_get_active_target_bus(s->bus, s->address);
-    ot_i2c_bus_target_set_matched_address(s->active_bus, s->address);
-    if (i2c_start_transfer(s->active_bus, s->address, read_transfer) != 0) {
-        i2c_end_transfer(s->active_bus);
+    s->bus = ot_i2c_get_active_target_bus(s->bus, s->address);
+    ot_i2c_bus_target_set_matched_address(s->bus, s->address);
+    if (i2c_start_transfer(s->bus, s->address, read_transfer) != 0) {
+        i2c_end_transfer(s->bus);
         ot_i2c_host_proxy_put_nack(s);
         s->parser_state = CMD_I2C_INIT;
     } else {
@@ -147,26 +147,26 @@ ot_i2c_host_proxy_start_transfer(OtI2CHostProxyState *s, bool read_transfer)
 
 static void ot_i2c_host_proxy_do_read(OtI2CHostProxyState *s)
 {
-    if (ot_i2c_bus_target_check_tx_stretch(s->active_bus)) {
+    if (ot_i2c_bus_target_check_tx_stretch(s->bus)) {
         s->pending_op = PROXY_PENDING_READ_BYTE;
         ot_i2c_host_proxy_stall(s);
         return;
     }
-    ot_i2c_host_proxy_put_byte(s, i2c_recv(s->active_bus));
+    ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
     ot_i2c_host_proxy_stall(s);
 }
 
 static void ot_i2c_host_proxy_do_write(OtI2CHostProxyState *s, uint8_t data)
 {
-    int ret = i2c_send(s->active_bus, data);
-    if (ot_i2c_bus_target_is_stretching(s->active_bus)) {
+    int ret = i2c_send(s->bus, data);
+    if (ot_i2c_bus_target_is_stretching(s->bus)) {
         s->pending_op = PROXY_PENDING_WRITE_ACK;
         s->parser_state = CMD_I2C_WRITE;
         ot_i2c_host_proxy_stall(s);
         return;
     }
     if (ret != 0) {
-        i2c_end_transfer(s->active_bus);
+        i2c_end_transfer(s->bus);
         ot_i2c_host_proxy_put_nack(s);
         s->parser_state = CMD_I2C_INIT;
     } else {
@@ -215,47 +215,31 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         ot_i2c_host_proxy_start_transfer(s, read_transfer);
         break;
     case CMD_I2C_READ:
-        if (byte == 'R') {
+    case CMD_I2C_WRITE:
+        if (s->parser_state == CMD_I2C_READ && byte == 'R') {
             ot_i2c_host_proxy_do_read(s);
             break;
         }
-        if (byte == 'P') {
-            s->parser_state = CMD_I2C_INIT;
-            i2c_nack(s->active_bus);
-            i2c_end_transfer(s->active_bus);
-            ot_i2c_host_proxy_stall(s);
-            break;
-        }
-        if (byte == 'S') {
-            s->parser_state = CMD_I2C_REPEATED_START;
-            i2c_nack(s->active_bus);
-            ot_i2c_bus_target_repeated_start(s->active_bus);
-            ot_i2c_host_proxy_stall(s);
-            break;
-        }
-        s->parser_state = CMD_I2C_ERR;
-        i2c_end_transfer(s->active_bus);
-        ot_i2c_host_proxy_parse_error(s);
-        break;
-    case CMD_I2C_WRITE:
-        if (byte == 'W') {
+        if (s->parser_state == CMD_I2C_WRITE && byte == 'W') {
             s->parser_state = CMD_I2C_WRITE_PAYLOAD;
             break;
         }
-        if (byte == 'P') {
-            s->parser_state = CMD_I2C_INIT;
-            i2c_end_transfer(s->active_bus);
-            ot_i2c_host_proxy_stall(s);
-            break;
-        }
-        if (byte == 'S') {
-            s->parser_state = CMD_I2C_REPEATED_START;
-            ot_i2c_bus_target_repeated_start(s->active_bus);
+        if (byte == 'P' || byte == 'S') {
+            if (s->parser_state == CMD_I2C_READ) {
+                i2c_nack(s->bus);
+            }
+            if (byte == 'P') {
+                s->parser_state = CMD_I2C_INIT;
+                i2c_end_transfer(s->bus);
+            } else {
+                s->parser_state = CMD_I2C_REPEATED_START;
+                ot_i2c_bus_target_repeated_start(s->bus);
+            }
             ot_i2c_host_proxy_stall(s);
             break;
         }
         s->parser_state = CMD_I2C_ERR;
-        i2c_end_transfer(s->active_bus);
+        i2c_end_transfer(s->bus);
         ot_i2c_host_proxy_parse_error(s);
         break;
     case CMD_I2C_WRITE_PAYLOAD:
@@ -272,14 +256,14 @@ static void ot_i2c_host_proxy_timer(void *opaque)
 {
     OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
     if (s->pending_op != PROXY_PENDING_NONE) {
-        if (ot_i2c_bus_target_is_stretching(s->active_bus)) {
+        if (ot_i2c_bus_target_is_stretching(s->bus)) {
             ot_i2c_host_proxy_stall(s);
             return;
         }
         if (s->pending_op == PROXY_PENDING_WRITE_ACK) {
             s->pending_op = PROXY_PENDING_NONE;
-            if (ot_i2c_bus_target_get_last_ack(s->active_bus) != 0) {
-                i2c_end_transfer(s->active_bus);
+            if (ot_i2c_bus_target_get_last_ack(s->bus) != 0) {
+                i2c_end_transfer(s->bus);
                 ot_i2c_host_proxy_put_nack(s);
                 s->parser_state = CMD_I2C_INIT;
             } else {
@@ -287,12 +271,8 @@ static void ot_i2c_host_proxy_timer(void *opaque)
             }
             ot_i2c_host_proxy_stall(s);
         } else if (s->pending_op == PROXY_PENDING_READ_BYTE) {
-            if (ot_i2c_bus_target_check_tx_stretch(s->active_bus)) {
-                ot_i2c_host_proxy_stall(s);
-                return;
-            }
             s->pending_op = PROXY_PENDING_NONE;
-            ot_i2c_host_proxy_put_byte(s, i2c_recv(s->active_bus));
+            ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
             ot_i2c_host_proxy_stall(s);
         }
     }
@@ -326,13 +306,12 @@ static void ot_i2c_host_proxy_event_handler(void *opaque, QEMUChrEvent event)
         case CMD_I2C_READ:
         case CMD_I2C_WRITE:
         case CMD_I2C_WRITE_PAYLOAD:
-            i2c_end_transfer(s->active_bus);
+            i2c_end_transfer(s->bus);
             break;
         default:
             break;
         }
         s->parser_state = CMD_I2C_INIT;
-        s->pending_op = PROXY_PENDING_NONE;
         timer_del(s->stall_timer);
     }
 }
@@ -373,7 +352,6 @@ static void ot_i2c_host_proxy_realize(DeviceState *dev, Error **errp)
     OtI2CHostProxyState *state = OT_I2C_HOST_PROXY(dev);
     BusState *bus = qdev_get_parent_bus(dev);
     state->bus = I2C_BUS(bus);
-    state->active_bus = state->bus;
     qemu_chr_fe_set_handlers(&state->chr, ot_i2c_host_proxy_can_receive,
                              ot_i2c_host_proxy_receive, NULL,
                              ot_i2c_host_proxy_be_change, state, NULL, true);
