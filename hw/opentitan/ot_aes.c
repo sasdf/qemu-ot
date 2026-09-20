@@ -1148,8 +1148,6 @@ static void ot_aes_reseed(OtAESState *s, unsigned words)
             edn->pending_words = 0u;
             xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
         }
-    } else if (words > edn->pending_words) {
-        edn->pending_words = words;
     }
 }
 
@@ -1358,9 +1356,7 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
                           __func__, s->ot_id);
             break;
         }
-        if (!s->fatal_fault &&
-            (ot_aes_is_idle(s) ||
-             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u)) {
+        if (ot_aes_is_idle(s)) {
             if (r->keyshare_armed) {
                 bitmap_zero(r->keyshare_bm, (int64_t)(PARAM_NUM_REGS_KEY * 2u));
                 s->ctx->key_ready = false;
@@ -1379,9 +1375,7 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_IV_1:
     case R_IV_2:
     case R_IV_3:
-        if (!s->fatal_fault &&
-            (ot_aes_is_idle(s) ||
-             (r->trigger & ~R_TRIGGER_PRNG_RESEED_MASK) == 0u)) {
+        if (ot_aes_is_idle(s)) {
             if (r->iv_armed) {
                 bitmap_zero(r->iv_bm, PARAM_NUM_REGS_IV);
                 s->ctx->iv_ready = false;
