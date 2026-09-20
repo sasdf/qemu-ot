@@ -476,6 +476,15 @@ uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in)
     return s->regs->mio_periph_insel[periph_in];
 }
 
+bool ot_pinmux_eg_is_periph_in_zero(unsigned periph_in)
+{
+    OtPinmuxEgState *s = ot_pinmux_eg_instance;
+    if (!s || !s->regs || periph_in >= PARAM_N_MIO_PERIPH_IN) {
+        return false;
+    }
+    return s->regs->mio_periph_insel[periph_in] == 0u;
+}
+
 static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
 {
     OtPinmuxEgStateRegs *regs = s->regs;

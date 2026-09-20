@@ -2111,6 +2111,11 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             s->csb_poll_enabled = true;
             s->csb_poll_count = 0u;
         }
+        if (ot_pinmux_eg_is_periph_in_zero(46u)) {
+            s->spi_regs[R_STATUS] &= ~R_STATUS_TPM_CSB_MASK;
+        } else {
+            s->spi_regs[R_STATUS] |= R_STATUS_TPM_CSB_MASK;
+        }
         val32 = s->spi_regs[reg];
         switch (s->csb_sync) {
         case CSB_IDLE_HIGH_SEEN:
