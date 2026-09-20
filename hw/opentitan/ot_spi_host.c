@@ -1016,7 +1016,7 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
         if (clkdiv != s->last_clkdiv) {
             unsigned spiclock = s->pclk / ((clkdiv + 1u) * 2u);
             trace_ot_spi_host_cmd_clock(s->ot_id, s->active.cmd.id,
-                                         s->completion_delay_ns == 0, spiclock);
+                                        s->completion_delay_ns == 0, spiclock);
         }
     }
     s->last_clkdiv = clkdiv;
