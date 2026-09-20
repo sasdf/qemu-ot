@@ -94,7 +94,7 @@ static int ot_common_node_child_walker(Object *child, void *opaque)
     return nodes->count ? 0 : 1;
 }
 
-CPUState *ot_common_get_local_cpu(DeviceState *s)
+static Object *ot_common_get_local_object(DeviceState *s, const char *type)
 {
     BusState *bus = s->parent_bus;
     if (!bus) {
@@ -111,23 +111,29 @@ CPUState *ot_common_get_local_cpu(DeviceState *s)
     }
 
     OtCommonObjectNodes nodes = {
-        .type = TYPE_CPU,
+        .type = type,
         .count = 1u,
     };
     QSIMPLEQ_INIT(&nodes.list);
 
-    /* find one of the closest CPU (should be only one with OT platforms) */
+    /* find one of the closest matching objects */
     if (object_child_foreach_recursive(OBJECT(parent),
                                        &ot_common_node_child_walker, &nodes)) {
         g_assert(!QSIMPLEQ_EMPTY(&nodes.list));
         OtCommonObjectNode *node = QSIMPLEQ_FIRST(&nodes.list);
-        object_unref(node->obj);
-        CPUState *cpu = CPU(node->obj);
+        Object *obj = node->obj;
+        object_unref(obj);
         g_free(node);
-        return cpu;
+        return obj;
     }
 
     return NULL;
+}
+
+CPUState *ot_common_get_local_cpu(DeviceState *s)
+{
+    Object *obj = ot_common_get_local_object(s, TYPE_CPU);
+    return obj ? CPU(obj) : NULL;
 }
 
 unsigned ot_common_check_rom_configuration(void)
@@ -445,47 +451,13 @@ void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
     }
 }
 
-static OtIbexWrapperState *ot_common_get_local_ibex_wrapper(DeviceState *s)
-{
-    BusState *bus = s->parent_bus;
-    if (!bus) {
-        return NULL;
-    }
-
-    Object *parent;
-    if (bus->parent) {
-        parent = OBJECT(bus->parent);
-    } else if (bus == sysbus_get_default()) {
-        parent = qdev_get_machine();
-    } else {
-        return NULL;
-    }
-
-    OtCommonObjectNodes nodes = {
-        .type = TYPE_OT_IBEX_WRAPPER,
-        .count = 1u,
-    };
-    QSIMPLEQ_INIT(&nodes.list);
-
-    if (object_child_foreach_recursive(OBJECT(parent),
-                                       &ot_common_node_child_walker, &nodes)) {
-        g_assert(!QSIMPLEQ_EMPTY(&nodes.list));
-        OtCommonObjectNode *node = QSIMPLEQ_FIRST(&nodes.list);
-        object_unref(node->obj);
-        OtIbexWrapperState *ibex = OT_IBEX_WRAPPER(node->obj);
-        g_free(node);
-        return ibex;
-    }
-
-    return NULL;
-}
-
 void ot_common_raise_load_integrity_error(DeviceState *dev, hwaddr offset)
 {
-    OtIbexWrapperState *ibex = ot_common_get_local_ibex_wrapper(dev);
-    if (ibex) {
+    Object *obj = ot_common_get_local_object(dev, TYPE_OT_IBEX_WRAPPER);
+    if (obj) {
         SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
         hwaddr base = sbd->mmio[0].addr;
-        ot_ibex_wrapper_raise_load_integrity_error(ibex, base + offset);
+        ot_ibex_wrapper_raise_load_integrity_error(OT_IBEX_WRAPPER(obj),
+                                                   base + offset);
     }
 }
