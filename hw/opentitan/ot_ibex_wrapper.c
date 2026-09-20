@@ -60,11 +60,6 @@
 #include "hw/riscv/ibex_clock_src.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
-#include "exec/cpu-interrupt.h"
-
-#ifndef CPU_INTERRUPT_RNMI
-#define CPU_INTERRUPT_RNMI CPU_INTERRUPT_TGT_EXT_0
-#endif
 #include "hw/sysbus.h"
 #include "system/runstate.h"
 #include "trace.h"
@@ -314,9 +309,6 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
                               ERR_STATUS_FATAL_INTG_MASK |
                               ERR_STATUS_FATAL_CORE_MASK)) {
         level |= ALERT_FATAL_HW_MASK;
-    }
-    if (s->regs.err_status & ERR_STATUS_RECOV_CORE_MASK) {
-        level |= ALERT_RECOV_HW_MASK;
     }
 
     for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
@@ -572,7 +564,7 @@ ot_ibex_wrapper_log_load_string(OtIbexWrapperState *s, hwaddr addr, char **str)
         goto end;
     }
 
-    if (!memory_region_is_ram(mr) && !memory_region_is_romd(mr)) {
+    if (!memory_region_is_ram(mr)) {
         xtrace_ot_ibex_wrapper_error(s, "invalid mr section");
         goto end;
     }
@@ -623,7 +615,7 @@ static bool ot_ibex_wrapper_log_load_fields(OtIbexWrapperState *s, hwaddr addr)
         goto end;
     }
 
-    if (!memory_region_is_ram(mr) && !memory_region_is_romd(mr)) {
+    if (!memory_region_is_ram(mr)) {
         xtrace_ot_ibex_wrapper_error(s, "invalid mr section");
         goto end;
     }
@@ -1302,7 +1294,7 @@ static void ot_ibex_wrapper_write_dv_sim_log(OtIbexWrapperState *s,
     g_assert(reg < ARRAY_SIZE(((OtIbexWrapperRegs *)0)->dv_sim_win));
     /* NOLINTNEXTLINE */
     switch (reg) {
-    case DV_SIM_LOG:
+    case 0u:
         ot_ibex_wrapper_log_handle(s, value);
         break;
     default:
@@ -1443,7 +1435,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_read_rnd_data;
     s->access_table[R32_DYN_POS(s, rnd_status)].read =
         &ot_ibex_wrapper_read_rnd_status;
-    s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].read =
+    s->access_table[R32_DYN_POS(s, dv_sim_win[0u])].read =
         &ot_ibex_wrapper_read_zero;
 
     /* assign writers and default permits */
@@ -1639,7 +1631,6 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->entropy_requested = false;
     s->rnd_inval_reads = 0;
     s->rnd_inval_until_ns = 0;
-    s->esc_rx = false;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
     if (s->cpu) {
         riscv_cpu_set_rnmi(s->cpu, 31, false);
