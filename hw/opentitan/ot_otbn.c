@@ -789,6 +789,11 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
         ot_otbn_proxy_read_memory(s->proxy, doi, word_addr, &valid);
     trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
                            value);
+    if (ot_otbn_is_locked(s)) {
+        s->last_cmd = OT_OTBN_CMD_NONE;
+        timer_del(s->proxy_defer);
+        ot_otbn_post_execute(s);
+    }
     if (valid) {
         /*
          * In otbn.sv:737-746, mem_crc_data_in_valid checks:
@@ -806,11 +811,6 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
         hwaddr offset =
             (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + word_addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
-    }
-    if (ot_otbn_is_locked(s)) {
-        s->last_cmd = OT_OTBN_CMD_NONE;
-        timer_del(s->proxy_defer);
-        ot_otbn_post_execute(s);
     }
     return value;
 }

@@ -192,7 +192,7 @@ impl Proxy {
                 return 0; // Reads return zero in Locked state
             }
             _ => {
-                *valid = true;
+                *valid = false;
                 self.registers
                     .fatal_bits
                     .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
