@@ -1050,16 +1050,7 @@ static void ot_entropy_src_update_filler(OtEntropySrcState *s)
 
 static bool ot_entropy_src_can_condition_entropy(const OtEntropySrcState *s)
 {
-    if (!ot_fifo32_is_full(&s->precon_fifo)) {
-        /* room in preconditioner packer */
-        return true;
-    }
-    if (ot_entropy_src_is_final_fifo_slot_available(s)) {
-        /* room in output FIFO */
-        return true;
-    }
-
-    return false;
+    return !ot_fifo32_is_full(&s->precon_fifo);
 }
 
 static bool ot_entropy_src_can_bypass_entropy(const OtEntropySrcState *s)
@@ -1084,7 +1075,7 @@ static bool
 ot_entropy_src_push_entropy_to_conditioner(OtEntropySrcState *s, uint32_t word)
 {
     int res;
-    if (s->cond_word == 0) {
+    if (s->cond_word == 0 && !ot_entropy_src_is_fw_ov_entropy_insert(s)) {
         res = sha3_384_init(&s->sha3_state);
         g_assert(res == CRYPT_OK);
         if (s->state == ENTROPY_SRC_STARTUP_HT_START) {
@@ -1152,7 +1143,6 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
             res = sha3_384_init(&s->sha3_state);
             g_assert(res == CRYPT_OK);
             s->cond_word = 0;
-            ot_fifo32_reset(&s->precon_fifo);
             ot_entropy_src_change_state(
                 s, REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START,
                                    FW_OV_INSERT_START) ?
@@ -2202,11 +2192,13 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         if (new_start) {
             if (ot_entropy_src_is_bypass_mode(s)) {
                 ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
+            } else if (s->state == ENTROPY_SRC_FW_INSERT_START ||
+                       s->state == ENTROPY_SRC_FW_INSERT_MSG) {
+                ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_MSG);
             } else {
                 int res = sha3_384_init(&s->sha3_state);
                 g_assert(res == CRYPT_OK);
                 s->cond_word = 0;
-                ot_fifo32_reset(&s->precon_fifo);
                 ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_START);
                 ot_entropy_src_change_state(s, ENTROPY_SRC_FW_INSERT_MSG);
             }
@@ -2214,16 +2206,11 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             if (s->state == ENTROPY_SRC_FW_INSERT_MSG ||
                 s->state == ENTROPY_SRC_SHA3_PROCESS) {
                 /* handle SHA3 processing */
-                if (ot_fifo32_is_empty(&s->precon_fifo)) {
-                    ot_entropy_src_perform_hash(s);
-                    if (ot_entropy_src_is_fw_route(s)) {
-                        ot_entropy_src_update_fw_route(s);
-                    }
-                    ot_entropy_src_update_irqs(s);
-                } else {
-                    qemu_log_mask(LOG_GUEST_ERROR, "%s: need 1 more word\n",
-                                  __func__);
+                ot_entropy_src_perform_hash(s);
+                if (ot_entropy_src_is_fw_route(s)) {
+                    ot_entropy_src_update_fw_route(s);
                 }
+                ot_entropy_src_update_irqs(s);
             } else if (s->state == ENTROPY_SRC_FW_INSERT_START) {
                 /* remain in ENTROPY_SRC_FW_INSERT_START waiting for start */
             } else {
