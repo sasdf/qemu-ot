@@ -1401,8 +1401,6 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
         uint32_t windows_reg = s->regs_hi[R_HEALTH_TEST_WINDOWS];
         unsigned window_symbols =
             bypass ? (windows_reg >> 16u) : (windows_reg & 0xffffu);
-        window_symbols = window_symbols ? window_symbols :
-                                          (bypass ? 0x60u : 0x200u);
 
         s->ht_symbol_count += 8u;
         if (s->ht_symbol_count >= window_symbols) {
