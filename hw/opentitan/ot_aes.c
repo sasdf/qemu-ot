@@ -1097,11 +1097,7 @@ static void ot_aes_fill_entropy(void *opaque, uint32_t bits, bool fips)
 
     if (edn->pending_words > 1u) {
         edn->pending_words -= 1u;
-        if (ot_edn_request_entropy(edn->device, edn->ep)) {
-            edn->scheduled = false;
-            edn->pending_words = 0u;
-            xtrace_ot_aes_error(s->ot_id, "cannot request new entropy");
-        }
+        ot_edn_request_entropy(edn->device, edn->ep);
         return;
     }
 
@@ -1476,32 +1472,18 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static inline uint32_t ot_aes_byte_mask(hwaddr addr, unsigned size)
-{
-    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
-    return (mask << (addr & 3u)) & 0xfu;
-}
-
-static uint32_t ot_aes_reg_permit(hwaddr reg)
-{
-    switch (reg) {
-    case R_CTRL_SHADOWED:
-        return 0x3u;
-    case R_KEY_SHARE0_0 ... R_DATA_OUT_3:
-        return 0xfu;
-    default:
-        return 0x1u;
-    }
-}
-
 static MemTxResult ot_aes_write_with_attrs(void *opaque, hwaddr addr,
                                            uint64_t val64, unsigned size,
                                            MemTxAttrs attrs)
 {
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint32_t be = ot_aes_byte_mask(addr, size);
-    uint32_t permit = ot_aes_reg_permit(reg);
+    uint32_t be =
+        (((size >= 4u) ? 0xfu : ((1u << size) - 1u)) << (addr & 3u)) & 0xfu;
+    uint32_t permit =
+        (reg == R_CTRL_SHADOWED) ?
+            0x3u :
+            ((reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) ? 0xfu : 0x1u);
     if ((permit & ~be) != 0u) {
         return MEMTX_ERROR;
     }
