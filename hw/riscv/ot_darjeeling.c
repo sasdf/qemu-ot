@@ -521,8 +521,7 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .cfg = &ot_dj_soc_tap_ctrl_configure,
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
-            IBEX_DEV_UINT_PROP("idcode", DARJEELING_TAP_IDCODE),
-            IBEX_DEV_BOOL_PROP("wait_cpu_halt", true)
+            IBEX_DEV_UINT_PROP("idcode", DARJEELING_TAP_IDCODE)
         ),
     },
     [OT_DJ_SOC_DEV_DTM] = {
@@ -537,10 +536,6 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
     [OT_DJ_SOC_DEV_DM] = {
         .type = TYPE_RISCV_DM,
         .cfg = &ot_dj_soc_dm_configure,
-        .gpio = IBEXGPIOCONNDEFS(
-            OT_DJ_SOC_SIGNAL(RISCV_DM_NDMRESET_LINE, 0, PWRMGR,
-                             OT_PWRMGR_NDM_RST, 0)
-        ),
         .link = IBEXDEVICELINKDEFS(
             OT_DJ_SOC_DEVLINK("dtm", DTM)
         ),
@@ -903,12 +898,10 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
             OT_DJ_SOC_GPIO_ALERT(3, 104)
         ),
         .link = IBEXDEVICELINKDEFS(
-            OT_DJ_SOC_DEVLINK("clock-src", CLKMGR),
             OT_DJ_SOC_DEVLINK("edn", EDN0),
             OT_DJ_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP("clock-name", "infra.main"),
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
             IBEX_DEV_UINT_PROP("num-regions", OT_DJ_IBEX_WRAPPER_NUM_REGIONS)
         ),
@@ -1520,11 +1513,10 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .type = TYPE_SPLIT_IRQ,
         .gpio = IBEXGPIOCONNDEFS(
             OT_DJ_SOC_S2D(0, OTP_CTRL, OT_LC_BROADCAST,
-                                  OT_OTP_LC_ESCALATE_EN),
-            OT_DJ_SOC_S2D(1, AON_TIMER, OT_AON_TIMER_LC_ESCALATE, 0)
+                                  OT_OTP_LC_ESCALATE_EN)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 2u) /* @todo to be changed */
+            IBEX_DEV_UINT_PROP("num-lines", 1u) /* @todo to be changed */
         )
     }
     /* clang-format on */
