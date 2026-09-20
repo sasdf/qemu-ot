@@ -370,7 +370,6 @@ impl Executer {
             .err_bits
             .store(ErrBits::empty().bits(), Ordering::Relaxed);
         self.registers.insn_count.store(0, Ordering::Relaxed);
-        let mut local_insn_count: usize = 0;
 
         loop {
             // Debug/traces
@@ -405,20 +404,16 @@ impl Executer {
                 }
             }
 
-            let fatalbits = if (local_insn_count & 0xff) == 0 {
-                if self.registers.resetting.load(Ordering::Relaxed)
-                    || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
-                        == Status::Locked
-                {
-                    return insn_exec::InstructionTrap::Exception(
-                        ExceptionCause::ECallMMode,
-                        None,
-                    );
-                }
-                self.registers.fatal_bits.load(Ordering::Relaxed)
-            } else {
-                0
-            };
+            if self.registers.resetting.load(Ordering::Relaxed)
+                || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
+                    == Status::Locked
+            {
+                return insn_exec::InstructionTrap::Exception(
+                    ExceptionCause::ECallMMode,
+                    None,
+                );
+            }
+            let fatalbits = self.registers.fatal_bits.load(Ordering::Relaxed);
             let result = if fatalbits == 0 {
                 // Execute instruction
                 executor.step()
@@ -477,19 +472,15 @@ impl Executer {
                     // if the exception has been triggered by an ecall instruction,
                     // the actual instruction has been executed; otherwise the instruction failed
                     // to execute
-                    local_insn_count += 1;
+                    self.registers.insn_count.fetch_add(1, Ordering::Relaxed);
                 } else {
                     executor.hart_state.pc = 0;
                 }
-                self.registers.insn_count.store(local_insn_count, Ordering::Relaxed);
 
                 return trap;
             }
 
-            local_insn_count += 1;
-            if (local_insn_count & 0xff) == 0 {
-                self.registers.insn_count.store(local_insn_count, Ordering::Relaxed);
-            }
+            self.registers.insn_count.fetch_add(1, Ordering::Relaxed);
 
             if self.log_asm {
                 if let Some(log_file) = &mut self.log_file {
