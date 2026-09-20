@@ -426,7 +426,6 @@ struct OtLcCtrlState {
     uint8_t kmac_app;
     bool volatile_raw_unlock;
     bool decode_soc_dbg; /* whether to handle SoCDbg state */
-    bool inject_otp_prog_error;
 };
 
 /* try to cope with the many ways to encode a transition matrix */
@@ -1334,11 +1333,8 @@ static void ot_lc_ctrl_program_otp(OtLcCtrlState *s, unsigned lc_tcount,
 
     unsigned stix = MIN((unsigned)lc_state, NUM_LC_STATE);
     unsigned tcix = MIN(lc_tcount, NUM_LC_TRANSITION_COUNT);
-    const uint16_t *transition_val = s->inject_otp_prog_error ?
-                                         s->lc_transitions[0] :
-                                         s->lc_transitions[tcix];
-    const uint16_t *state_val =
-        s->inject_otp_prog_error ? s->lc_states[0] : s->lc_states[stix];
+    const uint16_t *transition_val = s->lc_transitions[tcix];
+    const uint16_t *state_val = s->lc_states[stix];
 
     if (!oc->program_req(oi, transition_val, state_val,
                          &ot_lc_ctrl_handle_otp_ack, s)) {
@@ -2379,8 +2375,6 @@ static const Property ot_lc_ctrl_properties[] = {
     DEFINE_PROP_BOOL("volatile_raw_unlock", OtLcCtrlState, volatile_raw_unlock,
                      true),
     DEFINE_PROP_BOOL("decode_soc_dbg", OtLcCtrlState, decode_soc_dbg, false),
-    DEFINE_PROP_BOOL("inject-otp-prog-error", OtLcCtrlState,
-                     inject_otp_prog_error, false),
     DEFINE_PROP_UINT8("kmac-app", OtLcCtrlState, kmac_app, UINT8_MAX),
 };
 
