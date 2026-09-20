@@ -1244,12 +1244,8 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
 
 static void ot_pinmux_eg_reset_exit(Object *obj, ResetType type)
 {
-    OtPinmuxEgClass *c = OT_PINMUX_EG_GET_CLASS(obj);
     OtPinmuxEgState *s = OT_PINMUX_EG(obj);
-
-    if (c->parent_phases.exit) {
-        c->parent_phases.exit(obj, type);
-    }
+    (void)type;
 
     ot_pinmux_eg_update_pads(s);
 }

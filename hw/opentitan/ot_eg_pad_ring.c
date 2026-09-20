@@ -154,13 +154,10 @@ static void ot_eg_pad_ring_pad_set(Object *obj, Visitor *v, const char *name,
 {
     OtEgPadRingState *s = OT_EG_PAD_RING(obj);
     unsigned ix = (unsigned)(uintptr_t)opaque;
-    char *value;
+    char *value = NULL;
 
-    if (!visit_type_str(v, name, &value, errp)) {
-        return;
-    }
-
-    if (ibex_gpio_parse_level(name, value, &s->default_levels[ix], errp)) {
+    if (visit_type_str(v, name, &value, errp) &&
+        ibex_gpio_parse_level(name, value, &s->default_levels[ix], errp)) {
         ibex_irq_set(&s->outputs[ix], s->default_levels[ix]);
         if (ix == OT_EG_PAD_RING_PAD_POR_N) {
             ot_eg_pad_ring_por_update(s);
