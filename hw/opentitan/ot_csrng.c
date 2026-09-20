@@ -1702,14 +1702,10 @@ next:
         /* command re-insertion */
         trace_ot_csrng_show_command("push back", slot, CMD_NAME(acmd), acmd);
         QSIMPLEQ_INSERT_TAIL(&s->cmd_requests, inst, cmd_request);
-        if (s->entropy_delay) {
-            timer_mod(s->entropy_scheduler,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                          (int64_t)s->entropy_delay);
-            s->entropy_delay = 0;
-        } else {
-            qemu_bh_schedule(s->cmd_scheduler);
-        }
+        timer_mod(s->entropy_scheduler,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                      (int64_t)s->entropy_delay);
+        s->entropy_delay = 0;
         s->in_scheduler = false;
         return;
     case CSRNG_CMD_DEFERRED:
