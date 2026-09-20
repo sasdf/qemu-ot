@@ -296,15 +296,19 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg < REGS_COUNT) {
-        uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-        if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: Sub-word write error at 0x%02" HWADDR_PRIx
-                          " (size=%u)\n",
-                          __func__, addr, size);
-            return MEMTX_DECODE_ERROR;
-        }
+    if (reg >= REGS_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: Sub-word write error at 0x%02" HWADDR_PRIx
+                      " (size=%u)\n",
+                      __func__, addr, size);
+        return MEMTX_DECODE_ERROR;
     }
 
     val32 <<= (addr & 0x3u) * 8u;
@@ -436,7 +440,7 @@ static void ot_pattgen_init(Object *obj)
     OtPattgenState *s = OT_PATTGEN(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_pattgen_regs_ops, s,
-                          TYPE_OT_PATTGEN, 0x40u);
+                          TYPE_OT_PATTGEN, REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     for (unsigned i = 0; i < PARAM_NUM_IRQS; i++) {
