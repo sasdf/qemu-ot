@@ -561,12 +561,6 @@ static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     hwaddr reg = R32_OFF(addr);
 
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return 0;
-    }
-
     if (reg == R_INTR_TEST || reg == R_ALERT_TEST) {
         return 0;
     }
@@ -600,12 +594,6 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
     (void)size;
     uint32_t val32 = (uint32_t)val64;
     hwaddr reg = R32_OFF(addr);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return;
-    }
 
     s->poll_count = 0;
 
@@ -718,6 +706,8 @@ static MemTxResult ot_sysrst_ctrl_read_with_attrs(
     hwaddr aligned_addr = addr & ~3ULL;
     unsigned byte_off = (unsigned)(addr & 3u);
     if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
+                      (uint32_t)addr);
         return MEMTX_DECODE_ERROR;
     }
     uint64_t word = ot_sysrst_ctrl_read(opaque, aligned_addr, 4u);
@@ -733,6 +723,8 @@ static MemTxResult ot_sysrst_ctrl_write_with_attrs(
     hwaddr aligned_addr = addr & ~3ULL;
     unsigned byte_off = (unsigned)(addr & 3u);
     if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
+                      (uint32_t)addr);
         return MEMTX_DECODE_ERROR;
     }
     hwaddr reg = R32_OFF(aligned_addr);
