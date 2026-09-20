@@ -483,11 +483,17 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
     }
 
     /* Priority: RNMI > Other interrupt. */
-    if (env->rnmip) {
-        if (env->rnmip & (1ULL << 31)) {
-            return 31;
+    if (riscv_cpu_cfg(env)->ext_smrnmi) {
+        /* If mnstatus.NMIE == 0, all interrupts are disabled. */
+        if (!get_field(env->mnstatus, MNSTATUS_NMIE)) {
+            return RISCV_EXCP_NONE;
         }
-        return ctz64(env->rnmip); /* since non-zero */
+
+        if (env->rnmip) {
+            return ctz64(env->rnmip); /* since non-zero */
+        }
+    } else if (env->rnmip) {
+        return (env->rnmip & (1ULL << 31)) ? 31 : ctz64(env->rnmip);
     }
 
     /* Determine interrupt enable state of all privilege modes */
@@ -730,23 +736,12 @@ void riscv_cpu_set_rnmi(RISCVCPU *cpu, uint32_t irq, bool level)
 void riscv_cpu_set_rnmi_int(RISCVCPU *cpu, uint32_t cause, target_ulong mtval)
 {
     CPURISCVState *env = &cpu->env;
-    CPUState *cs = CPU(cpu);
-    bool release_lock = false;
-
-    if (!bql_locked()) {
-        release_lock = true;
-        bql_lock();
-    }
 
     if (!env->nmi_mode) {
         env->rnmi_int_pending_count++;
         env->rnmi_int_mtval = mtval;
         env->rnmip |= (1ULL << cause);
-        cpu_interrupt(cs, CPU_INTERRUPT_RNMI);
-    }
-
-    if (release_lock) {
-        bql_unlock();
+        cpu_interrupt(CPU(cpu), CPU_INTERRUPT_RNMI);
     }
 }
 
@@ -1959,7 +1954,6 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 
             if (ret == TRANSLATE_SUCCESS) {
                 hwaddr pmp_addr = env->vaddr_pmp ? address : pa;
-                int base_prot = prot;
 
                 ret = get_physical_address_pmp(env, &prot_pmp, pmp_addr,
                                                size, access_type, mode);
@@ -1971,15 +1965,6 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                               __func__, pmp_addr, ret, prot_pmp, tlb_size);
 
                 prot &= prot_pmp;
-                if (tlb_size < TARGET_PAGE_SIZE) {
-                    page_prot = base_prot &
-                                pmp_get_page_min_prot(env, pmp_addr, mode);
-                    if (page_prot == prot) {
-                        tlb_size = TARGET_PAGE_SIZE;
-                    }
-                } else {
-                    page_prot = prot;
-                }
             } else {
                 /*
                  * Guest physical address translation failed, this is a HS
