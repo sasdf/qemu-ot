@@ -290,7 +290,8 @@ typedef enum {
     LC_IF_DMI, /* DMI requester */
 } OtLcCtrlIf;
 
-#define LC_XSLOT(_ifreq_) (((unsigned)(_ifreq_)) - 1u)
+#define EXCLUSIVE_SLOTS_COUNT 1u
+#define LC_XSLOT(_ifreq_)     ((void)(_ifreq_), 0u)
 
 typedef enum {
     ST_RESET,
@@ -383,7 +384,7 @@ struct OtLcCtrlState {
     IbexIRQ soc_dbg_tx;
 
     uint32_t *regs; /* slots in xregs are not used in regs */
-    uint32_t xregs[EXCLUSIVE_REGS_COUNT];
+    uint32_t xregs[EXCLUSIVE_SLOTS_COUNT][EXCLUSIVE_REGS_COUNT];
     OtLcState lc_state;
     uint32_t lc_tcount;
     OtLcCtrlKeyMgrDivType km_div_type;
@@ -1074,12 +1075,16 @@ static OtLcState ot_lc_ctrl_safe_convert_code_to_state(uint32_t enc_state)
 
 static uint32_t ot_lc_ctrl_get_target_state(const OtLcCtrlState *s)
 {
-    return s->xregs[R_TRANSITION_TARGET - R_FIRST_EXCLUSIVE_REG];
+    unsigned sreq = LC_XSLOT(s->owner);
+
+    return s->xregs[sreq][R_TRANSITION_TARGET - R_FIRST_EXCLUSIVE_REG];
 }
 
 static void ot_lc_ctrl_load_hashed_token(OtLcCtrlState *s)
 {
-    const uint32_t *xregs = s->xregs;
+    g_assert(LC_XSLOT(s->owner) < EXCLUSIVE_SLOTS_COUNT);
+
+    const uint32_t *xregs = s->xregs[LC_XSLOT(s->owner)];
 
     s->hash_token.lo =
         (uint64_t)xregs[XREGS_OFFSET(R_TRANSITION_TOKEN_0)] |
@@ -1091,7 +1096,9 @@ static void ot_lc_ctrl_load_hashed_token(OtLcCtrlState *s)
 
 static void ot_lc_ctrl_kmac_request(OtLcCtrlState *s)
 {
-    const uint32_t *xregs = s->xregs;
+    g_assert(LC_XSLOT(s->owner) < EXCLUSIVE_SLOTS_COUNT);
+
+    const uint32_t *xregs = s->xregs[LC_XSLOT(s->owner)];
     const uint32_t *token =
         &xregs[(s->kmac_state == ST_KMAC_SECOND ?
                     XREGS_OFFSET(R_TRANSITION_TOKEN_2) :
@@ -1785,7 +1792,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     case R_TRANSITION_TOKEN_3:
     case R_TRANSITION_TARGET:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ?
-                    s->xregs[reg - R_FIRST_EXCLUSIVE_REG] :
+                    s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] :
                     0u;
         break;
     case R_STATUS:
@@ -1963,7 +1970,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                           __func__, s->ot_id);
             break;
         }
-        s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
+        s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
         break;
     case R_TRANSITION_TARGET:
         if (!ot_lc_ctrl_is_transition_en(s, ifreq)) {
@@ -1977,7 +1984,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
          * a transition is triggered.
          */
         val32 &= R_TRANSITION_TARGET_STATE_MASK;
-        s->xregs[reg - R_FIRST_EXCLUSIVE_REG] = val32;
+        s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
         break;
     case R_OTP_VENDOR_TEST_CTRL:
         if (!ot_lc_ctrl_is_transition_en(s, ifreq)) {
