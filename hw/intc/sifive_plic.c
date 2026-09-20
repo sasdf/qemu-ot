@@ -204,7 +204,7 @@ static MemTxResult sifive_plic_read_with_attrs(void *opaque, hwaddr addr,
 
         if (contextid == 0) {
             val32 = plic->target_priority[addrid];
-        } else if (contextid == 4) {
+        } else {
             uint32_t max_irq = sifive_plic_claimed(plic, addrid, true);
 
             if (max_irq) {
@@ -214,11 +214,6 @@ static MemTxResult sifive_plic_read_with_attrs(void *opaque, hwaddr addr,
 
             sifive_plic_update(plic);
             val32 = max_irq;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: Invalid context read 0x%" HWADDR_PRIx "\n",
-                          __func__, addr);
-            return MEMTX_DECODE_ERROR;
         }
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -322,7 +317,7 @@ static MemTxResult sifive_plic_write_with_attrs(void *opaque, hwaddr addr,
                 sifive_plic_update(plic);
             }
             return MEMTX_OK;
-        } else if (contextid == 4) {
+        } else {
             /* RV_PLIC_PERMIT[199] (CC0) = 4'b0001 */
             if (0x1u & ~reg_be) {
                 return MEMTX_DECODE_ERROR;
@@ -348,11 +343,6 @@ static MemTxResult sifive_plic_write_with_attrs(void *opaque, hwaddr addr,
                 }
             }
             return MEMTX_OK;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: Invalid context write 0x%" HWADDR_PRIx "\n",
-                          __func__, addr);
-            return MEMTX_DECODE_ERROR;
         }
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -465,9 +455,7 @@ static void sifive_plic_irq_request(void *opaque, int irq, int level)
 
     if (s->edge_triggered) {
         if (level && !sifive_plic_get_level(s, irq)) {
-            if (!sifive_plic_is_claimed(s, irq)) {
-                sifive_plic_set_pending(s, irq, true);
-            }
+            sifive_plic_set_pending(s, irq, true);
         }
         sifive_plic_set_level(s, irq, !!level);
     } else {
