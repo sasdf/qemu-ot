@@ -35,8 +35,6 @@
 #define TYPE_OT_CSRNG "ot-csrng"
 OBJECT_DECLARE_TYPE(OtCSRNGState, OtCSRNGClass, OT_CSRNG)
 
-#define OT_CSRNG_LC_HW_DEBUG_EN TYPE_OT_CSRNG "-lc-hw-debug-en"
-
 #define OT_CSRNG_HW_APP_MAX 2u
 
 #define OT_CSRNG_PACKET_SIZE_BITS 128u

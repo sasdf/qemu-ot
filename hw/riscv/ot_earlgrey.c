@@ -1621,11 +1621,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_S2D(2, TAP_CTRL, TAP_CTRL_RBB_ENABLE, 0),
             OT_EG_SOC_S2D(3, RV_DM, PULP_RV_DM_LC_HW_DEBUG_EN, 0),
             OT_EG_SOC_S2D(4, CLKMGR, OT_CLKMGR_LC_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(5, PINMUX, OT_PINMUX_LC_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(6, CSRNG, OT_CSRNG_LC_HW_DEBUG_EN, 0)
+            OT_EG_SOC_S2D(5, PINMUX, OT_PINMUX_LC_HW_DEBUG_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 7u)
+            IBEX_DEV_UINT_PROP("num-lines", 6u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_DFT] = {

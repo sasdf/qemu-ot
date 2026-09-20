@@ -350,7 +350,6 @@ struct OtCSRNGState {
     bool read_int_granted;
     bool in_scheduler;
     bool waiting_for_entropy;
-    bool lc_hw_debug_en;
     uint32_t scheduled_cmd;
     unsigned entropy_delay;
     unsigned es_retry_count;
@@ -494,11 +493,6 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
     g_assert(inst->hw.filler);
     g_assert(inst->hw.req_sts);
 
-    if (ot_csrng_is_in_queue(inst) &&
-        FIELD_EX32(word, OT_CSNRG_CMD, ACMD) == OT_CSRNG_CMD_UNINSTANTIATE) {
-        ot_fifo32_reset(&inst->cmd_fifo);
-    }
-
     /* FIFO is emptied in #ot_csrng_complete_command */
     if (ot_fifo32_is_full(&inst->cmd_fifo) || ot_csrng_is_in_queue(inst)) {
         xtrace_ot_csrng_error("Command FIFO is full");
@@ -584,8 +578,7 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
     }
 
     if (acmd == OT_CSRNG_CMD_UNINSTANTIATE) {
-        if (!ot_csrng_drng_is_instantiated(inst) &&
-            ot_csrng_is_in_queue(inst)) {
+        if (!ot_csrng_drng_is_instantiated(inst)) {
             /*
              * Very special hacky case:
              *
@@ -744,6 +737,7 @@ static void ot_csrng_drng_uninstantiate(OtCSRNGInstance *inst)
     drng->reseed_counter = 0;
     drng->rem_packet_count = 0;
 
+    /* only to help debugging */
     memset(drng->key, 0, sizeof(drng->key));
     memset(drng->v_counter, 0, sizeof(drng->v_counter));
 }
@@ -824,7 +818,6 @@ static OtCSRNDCmdResult ot_csrng_drng_reseed(OtCSRNGInstance *inst, bool flag0)
 
         if (res < 0) {
             s->entropy_delay = 0;
-            s->waiting_for_entropy = false;
             trace_ot_csrng_entropy_rejected(slot, "error", res);
             return CSRNG_CMD_STALLED;
         }
@@ -1107,7 +1100,6 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
             if (ix == SW_INSTANCE_ID) {
                 ot_fifo32_reset(&inst->sw.bits_fifo);
                 inst->sw.fips = false;
-                inst->drng.prev_genbits_valid = false;
             } else {
                 inst->hw.genbits_ready = false;
             }
@@ -1155,11 +1147,6 @@ static void
 ot_csrng_complete_sw_command(OtCSRNGInstance *inst, OtCSRNGCmdStatus sts)
 {
     OtCSRNGState *s = inst->parent;
-
-    if (!s->enabled) {
-        s->regs[R_SW_CMD_STS] &= R_SW_CMD_STS_CMD_STS_MASK;
-        return;
-    }
 
     uint32_t reg = s->regs[R_SW_CMD_STS];
     reg = FIELD_DP32(reg, SW_CMD_STS, CMD_RDY, 1u);
@@ -1569,6 +1556,7 @@ static OtCSRNDCmdResult ot_csrng_handle_command(OtCSRNGState *s, unsigned slot)
     case OT_CSRNG_CMD_NONE:
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "Unknown command: %u\n", acmd);
+        // JW: check this shouldn't be CMD_STAGE_INVALID_CMD_SEQ_ALERT.
         ot_csrng_trigger_recov_alert(
             s, R_RECOV_ALERT_STS_CMD_STAGE_INVALID_ACMD_ALERT_MASK);
         return CSRNG_CMD_INVALID_ACMD;
@@ -1672,94 +1660,97 @@ static void ot_csrng_command_scheduler(void *opaque)
     }
     s->in_scheduler = true;
 
-    while (!QSIMPLEQ_EMPTY(&s->cmd_requests) && s->state == CSRNG_IDLE) {
-        /* handle a single instance per cycle */
-        OtCSRNGInstance *inst = QSIMPLEQ_FIRST(&s->cmd_requests);
-
-        uint32_t command = ot_fifo32_peek(&inst->cmd_fifo);
-        uint32_t acmd = FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
-        unsigned slot = ot_csrng_get_slot(inst);
-
-        trace_ot_csrng_show_command("pop", slot, CMD_NAME(acmd), acmd);
-
-        if (!ot_csrng_instance_is_command_ready(inst, true)) {
-            g_assert_not_reached();
-        }
-
-        CHANGE_STATE(s, CSRNG_PARSE_CMD);
-
-        /*
-         * instance's command has been checked, remove it from the queue.
-         * it is re-inserted to the tail if it cannot be completed for now. Doing so
-         * allow a round-robin sequencing between several instances each requiring
-         * command processing.
-         */
-        QSIMPLEQ_REMOVE_HEAD(&s->cmd_requests, cmd_request);
-
-        /*
-         * current instance has a pending command.
-         * handle it, and prevent any other instances to be handled
-         * in this round.
-         */
-        trace_ot_csrng_command_scheduler(slot, "cmd ready, execute");
-        OtCSRNDCmdResult res;
-        res = ot_csrng_handle_command(s, slot);
-        switch (res) {
-        case CSRNG_CMD_RETRY:
-            CHANGE_STATE(s, CSRNG_IDLE);
-            /* command re-insertion */
-            trace_ot_csrng_show_command("push back", slot, CMD_NAME(acmd), acmd);
-            QSIMPLEQ_INSERT_TAIL(&s->cmd_requests, inst, cmd_request);
-            if (s->entropy_delay) {
-                timer_mod(s->entropy_scheduler,
-                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                              (int64_t)s->entropy_delay);
-                s->entropy_delay = 0;
-            } else {
-                qemu_bh_schedule(s->cmd_scheduler);
-            }
-            goto out;
-        case CSRNG_CMD_DEFERRED:
-            inst->defer_completion = true;
-            CHANGE_STATE(s, CSRNG_IDLE);
-            if (ot_csrng_drng_remaining_count(inst)) {
-                if (slot != SW_INSTANCE_ID) {
-                    /* HW instance */
-                    if (inst->hw.genbits_ready) {
-                        ot_csrng_hwapp_filler_bh(inst);
-                    } else {
-                        xtrace_ot_csrng_info("genbit not ready", slot);
-                    }
-                } else {
-                    /* SW instance */
-                    ot_csrng_swapp_fill(inst);
-                }
-            }
-            break;
-        case CSRNG_CMD_STALLED:
-            xtrace_ot_csrng_error("entropy stack stalled");
-            /* discard any remaining requests, nothing can be done any further */
-            while (!QSIMPLEQ_EMPTY(&s->cmd_requests)) {
-                QSIMPLEQ_REMOVE_HEAD(&s->cmd_requests, cmd_request);
-            }
-            /* do not complete command either */
-            break;
-        case CSRNG_CMD_OK:
-            ot_csrng_complete_command(inst, CSRNG_STATUS_SUCCESS);
-            break;
-        default:
-            trace_ot_csrng_reject_command(slot, command, res);
-            /*
-             * Negative res values are errors, encoding the type of command error.
-             * Convert the encoded error back into a OtCSRNGCmdStatus.
-             */
-            ot_csrng_complete_command(inst, -res);
-            break;
-        }
+next:
+    /* handle a single instance per cycle */
+    OtCSRNGInstance *inst = QSIMPLEQ_FIRST(&s->cmd_requests);
+    if (!inst || s->state != CSRNG_IDLE) {
+        s->in_scheduler = false;
+        return;
     }
 
-out:
-    s->in_scheduler = false;
+    uint32_t command = ot_fifo32_peek(&inst->cmd_fifo);
+    uint32_t acmd = FIELD_EX32(command, OT_CSNRG_CMD, ACMD);
+    unsigned slot = ot_csrng_get_slot(inst);
+
+    trace_ot_csrng_show_command("pop", slot, CMD_NAME(acmd), acmd);
+
+    if (!ot_csrng_instance_is_command_ready(inst, true)) {
+        g_assert_not_reached();
+    }
+
+    CHANGE_STATE(s, CSRNG_PARSE_CMD);
+
+    /*
+     * instance's command has been checked, remove it from the queue.
+     * it is re-inserted to the tail if it cannot be completed for now. Doing so
+     * allow a round-robin sequencing between several instances each requiring
+     * command processing.
+     */
+    QSIMPLEQ_REMOVE_HEAD(&s->cmd_requests, cmd_request);
+
+    /*
+     * current instance has a pending command.
+     * handle it, and prevent any other instances to be handled
+     * in this round.
+     */
+    trace_ot_csrng_command_scheduler(slot, "cmd ready, execute");
+    OtCSRNDCmdResult res;
+    res = ot_csrng_handle_command(s, slot);
+    switch (res) {
+    case CSRNG_CMD_RETRY:
+        CHANGE_STATE(s, CSRNG_IDLE);
+        /* command re-insertion */
+        trace_ot_csrng_show_command("push back", slot, CMD_NAME(acmd), acmd);
+        QSIMPLEQ_INSERT_TAIL(&s->cmd_requests, inst, cmd_request);
+        if (s->entropy_delay) {
+            timer_mod(s->entropy_scheduler,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                          (int64_t)s->entropy_delay);
+            s->entropy_delay = 0;
+        } else {
+            qemu_bh_schedule(s->cmd_scheduler);
+        }
+        s->in_scheduler = false;
+        return;
+    case CSRNG_CMD_DEFERRED:
+        inst->defer_completion = true;
+        CHANGE_STATE(s, CSRNG_IDLE);
+        if (ot_csrng_drng_remaining_count(inst)) {
+            if (slot != SW_INSTANCE_ID) {
+                /* HW instance */
+                if (inst->hw.genbits_ready) {
+                    ot_csrng_hwapp_filler_bh(inst);
+                } else {
+                    xtrace_ot_csrng_info("genbit not ready", slot);
+                }
+            } else {
+                /* SW instance */
+                ot_csrng_swapp_fill(inst);
+            }
+        }
+        break;
+    case CSRNG_CMD_STALLED:
+        xtrace_ot_csrng_error("entropy stack stalled");
+        /* discard any remaining requests, nothing can be done any further */
+        while (!QSIMPLEQ_EMPTY(&s->cmd_requests)) {
+            QSIMPLEQ_REMOVE_HEAD(&s->cmd_requests, cmd_request);
+        }
+        /* do not complete command either */
+        break;
+    case CSRNG_CMD_OK:
+        ot_csrng_complete_command(inst, CSRNG_STATUS_SUCCESS);
+        break;
+    default:
+        trace_ot_csrng_reject_command(slot, command, res);
+        /*
+         * Negative res values are errors, encoding the type of command error.
+         * Convert the encoded error back into a OtCSRNGCmdStatus.
+         */
+        ot_csrng_complete_command(inst, -res);
+        break;
+    }
+
+    goto next;
 }
 
 static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
@@ -2164,6 +2155,7 @@ static MemTxResult ot_csrng_regs_write_with_attrs(
                       __func__, (uint32_t)addr, REG_NAME(reg));
         break;
     default:
+        // JW: handle new registers.
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
         return MEMTX_DECODE_ERROR;
@@ -2256,16 +2248,8 @@ static void ot_csrng_realize(DeviceState *dev, Error **errp)
 
     g_assert(s->entropy_src);
     g_assert(s->otp_ctrl);
+
     (void)OBJECT_CHECK(OtOTPIf, s->otp_ctrl, TYPE_OT_OTP_IF);
-}
-
-static void ot_csrng_lc_hw_debug_en(void *opaque, int irq, int level)
-{
-    OtCSRNGState *s = opaque;
-
-    g_assert(irq == 0);
-
-    s->lc_hw_debug_en = (bool)level;
 }
 
 static void ot_csrng_init(Object *obj)
@@ -2293,8 +2277,6 @@ static void ot_csrng_init(Object *obj)
     qdev_init_gpio_in_named_with_opaque(DEVICE(s), &ot_csrng_hwapp_ready_irq, s,
                                         TYPE_OT_CSRNG "-genbits_ready",
                                         OT_CSRNG_HW_APP_MAX);
-    qdev_init_gpio_in_named(DEVICE(s), &ot_csrng_lc_hw_debug_en,
-                            OT_CSRNG_LC_HW_DEBUG_EN, 1);
 
     static_assert(CMD_FIFO_CAPACITY >= OT_CSRNG_CMD_WORD_MAX,
                   "Invalid CMD FIFO size");
