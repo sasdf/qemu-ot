@@ -149,62 +149,24 @@ static void ot_eg_pad_ring_realize(DeviceState *dev, Error **errp)
                                 OT_EG_PAD_RING_PAD_COUNT, -1);
 }
 
-typedef struct {
-    OtEgPadRingState *s;
-    unsigned ix;
-} OtEgPadRingPadProp;
-
-static void ot_eg_pad_ring_pad_get(Object *obj, Visitor *v, const char *name,
-                                   void *opaque, Error **errp)
-{
-    (void)obj;
-    OtEgPadRingPadProp *prop = opaque;
-    ibex_gpio val = prop->s->default_levels[prop->ix];
-    char *value;
-
-    if (!ibex_gpio_check(val)) {
-        error_setg(errp, "Invalid IbexGPIO");
-        return;
-    }
-    if (ibex_gpio_is_hiz(val)) {
-        value = g_strdup("hiz");
-    } else if (ibex_gpio_is_weak(val)) {
-        value = g_strdup(ibex_gpio_level(val) ? "pu" : "pd");
-    } else {
-        value = g_strdup(ibex_gpio_level(val) ? "high" : "low");
-    }
-
-    visit_type_str(v, name, &value, errp);
-    g_free(value);
-}
-
 static void ot_eg_pad_ring_pad_set(Object *obj, Visitor *v, const char *name,
                                    void *opaque, Error **errp)
 {
-    (void)obj;
-    OtEgPadRingPadProp *prop = opaque;
-    OtEgPadRingState *s = prop->s;
+    OtEgPadRingState *s = OT_EG_PAD_RING(obj);
+    unsigned ix = (unsigned)(uintptr_t)opaque;
     char *value;
 
     if (!visit_type_str(v, name, &value, errp)) {
         return;
     }
 
-    if (ibex_gpio_parse_level(name, value, &s->default_levels[prop->ix], errp)) {
-        ibex_irq_set(&s->outputs[prop->ix], s->default_levels[prop->ix]);
-        if (prop->ix == OT_EG_PAD_RING_PAD_POR_N) {
+    if (ibex_gpio_parse_level(name, value, &s->default_levels[ix], errp)) {
+        ibex_irq_set(&s->outputs[ix], s->default_levels[ix]);
+        if (ix == OT_EG_PAD_RING_PAD_POR_N) {
             ot_eg_pad_ring_por_update(s);
         }
     }
     g_free(value);
-}
-
-static void ot_eg_pad_ring_pad_release(Object *obj, const char *name,
-                                       void *opaque)
-{
-    (void)obj;
-    (void)name;
-    g_free(opaque);
 }
 
 static void ot_eg_pad_ring_init(Object *obj)
@@ -216,12 +178,9 @@ static void ot_eg_pad_ring_init(Object *obj)
     for (unsigned ix = 0; ix < OT_EG_PAD_RING_PAD_COUNT; ix++) {
         gchar *pad_name = g_ascii_strdown(PAD_NAME(ix), -1);
         s->default_levels[ix] = DEFAULT_LEVELS[ix];
-        OtEgPadRingPadProp *prop = g_new0(OtEgPadRingPadProp, 1u);
-        prop->s = s;
-        prop->ix = ix;
-        object_property_add(obj, pad_name, "string", &ot_eg_pad_ring_pad_get,
-                            &ot_eg_pad_ring_pad_set,
-                            &ot_eg_pad_ring_pad_release, prop);
+        object_property_add(obj, pad_name, "string", NULL,
+                            &ot_eg_pad_ring_pad_set, NULL,
+                            (void *)(uintptr_t)ix);
         g_free(pad_name);
     }
 }
