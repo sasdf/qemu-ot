@@ -1369,23 +1369,9 @@ static void riscv_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     CPURISCVState *env = cpu_env(cpu);
-    vaddr insn_end;
 
     decode_opc(env, ctx);
-    insn_end = ctx->base.pc_next + ctx->cur_insn_len - 1;
     ctx->base.pc_next += ctx->cur_insn_len;
-
-#ifndef CONFIG_USER_ONLY
-    if (unlikely(insn_end > ctx->pmp_exec_end &&
-                 translator_is_same_page(&ctx->base, insn_end))) {
-        tcg_ctx->emit_before_op = QTAILQ_NEXT(ctx->base.insn_start, link);
-        gen_helper_raise_exception(tcg_env,
-                      tcg_constant_i32(RISCV_EXCP_INST_ACCESS_FAULT));
-        tcg_ctx->emit_before_op = NULL;
-        ctx->base.is_jmp = DISAS_NORETURN;
-        return;
-    }
-#endif
 
     if (unlikely(ctx->cs->singlestep_enabled)) {
         ctx->base.is_jmp = DISAS_SSTEP;
@@ -1408,20 +1394,20 @@ static void riscv_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         ctx->base.is_jmp = DISAS_NORETURN;
     }
 
-    /* Only the first insn within a TB is allowed to cross a page or PMP boundary. */
+    /* Only the first insn within a TB is allowed to cross a page boundary. */
     if (ctx->base.is_jmp == DISAS_NEXT) {
         if (ctx->itrigger ||
             !translator_is_same_page(&ctx->base, ctx->base.pc_next) ||
             ctx->base.pc_next > ctx->pmp_exec_end) {
             ctx->base.is_jmp = DISAS_TOO_MANY;
         } else {
-            vaddr end = ctx->pmp_exec_end;
+            unsigned page_ofs = ctx->base.pc_next & ~TARGET_PAGE_MASK;
 
-            if (ctx->base.pc_next > end - MAX_INSN_LEN + 1) {
+            if (page_ofs > TARGET_PAGE_SIZE - MAX_INSN_LEN) {
                 uint16_t next_insn = cpu_lduw_code(env, ctx->base.pc_next);
                 int len = insn_len(next_insn);
 
-                if (ctx->base.pc_next + len - 1 > end) {
+                if (!translator_is_same_page(&ctx->base, ctx->base.pc_next + len - 1)) {
                     ctx->base.is_jmp = DISAS_TOO_MANY;
                 }
             }
