@@ -1299,7 +1299,8 @@ static void ot_alert_request_entropy(OtAlertState *s)
         s->edn_connected = true;
     }
     if (!s->entropy_requested) {
-        s->entropy_requested = !ot_edn_request_entropy(s->edn, s->edn_ep);
+        s->entropy_requested = true;
+        ot_edn_request_entropy(s->edn, s->edn_ep);
     }
 }
 
