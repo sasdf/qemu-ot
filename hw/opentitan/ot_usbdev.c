@@ -2408,31 +2408,9 @@ static MemTxResult ot_usbdev_write_with_attrs(
             }
             ot_usbdev_update_aon_wake(s);
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
-            bool was_connected =
-                ot_usbdev_get_link_state(s) != OT_USBDEV_LINK_STATE_DISCONNECTED;
-            bool need_reinit =
-                (s->regs[R_WAKE_EVENTS] &
-                 (R_WAKE_EVENTS_BUS_RESET_MASK |
-                  R_WAKE_EVENTS_DISCONNECTED_MASK)) != 0u;
             s->regs[R_WAKE_EVENTS] = 0u;
             s->aon_wake_events = 0u;
             s->aon_cdc_dst_qs = 0u;
-            bool now_enabled = ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s);
-            if (now_enabled && !was_connected && !need_reinit) {
-                ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
-                ot_usbdev_server_report_connected(s, true);
-            } else if (!now_enabled && was_connected) {
-                ot_usbdev_set_raw_link_state(s,
-                                             OT_USBDEV_LINK_STATE_DISCONNECTED);
-                s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_DISCONNECTED_MASK;
-                s->regs[R_USBCTRL] =
-                    FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
-                timer_del(&s->frame_timer);
-                timer_del(&s->bus_reset_timer);
-                if (ot_usbdev_has_vbus(s)) {
-                    ot_usbdev_server_report_connected(s, false);
-                }
-            }
             ot_usbdev_update_status_irqs(s);
             ot_usbdev_update_irqs(s);
             ibex_irq_set(&s->wkup, 0);
@@ -3158,12 +3136,6 @@ static void ot_usbdev_chr_process_cmd(OtUsbdevState *s, char *cmd,
         ot_usbdev_set_vbus_gate(s, true);
     } else if (strncmp(cmd, "vbus_off", cmd_size) == 0) {
         ot_usbdev_set_vbus_gate(s, false);
-    } else if (strncmp(cmd, "suspend", cmd_size) == 0) {
-        ot_usbdev_simulate_link_suspend(s);
-    } else if (strncmp(cmd, "resume", cmd_size) == 0) {
-        ot_usbdev_simulate_link_resume(s);
-    } else if (strncmp(cmd, "reset", cmd_size) == 0) {
-        ot_usbdev_simulate_link_reset(s);
     } else {
         qemu_log_mask(LOG_UNIMP, "%s: %s: unsupported command %s\n", __func__,
                       s->ot_id, cmd);
@@ -3326,15 +3298,9 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
             /*
              * SW_RST_CTRL_N[3] (rst_usb_n) resets u_wake_events_cdc.src_q
              * (s->regs[R_WAKE_EVENTS]) to 0, while u_wake_events_cdc.dst_qs_o
-             * (on rst_usb_aon_n) retains saved_cdc_dst_qs. If dst_qs_o !=
-             * dst_ds_i (e.g. SW_RST_CTRL_N[4] had already reset dst_qs_o),
-             * prim_reg_cdc_arb emits a CDC update pulse.
+             * (on rst_usb_aon_n) retains saved_cdc_dst_qs.
              */
             s->aon_cdc_dst_qs = saved_cdc_dst_qs;
-            if (s->aon_cdc_dst_qs != s->aon_wake_events) {
-                s->aon_cdc_dst_qs = s->aon_wake_events;
-                s->regs[R_WAKE_EVENTS] = s->aon_wake_events;
-            }
         } else {
             /* Full SoC non-POR reset resets both rst_usb_n and rst_usb_aon_n */
             s->aon_cdc_dst_qs = s->aon_wake_events;
