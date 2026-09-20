@@ -1226,13 +1226,9 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CONTROL:
-        if (s->regs[R_CTRL_CFG_REGWEN] & R_CTRL_CFG_REGWEN_EN_MASK) {
-            val32 &= CONTROL_MASK(s);
-            s->regs[reg] = val32;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
-                          __func__, s->ot_id, REG_NAME(reg));
-        }
+        /* TODO: clear LOW_POWER_HINT on next WFI? */
+        val32 &= CONTROL_MASK(s);
+        s->regs[reg] = val32;
         break;
     case R_CFG_CDC_SYNC:
         val32 &= R_CFG_CDC_SYNC_SYNC_MASK;
