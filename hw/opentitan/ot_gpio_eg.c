@@ -293,8 +293,6 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                     /* Open-drain DIO pins (IOR8/ec_rst_l, IOR9/flash_wp_l) with board pull-ups */
                     bool host_low = !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
                     level = host_low ? 0 : 1;
-                } else if ((s->connected & ~s->data_gi) & (1u << p)) {
-                    level = (int)((s->data_ii >> p) & 1u);
                 } else if (!((s->data_bi >> p) & 1u)) {
                     level = (int)((s->data_ib >> p) & 1u);
                 } else if ((periph_pull_en >> gp) & 1u) {
@@ -304,12 +302,6 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                 } else {
                     level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
                 }
-            }
-        } else {
-            if ((periph_out_en >> p) & 1u) {
-                level = (int)((periph_out_v >> p) & 1u);
-            } else {
-                level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
             }
         }
 
@@ -368,11 +360,6 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 }
             }
         }
-    } else {
-        routed_ib = s->data_ib;
-        routed_hp = s->host_pull;
-        routed_bi = s->data_bi;
-        eff_oe = s->data_oe;
     }
 
     uint32_t ii_mask = s->connected & ~s->data_gi;
@@ -462,9 +449,6 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 data_mix |= (1u << g);
             }
         }
-    } else {
-        uint32_t data_in = ext_in ^ s->invert;
-        data_mix = data_in | (s->data_out & eff_oe & ~s->connected);
     }
 
     s->regs[R_DATA_IN] = data_mix;
