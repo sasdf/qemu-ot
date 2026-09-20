@@ -275,10 +275,7 @@ static MemTxResult ot_pattgen_read_with_attrs(void *opaque, hwaddr addr,
         val32 = 0;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
-        *val64 = 0;
-        return MEMTX_DECODE_ERROR;
+        g_assert_not_reached();
     }
 
     uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
@@ -296,12 +293,6 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -392,9 +383,7 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
         break;
     }
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_DECODE_ERROR;
+        g_assert_not_reached();
     }
 
     return MEMTX_OK;
