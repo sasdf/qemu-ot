@@ -116,7 +116,7 @@ static Object *ot_common_get_local_object(DeviceState *s, const char *type)
     };
     QSIMPLEQ_INIT(&nodes.list);
 
-    /* find one of the closest matching objects */
+    /* find one of the closest CPU (should be only one with OT platforms) */
     if (object_child_foreach_recursive(OBJECT(parent),
                                        &ot_common_node_child_walker, &nodes)) {
         g_assert(!QSIMPLEQ_EMPTY(&nodes.list));
