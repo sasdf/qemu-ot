@@ -326,7 +326,7 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
         ot_gpio_eg_notify_sysrst_change();
         break;
     default:
-        break;
+        g_assert_not_reached();
     }
 
     return MEMTX_OK;
