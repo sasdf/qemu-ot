@@ -555,9 +555,6 @@ static void ot_pwrmgr_lc_dft_en(void *opaque, int irq, int level)
     (void)irq;
 
     s->lc_dft_en = (bool)level;
-    if (s->f_state == OT_PWR_FAST_ST_ROM_CHECK_GOOD) {
-        ot_pwrmgr_schedule_fsm(s);
-    }
 }
 
 static void ot_pwrmgr_lc_hw_debug_en(void *opaque, int irq, int level)
@@ -566,9 +563,6 @@ static void ot_pwrmgr_lc_hw_debug_en(void *opaque, int irq, int level)
     (void)irq;
 
     s->lc_hw_debug_en = (bool)level;
-    if (s->f_state == OT_PWR_FAST_ST_ROM_CHECK_GOOD) {
-        ot_pwrmgr_schedule_fsm(s);
-    }
 }
 
 void ot_pwrmgr_trigger_check(OtPwrMgrState *s)
@@ -645,11 +639,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                         "", TYPE_OT_SENSOR_EG, NULL);
                 if (sensor) {
                     ot_sensor_eg_trigger_recov_event(sensor, 0u);
-                    if (!s->in_low_power) {
-                        return;
-                    }
-                    active_wkup =
-                        s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
+                    return;
                 }
             }
             if (!active_wkup &&
