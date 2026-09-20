@@ -8,6 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "hw/opentitan/ot_adc_ctrl.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
@@ -142,6 +143,7 @@ struct OtAdcCtrlState {
     IbexIRQ wkup;
 
     uint32_t *regs;
+    QEMUTimer *fsm_timer;
     bool trigger_q;
 };
 
@@ -244,6 +246,9 @@ static void ot_adc_ctrl_update_chn_val(OtAdcCtrlState *s, uint32_t chn0_val,
 
 void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
 {
+    if (s->fsm_timer) {
+        timer_del(s->fsm_timer);
+    }
     if (!(s->regs[R_ADC_EN_CTL] & R_ADC_EN_CTL_ADC_ENABLE_MASK) ||
         (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
         return;
@@ -326,11 +331,19 @@ void ot_adc_ctrl_trigger_wakeup(OtAdcCtrlState *s)
     ot_adc_ctrl_update_irqs(s);
 }
 
+static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
+{
+    ot_adc_ctrl_trigger_wakeup(OT_ADC_CTRL(opaque));
+}
+
 static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
 {
     if (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK) {
         s->trigger_q = false;
         s->regs[R_ADC_FSM_STATE] = 0u;
+        if (s->fsm_timer) {
+            timer_del(s->fsm_timer);
+        }
         return;
     }
 
@@ -342,10 +355,16 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
 
     if (!adc_en) {
         s->regs[R_ADC_FSM_STATE] = 0u;
+        if (s->fsm_timer) {
+            timer_del(s->fsm_timer);
+        }
         return;
     }
 
     if (oneshot) {
+        if (s->fsm_timer) {
+            timer_del(s->fsm_timer);
+        }
         if (trigger_l2h) {
             ot_adc_ctrl_update_chn_val(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL,
                                        true);
@@ -357,7 +376,25 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
         }
     } else {
         s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
-        ot_adc_ctrl_trigger_wakeup(s);
+        uint64_t pwrup = (s->regs[R_ADC_PD_CTL] >> 4u) & 0xfu;
+        uint64_t wakeup = (s->regs[R_ADC_PD_CTL] >> 8u) & 0xffffffu;
+        bool lp_mode = (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) != 0u;
+        uint64_t lp_cnt = s->regs[R_ADC_LP_SAMPLE_CTL] & 0xffu;
+        if (lp_cnt == 0u) {
+            lp_cnt = 1u;
+        }
+        uint64_t np_cnt = s->regs[R_ADC_SAMPLE_CTL] & 0xffffu;
+        if (np_cnt == 0u) {
+            np_cnt = 1u;
+        }
+        uint64_t aon_cycles = (pwrup + 1ULL) + (np_cnt * 4ULL) + 1ULL;
+        if (lp_mode) {
+            aon_cycles += (lp_cnt * 4ULL) +
+                          ((lp_cnt - 1ULL) * (wakeup + pwrup + 2ULL));
+        }
+        timer_mod_ns(s->fsm_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                         aon_cycles * 5000ULL);
     }
 }
 
@@ -597,6 +634,9 @@ static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
         return;
     }
 
+    if (s->fsm_timer) {
+        timer_del(s->fsm_timer);
+    }
     memset(s->regs, 0, REGS_SIZE);
     s->trigger_q = false;
     s->regs[R_ADC_PD_CTL] = 0x64070u;
@@ -625,6 +665,8 @@ static void ot_adc_ctrl_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regs = g_new0(uint32_t, REGS_COUNT);
+    s->fsm_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_adc_ctrl_fsm_timer_cb, s);
     ibex_sysbus_init_irq(obj, &s->irq);
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
     ibex_qdev_init_irq(obj, &s->wkup, OT_ADC_CTRL_WKUP);
