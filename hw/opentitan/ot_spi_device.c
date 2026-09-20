@@ -437,6 +437,8 @@ typedef struct {
     bool watermark_crossed; /* Read watermark hit, used as flip-flop */
     bool new_cmd; /* New command has been pushed in current SPI transaction */
     bool read_buf_modified; /* Read buffer modified by SW since last SPI read */
+    bool has_pending_magic;
+    uint32_t pending_magic_addr;
 } SpiDeviceFlash;
 
 typedef struct {
@@ -2704,26 +2706,55 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
                       __func__, s->ot_id, (uint32_t)addr);
         return MEMTX_DECODE_ERROR;
     }
-    s->sram[addr >> 2u] = val32;
     /*
-     * Detect atomic commit of an OTTF SPI console frame
-     * (kSpiDeviceFrameMagicNumber = 0xa5a5beef in ottf_console_internal.h and
-     * sw/host/opentitanlib/src/console/spi.rs) to wake up the SPI host chardev
-     * poll timer and synchronize CSB edge polling when TX-ready GPIO mode
-     * writes the frame header at offset 0.
+     * Hold OTTF SPI console frame magic (kSpiDeviceFrameMagicNumber =
+     * 0xa5a5beef in ottf_console_internal.h and
+     * sw/host/opentitanlib/src/console/spi.rs) until all 3 words of the
+     * 12-byte header (magic at +0, frame_num at +4, data_len_bytes at +8,
+     * modulo the 2 KiB flash read buffer) have been written by the guest CPU.
+     * This prevents the SPI host console from reading a torn 12-byte header
+     * with the new magic_number and frame_num but a stale data_len_bytes from
+     * a previous wrap-around of the 2 KiB circular buffer.
      */
-    if (addr < SPI_SRAM_READ_SIZE * 2u && val32 == 0xa5a5beefu) {
-        s->flash.read_buf_modified = true;
-        if (addr == 0u && !s->last_read_addr_polled) {
-            s->csb_poll_enabled = true;
-            s->csb_sync = CSB_IDLE_HIGH_SEEN;
-            s->csb_poll_count = 0u;
+    const uint32_t read_buf_size = SPI_SRAM_READ_SIZE * 2u;
+    if (addr < read_buf_size) {
+        if (s->flash.has_pending_magic) {
+            uint32_t word1_addr =
+                (s->flash.pending_magic_addr + 4u) & (read_buf_size - 1u);
+            uint32_t word2_addr =
+                (s->flash.pending_magic_addr + 8u) & (read_buf_size - 1u);
+            if (addr == word1_addr && val32 != 0xa5a5beefu) {
+                s->sram[addr >> 2u] = val32;
+                return MEMTX_OK;
+            }
+            if (addr == word2_addr && val32 != 0xa5a5beefu) {
+                s->sram[addr >> 2u] = val32;
+                uint32_t magic_addr = s->flash.pending_magic_addr;
+                s->sram[magic_addr >> 2u] = 0xa5a5beefu;
+                s->flash.has_pending_magic = false;
+                s->flash.read_buf_modified = true;
+                if (magic_addr == 0u && !s->last_read_addr_polled) {
+                    s->csb_poll_enabled = true;
+                    s->csb_sync = CSB_IDLE_HIGH_SEEN;
+                    s->csb_poll_count = 0u;
+                }
+                if (timer_pending(s->flash.irq_timer)) {
+                    timer_del(s->flash.irq_timer);
+                    qemu_chr_fe_accept_input(&s->chr);
+                }
+                return MEMTX_OK;
+            }
+            s->sram[s->flash.pending_magic_addr >> 2u] = 0xa5a5beefu;
+            s->flash.has_pending_magic = false;
         }
-        if (timer_pending(s->flash.irq_timer)) {
-            timer_del(s->flash.irq_timer);
-            qemu_chr_fe_accept_input(&s->chr);
+        if (val32 == 0xa5a5beefu) {
+            s->sram[addr >> 2u] = 0u;
+            s->flash.pending_magic_addr = (uint32_t)addr;
+            s->flash.has_pending_magic = true;
+            return MEMTX_OK;
         }
     }
+    s->sram[addr >> 2u] = val32;
 
     return MEMTX_OK;
 }
@@ -3285,6 +3316,8 @@ static void ot_spi_device_reset_enter(Object *obj, ResetType type)
     ot_spi_device_release(s);
 
     memset(&f->cmd_params, 0u, sizeof(OtSpiCommandParams));
+    f->has_pending_magic = false;
+    f->pending_magic_addr = 0u;
 
     s->tpm_regs[R_TPM_CAP] = 0x660100u;
 
