@@ -109,7 +109,7 @@ REG32(MAIN_SM_STATE, 0x44u)
 
 #define R_LAST_REG (R_MAIN_SM_STATE)
 #define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
+#define REGS_SIZE  0x80u
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -738,18 +738,12 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
         length = 1u; /* always push the command */
     } else {
         command = ot_fifo32_peek(&c->cmd_reseed_fifo);
-        length = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-        if (ot_fifo32_num_used(&c->cmd_reseed_fifo) < length) {
-            s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_RESCMD_ERR_MASK |
-                                   R_ERR_CODE_FIFO_READ_ERR_MASK;
-            fatal_error = true;
-        }
-        uint32_t num = length;
-        const uint32_t *cmd;
-        cmd = ot_fifo32_peek_buf(&c->cmd_reseed_fifo, num, &length);
-        if (num != length) {
-            xtrace_ot_edn_error(c->appid, "incoherent reseed FIFO length");
-        }
+        uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
+        uint32_t used = ot_fifo32_num_used(&c->cmd_reseed_fifo);
+        length = MIN(used, clen_words);
+        uint32_t avail = used;
+        const uint32_t *cmd =
+            ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &avail);
         memcpy(c->buffer, cmd, length * sizeof(uint32_t));
     }
 
@@ -788,18 +782,12 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         length = 1u; /* always push the command */
     } else {
         command = ot_fifo32_peek(&c->cmd_gen_fifo);
-        length = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-        if (ot_fifo32_num_used(&c->cmd_gen_fifo) < length) {
-            s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_GENCMD_ERR_MASK |
-                                   R_ERR_CODE_FIFO_READ_ERR_MASK;
-            fatal_error = true;
-        }
-        uint32_t num = length;
+        uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
+        uint32_t used = ot_fifo32_num_used(&c->cmd_gen_fifo);
+        length = MIN(used, clen_words);
+        uint32_t avail = used;
         const uint32_t *cmd =
-            ot_fifo32_peek_buf(&c->cmd_gen_fifo, num, &length);
-        if (num != length) {
-            xtrace_ot_edn_error(c->appid, "incoherent generate FIFO length");
-        }
+            ot_fifo32_peek_buf(&c->cmd_gen_fifo, length, &avail);
         memcpy(c->buffer, cmd, length * sizeof(uint32_t));
         c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
         xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
@@ -1678,7 +1666,7 @@ static void ot_edn_reset_enter(Object *obj, ResetType type)
 
     qemu_bh_cancel(s->ep_bh);
 
-    memset(s->regs, 0, REGS_SIZE);
+    memset(s->regs, 0, REGS_COUNT * sizeof(uint32_t));
     s->regs[R_REGWEN] = 0x1u;
     s->regs[R_CTRL] = 0x9999u;
     s->regs[R_BOOT_INS_CMD] = 0x901u;
