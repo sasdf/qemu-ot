@@ -440,12 +440,14 @@ void ot_common_ignore_chr_status_lines(CharFrontend *chr)
 #endif
 }
 
+extern void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr);
+
 void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     hwaddr base = sbd->mmio[0].addr;
     dev->mem_reentrancy_guard.engaged_in_io = false;
-    ibex_stall_cpu_on_unclocked_mmio(current_cpu, base + offset);
+    riscv_cpu_stall_on_unclocked_mmio(current_cpu, base + offset);
 }
 
 void ot_common_raise_load_integrity_error(DeviceState *dev, hwaddr offset)

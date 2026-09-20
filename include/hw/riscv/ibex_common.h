@@ -633,7 +633,5 @@ const char *ibex_common_get_func_name_by_addr(void *fn);
  */
 Chardev *ibex_get_chardev_by_id(const char *chrid);
 
-void ibex_get_crash_dump(CPUState *cs, uint32_t dump[8]);
-void ibex_stall_cpu_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr);
 
 #endif /* HW_RISCV_IBEX_COMMON_H */

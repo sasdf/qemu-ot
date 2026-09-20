@@ -356,6 +356,8 @@ static int ot_rstmgr_alert_walker(DeviceState *dev, void *opaque)
     return 0;
 }
 
+extern void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8]);
+
 static void ot_rstmgr_reset_bus(void *opaque)
 {
     OtRstMgrState *s = opaque;
@@ -384,7 +386,7 @@ static void ot_rstmgr_reset_bus(void *opaque)
     }
 
     if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
-        ibex_get_crash_dump(s->cpu, s->cpu_info_dump);
+        riscv_cpu_get_crash_dump(s->cpu, s->cpu_info_dump);
     }
 
     if (s->regs[R_ALERT_INFO_CTRL] & R_ALERT_INFO_CTRL_EN_MASK) {
