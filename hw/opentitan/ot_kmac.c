@@ -1371,6 +1371,7 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
             val32 |= R_STATUS_SHA3_IDLE_MASK;
             break;
         case KMAC_ST_MSG_FEED:
+        case KMAC_ST_PROCESSING:
             val32 |= R_STATUS_SHA3_ABSORB_MASK;
             break;
         case KMAC_ST_ABSORBED:
@@ -1590,7 +1591,11 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         if (s->entropy_configured && s->entropy_mode == 2u &&
             !s->entropy_seeded) {
             s->sw_seed_cnt++;
-            if (s->sw_seed_cnt >= 5u) {
+            /*
+             * RTL (kmac_entropy.sv:357, prim_trivium.sv:72,104):
+             * BiviumStateWidth = 177, PartialSeedWidth = 32 -> NumStateParts = 6.
+             */
+            if (s->sw_seed_cnt >= 6u) {
                 s->entropy_seeded = true;
                 if (s->state == KMAC_ST_PROCESSING ||
                     s->state == KMAC_ST_SQUEEZING) {
