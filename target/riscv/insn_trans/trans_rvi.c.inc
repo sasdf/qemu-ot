@@ -1024,9 +1024,7 @@ static bool do_csrr_i128(DisasContext *ctx, int rd, int rc)
     gen_helper_csrr_i128(destl, tcg_env, csr);
     tcg_gen_ld_tl(desth, tcg_env, offsetof(CPURISCVState, retxh));
     gen_set_gpr128(ctx, rd, destl, desth);
-    /* The helper may raise ILLEGAL_INSN -- record binv for unwind. */
-    decode_save_opc(ctx, 0);
-    return true;
+    return do_csr_post(ctx);
 }
 
 static bool do_csrw_i128(DisasContext *ctx, int rc, TCGv srcl, TCGv srch)
