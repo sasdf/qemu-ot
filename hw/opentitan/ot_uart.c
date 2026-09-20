@@ -699,9 +699,6 @@ static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
         } else if (s->toggle_break) {
             /* emulate toggling break off in the oversampled VAL register */
             s->in_break = false;
-        } else {
-            s->regs[R_INTR_STATE] |= INTR_RX_BREAK_ERR_MASK;
-            ot_uart_update_irqs(s);
         }
     }
 }
@@ -723,16 +720,9 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
      */
     ot_uart_update_irqs(s);
 
-    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
-        if (!fifo8_is_empty(&s->rx_staging_fifo)) {
-            if (!timer_pending(s->rx_timer)) {
-                s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                                (int64_t)ot_uart_char_ns(s);
-                timer_mod(s->rx_timer, s->rx_next_ns);
-            }
-        } else {
-            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        }
+    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s) &&
+        fifo8_is_empty(&s->rx_staging_fifo)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
 
     return val;
@@ -814,7 +804,7 @@ static void ot_uart_xmit(OtUARTState *s)
         /* system loopback mode, just forward to RX FIFO */
         uint32_t count = fifo8_num_used(&s->tx_fifo);
         buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-        ot_uart_receive_bytes(s, NULL, buf, (int)size);
+        ot_uart_receive(s, buf, size);
         count -= size;
         /*
          * there may be more data to send if data wraps around the end of TX
@@ -822,33 +812,28 @@ static void ot_uart_xmit(OtUARTState *s)
          */
         if (count) {
             buf = fifo8_pop_bufptr(&s->tx_fifo, count, &size);
-            ot_uart_receive_bytes(s, NULL, buf, (int)size);
+            ot_uart_receive(s, buf, size);
         }
     } else {
         CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
-        /* instant drain the fifo when there's no back-end */
-        if (!qemu_chr_fe_backend_connected(tx_chr)) {
-            fifo8_reset(&s->tx_fifo);
-        } else {
-            while (!fifo8_is_empty(&s->tx_fifo)) {
-                /* get a continuous buffer from the FIFO */
-                buf = fifo8_peek_bufptr(&s->tx_fifo,
-                                        fifo8_num_used(&s->tx_fifo), &size);
-                /* send as much as possible */
-                ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
-                /* if some characters were sent, remove them from the FIFO */
-                if (ret > 0) {
-                    fifo8_drop(&s->tx_fifo, ret);
+        while (!fifo8_is_empty(&s->tx_fifo)) {
+            /* get a continuous buffer from the FIFO */
+            buf =
+                fifo8_peek_bufptr(&s->tx_fifo, fifo8_num_used(&s->tx_fifo), &size);
+            /* send as much as possible */
+            ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
+            /* if some characters were sent, remove them from the FIFO */
+            if (ret > 0) {
+                fifo8_drop(&s->tx_fifo, ret);
+            }
+            if (ret < (int)size) {
+                if (s->watch_tag == 0) {
+                    /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+                    s->watch_tag =
+                        qemu_chr_fe_add_watch(tx_chr, G_IO_OUT | G_IO_HUP,
+                                              ot_uart_watch_cb, s);
                 }
-                if (ret < (int)size) {
-                    if (s->watch_tag == 0) {
-                        /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
-                        s->watch_tag =
-                            qemu_chr_fe_add_watch(tx_chr, G_IO_OUT | G_IO_HUP,
-                                                  ot_uart_watch_cb, s);
-                    }
-                    break;
-                }
+                break;
             }
         }
     }
@@ -1342,13 +1327,14 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     ot_uart_reset_rx_fifo(s);
 
     /*
-     * do not reset `s->in_break` if `oversample_break` is set, as that tracks
-     * whether we are currently receiving a break condition over UART RX from
-     * some device talking to OpenTitan, which should survive resets.
+     * do not reset `s->in_break`, as that tracks whether we are currently
+     * receiving a break condition over UART RX from some device talking
+     * to OpenTitan, which should survive resets. The QEMU CharDev only
+     * supports transient break events and not the notion of holding the
+     * UART in break, so remembering breaks like this is required to
+     * support mocking of break conditions in the oversampled `VAL` reg.
      */
-    if (!s->oversample_break) {
-        s->in_break = false;
-    } else if (s->in_break) {
+    if (s->in_break) {
         /* ignore CTRL.RXBLVL as we have no notion of break "time" */
         s->regs[R_INTR_STATE] |= INTR_RX_BREAK_ERR_MASK;
     }
