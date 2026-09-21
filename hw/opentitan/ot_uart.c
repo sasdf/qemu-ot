@@ -194,6 +194,7 @@ struct OtUARTState {
     Fifo8 rx_staging_fifo;
     QEMUTimer *rx_pace_timer;
     QEMUTimer *rx_timeout_timer;
+    int64_t last_rx_ns;
     uint32_t rx_poll_count;
 };
 
@@ -617,6 +618,7 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
         return;
     }
 
+    s->last_rx_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     for (int i = 0; i < size; i++) {
         if (!fifo8_is_full(&s->rx_staging_fifo)) {
             fifo8_push(&s->rx_staging_fifo, buf[i]);
@@ -861,11 +863,13 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
 
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2u) {
+        int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        bool recent = s->last_rx_ns > 0 &&
+                      (now_ns - s->last_rx_ns) < 1500000000LL;
         s->rx_poll_count = 1u;
-        g_usleep(150u);
+        g_usleep(recent ? 200u : 100u);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        timer_mod(s->rx_pace_timer,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 150000LL);
+        timer_mod(s->rx_pace_timer, now_ns + (recent ? 150000LL : 2000000LL));
     } else {
         s->rx_poll_count = 0u;
     }
@@ -896,8 +900,11 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     if (reg == R_STATUS && ot_uart_is_rx_enabled(s) &&
         fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo)) {
         if (++s->rx_poll_count >= 4u && !timer_pending(s->rx_pace_timer)) {
+            int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+            bool recent = s->last_rx_ns > 0 &&
+                          (now_ns - s->last_rx_ns) < 1500000000LL;
             timer_mod(s->rx_pace_timer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 150000LL);
+                      now_ns + (recent ? 150000LL : 2000000LL));
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
@@ -1204,6 +1211,7 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
         timer_del(s->rx_timeout_timer);
     }
     s->rx_poll_count = 0;
+    s->last_rx_ns = 0;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 
