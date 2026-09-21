@@ -243,7 +243,8 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
 
     if (s->init_slot_pos >= s->wsize) {
         /* init has been completed */
-        if (!(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
+        bool escalated = (s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK) != 0;
+        if (!escalated) {
             s->regs[R_STATUS] |= R_STATUS_INIT_DONE_MASK;
         }
         /* enable new request for initialization */
@@ -258,7 +259,7 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
         memset(s->init_slot_bm, 0, s->init_slot_count * sizeof(uint64_t));
         s->scr_invalid = false;
 
-        if (!s->noswitch && !(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
+        if (!s->noswitch && !escalated) {
             /* switch memory to SRAM */
             trace_ot_sram_ctrl_initialization_complete(s->ot_id, "ctrl");
             ot_sram_ctrl_mem_switch_to_ram(s);

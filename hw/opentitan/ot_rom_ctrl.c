@@ -312,13 +312,6 @@ ot_rom_ctrl_unscramble_word(const OtRomCtrlState *s, unsigned addr, uint64_t in)
     return keystream ^ in;
 }
 
-static uint64_t
-ot_rom_ctrl_scramble_word(const OtRomCtrlState *s, unsigned addr, uint64_t in)
-{
-    uint64_t keystream = ot_rom_ctrl_get_keystream(s, addr);
-    return keystream ^ in;
-}
-
 static uint32_t ot_rom_ctrl_verify_ecc_39_32_u32(
     const OtRomCtrlState *s, uint64_t data_i, unsigned *err_o)
 {
@@ -463,7 +456,7 @@ static void ot_rom_ctrl_scramble(OtRomCtrlState *s, const uint32_t *src,
     for (unsigned log_addr = 0u; log_addr < scr_word_size; log_addr++) {
         uint64_t clrdata = src[log_addr];
         uint64_t eclrdata = ot_rom_ctrl_add_ecc_39_32_u64(clrdata);
-        uint64_t scrdata = ot_rom_ctrl_scramble_word(s, log_addr, eclrdata);
+        uint64_t scrdata = ot_rom_ctrl_unscramble_word(s, log_addr, eclrdata);
         dst[log_addr] = scrdata;
     }
 }

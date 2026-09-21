@@ -325,6 +325,13 @@ ot_vmapper_lookup_range(OtVMapperState *s, bool insn, uint32_t addr)
     return range;
 }
 
+static bool ot_vmapper_is_subpage(const OtRegionRange *r, vaddr addr_page)
+{
+    return (r->start > addr_page) ||
+           (r->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
+           (((r->start ^ r->dest) & ~TARGET_PAGE_MASK) != 0);
+}
+
 static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
                                    hwaddr *physical, int *ret_prot, vaddr addr,
                                    int access_type)
@@ -348,27 +355,18 @@ static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
     }
 
     vaddr addr_page = addr & TARGET_PAGE_MASK;
-    bool range_subpage =
-        (range->start > addr_page) ||
-        (range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
-        (((range->start ^ range->dest) & ~TARGET_PAGE_MASK) != 0);
+    bool range_subpage = ot_vmapper_is_subpage(range, addr_page);
 
     OtRegionRange *other_range =
         ot_vmapper_lookup_range(s, !insn, (uint32_t)addr);
     bool share_page = false;
-    if (!range_subpage && other_range && (addr <= other_range->end)) {
-        bool other_subpage =
-            (other_range->start > addr_page) ||
-            (other_range->end < (addr_page + TARGET_PAGE_SIZE - 1u)) ||
-            (((other_range->start ^ other_range->dest) & ~TARGET_PAGE_MASK) !=
-             0);
-        if (!other_subpage) {
-            uint32_t phys_page =
-                range->dest + ((uint32_t)addr_page - range->start);
-            uint32_t other_phys_page =
-                other_range->dest + ((uint32_t)addr_page - other_range->start);
-            share_page = (phys_page == other_phys_page);
-        }
+    if (!range_subpage && other_range && (addr <= other_range->end) &&
+        !ot_vmapper_is_subpage(other_range, addr_page)) {
+        uint32_t phys_page =
+            range->dest + ((uint32_t)addr_page - range->start);
+        uint32_t other_phys_page =
+            other_range->dest + ((uint32_t)addr_page - other_range->start);
+        share_page = (phys_page == other_phys_page);
     }
 
     env->tlb_subpage = range_subpage;
