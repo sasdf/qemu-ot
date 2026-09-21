@@ -250,6 +250,19 @@ static void icount_adjust_vm(void *opaque)
     icount_adjust();
 }
 
+void icount_advance_bias_ns(int64_t delta_ns)
+{
+    if (!use_icount || delta_ns <= 0) {
+        return;
+    }
+    seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                       &timers_state.vm_clock_lock);
+    qatomic_set_i64(&timers_state.qemu_icount_bias,
+                    timers_state.qemu_icount_bias + delta_ns);
+    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                         &timers_state.vm_clock_lock);
+}
+
 int64_t icount_round(int64_t count)
 {
     uint64_t freq = qatomic_read(&icount_freq_hz);
