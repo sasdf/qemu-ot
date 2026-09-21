@@ -439,9 +439,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(PmodI2CSensorState, PMOD_I2C_SENSOR)
 
 struct PmodI2CSensorState {
     I2CSlave parent_obj;
-    uint8_t regs[256];
-    uint8_t reg_ptr;
-    bool has_reg_ptr;
+    uint8_t regs[2048];
+    uint16_t reg_ptr;
+    uint8_t addr_bytes;
+    bool busy_nak;
 };
 
 static uint8_t ot_i2c_address_abyte(uint8_t address, bool read)
@@ -467,8 +468,23 @@ static void ot_i2c_update_irqs(OtI2CState *s)
 
 static void ot_i2c_irq_set_state(OtI2CState *s, OtI2CInterrupt irq, bool en)
 {
-    s->regs[R_INTR_STATE] = deposit32(s->regs[R_INTR_STATE], irq, 1, en);
+    unsigned long *addr = (unsigned long *)&s->regs[R_INTR_STATE];
+
+    if (irq > ARRAY_SIZE(s->irqs)) {
+        return;
+    }
+    if (test_bit(irq, addr) == en) {
+        return;
+    }
+
     trace_ot_i2c_irq(s->ot_id, IRQ_NAMES[irq], en);
+
+    if (en) {
+        set_bit(irq, addr);
+    } else {
+        clear_bit(irq, addr);
+    }
+
     ot_i2c_update_irqs(s);
 }
 
@@ -646,9 +662,7 @@ static uint8_t ot_i2c_host_read_rx_fifo(OtI2CState *s)
         return 0;
     }
 
-    uint8_t val = fifo8_pop(&s->host_rx_fifo);
-    ot_i2c_irq_set_state(s, RX_THRESHOLD, ot_i2c_rx_threshold_intr(s));
-    return val;
+    return fifo8_pop(&s->host_rx_fifo);
 }
 
 static void ot_i2c_host_send(OtI2CState *s)
@@ -682,10 +696,7 @@ static uint32_t ot_i2c_target_read_rx_fifo(OtI2CState *s)
         return 0;
     }
 
-    uint32_t val = ot_fifo32_pop(&s->target_rx_fifo);
-    ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
-    ot_i2c_check_clear_tx_stretch(s);
-    return val;
+    return ot_fifo32_pop(&s->target_rx_fifo);
 }
 
 static void ot_i2c_target_write_tx_fifo(OtI2CState *s, uint8_t val)
@@ -942,6 +953,10 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_ACQDATA:
         val32 = (uint32_t)ot_i2c_target_read_rx_fifo(s);
+        /* Deassert level interrupt state if FIFO is no longer above the
+         * threshold. */
+        ot_i2c_irq_set_state(s, ACQ_THRESHOLD, ot_i2c_acq_threshold_intr(s));
+        ot_i2c_check_clear_tx_stretch(s);
         break;
     case R_HOST_FIFO_STATUS:
         val32 = FIELD_DP32(val32, HOST_FIFO_STATUS, FMTLVL,
@@ -2222,7 +2237,8 @@ static void pmod_i2c_sensor_reset(DeviceState *dev)
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(dev);
     memset(s->regs, 0, sizeof(s->regs));
     s->reg_ptr = 0;
-    s->has_reg_ptr = false;
+    s->addr_bytes = 0;
+    s->busy_nak = false;
 
     switch (s->parent_obj.address) {
     case 0x10u: /* ADM1191 / PAC1934 Power Monitor */
@@ -2271,8 +2287,12 @@ static void pmod_i2c_sensor_reset(DeviceState *dev)
 static int pmod_i2c_sensor_event(I2CSlave *i2c, enum i2c_event event)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
+    if ((event == I2C_START_SEND || event == I2C_START_RECV) && s->busy_nak) {
+        s->busy_nak = false;
+        return 1;
+    }
     if (event == I2C_START_SEND || event == I2C_START_SEND_ASYNC) {
-        s->has_reg_ptr = false;
+        s->addr_bytes = 0;
     }
     return 0;
 }
@@ -2284,20 +2304,31 @@ static int pmod_i2c_sensor_send(I2CSlave *i2c, uint8_t data)
     if (addr == 0x59u) {
         return 0;
     }
-    if (!s->has_reg_ptr) {
-        s->reg_ptr = (addr == 0x40u) ? (uint8_t)(data << 1u) :
-                     (addr == 0x22u && data == 0xcfu) ? 0x00u : data;
-        s->has_reg_ptr = true;
+    uint8_t asize = (addr == 0x51u || addr == 0x52u) ? 2u : 1u;
+    if (s->addr_bytes < asize) {
+        uint8_t mapped = (addr == 0x40u) ? (uint8_t)(data << 1u) :
+                         (addr == 0x22u && data == 0xcfu) ? 0x00u : data;
+        s->reg_ptr = (s->addr_bytes == 0) ?
+                     mapped : ((s->reg_ptr << 8u) | mapped) & 0x7ffu;
+        s->addr_bytes++;
         return 0;
     }
-    s->regs[s->reg_ptr++] = data;
+    s->regs[s->reg_ptr] = data;
+    s->reg_ptr = (s->reg_ptr + 1u) & (asize == 2u ? 0x7ffu : 0xffu);
+    if (addr == 0x52u) {
+        s->busy_nak = true;
+    }
     return 0;
 }
 
 static uint8_t pmod_i2c_sensor_recv(I2CSlave *i2c)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
-    return s->regs[s->reg_ptr++];
+    uint8_t addr = s->parent_obj.address;
+    uint8_t val = s->regs[s->reg_ptr];
+    s->reg_ptr = (s->reg_ptr + 1u) &
+                 ((addr == 0x51u || addr == 0x52u) ? 0x7ffu : 0xffu);
+    return val;
 }
 
 static void pmod_i2c_sensor_class_init(ObjectClass *klass, const void *data)

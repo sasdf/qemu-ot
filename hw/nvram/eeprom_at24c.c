@@ -56,9 +56,6 @@ struct EEPROMState {
 
     const uint8_t *init_rom;
     uint32_t init_rom_size;
-
-    uint8_t write_naks;
-    uint8_t pending_naks;
 };
 
 static
@@ -68,17 +65,10 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
 
     switch (event) {
     case I2C_START_SEND:
-    case I2C_START_RECV:
-        if (ee->pending_naks > 0) {
-            ee->pending_naks--;
-            return 1;
-        }
-        if (event == I2C_START_SEND) {
-            ee->haveaddr = 0;
-        }
-        break;
     case I2C_FINISH:
         ee->haveaddr = 0;
+        /* fallthrough */
+    case I2C_START_RECV:
         DPRINTK("clear\n");
         if (ee->blk && ee->changed) {
             int ret = blk_pwrite(ee->blk, 0, ee->rsize, ee->mem, 0);
@@ -86,9 +76,6 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
                 error_report("%s: failed to write backing file", __func__);
             }
             DPRINTK("Wrote to backing file\n");
-        }
-        if (ee->changed) {
-            ee->pending_naks = ee->write_naks;
         }
         ee->changed = false;
         break;
@@ -238,7 +225,6 @@ void at24c_eeprom_reset(DeviceState *state)
     ee->changed = false;
     ee->cur = 0;
     ee->haveaddr = 0;
-    ee->pending_naks = 0;
 }
 
 static const Property at24c_eeprom_props[] = {
@@ -246,7 +232,6 @@ static const Property at24c_eeprom_props[] = {
     DEFINE_PROP_UINT8("address-size", EEPROMState, asize, 0),
     DEFINE_PROP_BOOL("writable", EEPROMState, writable, true),
     DEFINE_PROP_DRIVE("drive", EEPROMState, blk),
-    DEFINE_PROP_UINT8("write-naks", EEPROMState, write_naks, 0),
 };
 
 static

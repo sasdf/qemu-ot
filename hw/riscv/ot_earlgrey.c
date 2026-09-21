@@ -2185,28 +2185,9 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
         BusState *i2cbus = qdev_get_child_bus(i2cdev, busname);
         g_assert(i2cbus);
 
-        /* PMOD FRAM MB85RC256V (32KB at 0x51) */
-        DeviceState *fram = qdev_new("at24c-eeprom");
-        qdev_prop_set_uint8(fram, "address", 0x51);
-        qdev_prop_set_uint32(fram, "rom-size", 32768);
-        char *fram_name = g_strdup_printf("pmod-fram%u", i2c_idx);
-        object_property_add_child(OBJECT(board), fram_name, OBJECT(fram));
-        qdev_realize_and_unref(fram, i2cbus, &error_fatal);
-        g_free(fram_name);
-
-        /* PMOD EEPROM AT24C256/512 (64KB at 0x52, 2 write-cycle busy NACKs) */
-        DeviceState *eeprom = qdev_new("at24c-eeprom");
-        qdev_prop_set_uint8(eeprom, "address", 0x52);
-        qdev_prop_set_uint32(eeprom, "rom-size", 65536);
-        qdev_prop_set_uint8(eeprom, "write-naks", 2);
-        char *eeprom_name = g_strdup_printf("pmod-eeprom%u", i2c_idx);
-        object_property_add_child(OBJECT(board), eeprom_name, OBJECT(eeprom));
-        qdev_realize_and_unref(eeprom, i2cbus, &error_fatal);
-        g_free(eeprom_name);
-
-        /* PMOD I2C Sensor / Stretch / FRAM Device ID targets */
+        /* PMOD I2C Sensor / Stretch / FRAM / EEPROM targets */
         static const uint8_t pmod_sensor_addrs[] = {
-            0x10u, 0x1du, 0x22u, 0x29u, 0x30u, 0x40u, 0x59u, 0x7cu
+            0x10u, 0x1du, 0x22u, 0x29u, 0x30u, 0x40u, 0x51u, 0x52u, 0x59u, 0x7cu
         };
         for (size_t s_idx = 0; s_idx < ARRAY_SIZE(pmod_sensor_addrs); s_idx++) {
             DeviceState *sensor = qdev_new("pmod-i2c-sensor");
