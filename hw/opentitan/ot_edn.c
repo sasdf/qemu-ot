@@ -109,7 +109,7 @@ REG32(MAIN_SM_STATE, 0x44u)
 
 #define R_LAST_REG (R_MAIN_SM_STATE)
 #define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  0x80u
+#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -1587,9 +1587,8 @@ static bool ot_edn_regs_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
     uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    return reg < REGS_COUNT && (!is_write || !(EDN_PERMIT[reg] & ~mask));
+    return !is_write || !(EDN_PERMIT[R32_OFF(addr)] & ~mask);
 }
 
 static const Property ot_edn_properties[] = {
@@ -1602,15 +1601,9 @@ static const MemoryRegionOps ot_edn_regs_ops = {
     .read = &ot_edn_regs_read,
     .write = &ot_edn_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 4u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-        .accepts = &ot_edn_regs_accepts,
-    },
+    .impl.min_access_size = 4u,
+    .impl.max_access_size = 4u,
+    .valid.accepts = &ot_edn_regs_accepts,
 };
 
 static void ot_edn_reset_enter(Object *obj, ResetType type)
@@ -1627,7 +1620,7 @@ static void ot_edn_reset_enter(Object *obj, ResetType type)
 
     qemu_bh_cancel(s->ep_bh);
 
-    memset(s->regs, 0, REGS_COUNT * sizeof(uint32_t));
+    memset(s->regs, 0, REGS_SIZE);
     s->regs[R_REGWEN] = 0x1u;
     s->regs[R_CTRL] = 0x9999u;
     s->regs[R_BOOT_INS_CMD] = 0x901u;
