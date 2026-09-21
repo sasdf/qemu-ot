@@ -904,9 +904,9 @@ static int64_t ot_uart_rx_pace_step_ns(const OtUARTState *s, int64_t now_ns,
         return 150000;
     }
     if (sleep_us) {
-        *sleep_us = 120u;
+        *sleep_us = 100u;
     }
-    return 1000000;
+    return 2000000;
 }
 
 static void ot_uart_rx_pace_timer_cb(void *opaque)
