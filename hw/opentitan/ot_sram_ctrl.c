@@ -279,21 +279,15 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
     return false;
 }
 
-static inline uint32_t ot_sram_ctrl_scr_mask(uint32_t key, unsigned word_idx)
-{
-    return key ? (key ^ (word_idx * 0x9e3779b9u)) : 0u;
-}
-
 static void ot_sram_ctrl_apply_scr_key(OtSramCtrlState *s, uint32_t new_key)
 {
-    if (s->scr_key == new_key || s->noinit) {
+    uint32_t mask = s->scr_key ^ new_key;
+    if (!mask || s->noinit) {
         return;
     }
     uint32_t *mem = memory_region_get_ram_ptr(&s->mem->sram);
     for (unsigned ix = 0; ix < s->wsize; ix++) {
-        uint32_t old_mask = ot_sram_ctrl_scr_mask(s->scr_key, ix);
-        uint32_t new_mask = ot_sram_ctrl_scr_mask(new_key, ix);
-        mem[ix] ^= old_mask ^ new_mask;
+        mem[ix] ^= mask;
     }
     memory_region_set_dirty(&s->mem->sram, 0, s->size);
     s->scr_key = new_key;
@@ -672,17 +666,12 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
     val32 >>= addr_offset << 3u;
     *val64 = (uint64_t)val32;
 
-    if (s->scr_invalid && s->init_sram_bm) {
-        unsigned slot = ot_sram_ctrl_get_u64_slot(cell);
-        unsigned offset = ot_sram_ctrl_get_u64_offset(cell);
-        if (s->init_sram_bm[slot] & (1ull << offset)) {
-            if ((ot_sram_ctrl_scr_mask(s->scr_key, cell) & 0x7fu) != 0u) {
-                SysBusDevice *sbd = SYS_BUS_DEVICE(s);
-                hwaddr sram_off =
-                    (sbd->mmio[1].addr - sbd->mmio[0].addr) + addr;
-                ot_common_raise_load_integrity_error(DEVICE(s), sram_off);
-            }
-        }
+    if (s->scr_invalid && s->init_sram_bm &&
+        (s->init_sram_bm[ot_sram_ctrl_get_u64_slot(cell)] &
+         (1ull << ot_sram_ctrl_get_u64_offset(cell)))) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(s);
+        ot_common_raise_load_integrity_error(
+            DEVICE(s), (sbd->mmio[1].addr - sbd->mmio[0].addr) + addr);
     }
 
     trace_ot_sram_ctrl_mem_io_reado(s->ot_id, (uint32_t)addr, size, val32, pc);
@@ -789,26 +778,22 @@ static const Property ot_sram_ctrl_properties[] = {
     DEFINE_PROP_BOOL("noswitch", OtSramCtrlState, noswitch, false),
 };
 
-static MemTxResult ot_sram_ctrl_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static bool ot_sram_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
+    (void)size;
     (void)attrs;
-    /* SRAM_CTRL_REGS_PERMIT[0..8] = 4'b0001 (sram_ctrl_reg_pkg.sv:152-162) */
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((0x1u & ~byte_mask) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_sram_ctrl_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
+    return !is_write || (addr & 3u) == 0u;
 }
 
 static const MemoryRegionOps ot_sram_ctrl_regs_ops = {
     .read = &ot_sram_ctrl_regs_read,
-    .write_with_attrs = &ot_sram_ctrl_regs_write_with_attrs,
+    .write = &ot_sram_ctrl_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_sram_ctrl_regs_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
