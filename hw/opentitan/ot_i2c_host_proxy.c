@@ -234,8 +234,8 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
         ot_i2c_host_proxy_parse_error(s);
         break;
     case CMD_I2C_WRITE_PAYLOAD:
-        ot_i2c_host_proxy_do_write(s, byte);
         s->parser_state = CMD_I2C_WRITE;
+        ot_i2c_host_proxy_do_write(s, byte);
         break;
     case CMD_I2C_ERR:
         break;
@@ -248,18 +248,25 @@ static void ot_i2c_host_proxy_timer(void *opaque)
 {
     OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
     if (s->pending_op != PROXY_PENDING_NONE) {
-        if (!ot_i2c_bus_target_is_stretching(s->bus)) {
-            if (s->pending_op == PROXY_PENDING_READ_BYTE) {
-                ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
-            } else if (ot_i2c_bus_target_get_last_ack(s->bus) != 0) {
+        if (ot_i2c_bus_target_is_stretching(s->bus)) {
+            ot_i2c_host_proxy_stall(s);
+            return;
+        }
+        if (s->pending_op == PROXY_PENDING_WRITE_ACK) {
+            s->pending_op = PROXY_PENDING_NONE;
+            if (ot_i2c_bus_target_get_last_ack(s->bus) != 0) {
+                i2c_end_transfer(s->bus);
                 ot_i2c_host_proxy_put_nack(s);
+                s->parser_state = CMD_I2C_INIT;
             } else {
                 ot_i2c_host_proxy_put_ack(s);
             }
+            ot_i2c_host_proxy_stall(s);
+        } else if (s->pending_op == PROXY_PENDING_READ_BYTE) {
             s->pending_op = PROXY_PENDING_NONE;
+            ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
+            ot_i2c_host_proxy_stall(s);
         }
-        ot_i2c_host_proxy_stall(s);
-        return;
     }
     qemu_chr_fe_accept_input(&s->chr);
 }
