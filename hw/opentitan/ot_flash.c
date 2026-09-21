@@ -1417,7 +1417,8 @@ static bool ot_flash_default_region_cfg_op_enabled(const OtFlashState *s)
     return en_field == OT_MULTIBITBOOL4_TRUE;
 }
 
-static bool ot_flash_data_ecc_enabled(const OtFlashState *s, unsigned address)
+static bool ot_flash_data_attr_enabled(const OtFlashState *s, unsigned address,
+                                       bool scramble)
 {
     unsigned page = address / BYTES_PER_PAGE;
     for (unsigned region = 0u; region < NUM_REGIONS; region++) {
@@ -1435,39 +1436,28 @@ static bool ot_flash_data_ecc_enabled(const OtFlashState *s, unsigned address)
             page >= (region_base_page + region_size)) {
             continue;
         }
-        return SHARED_FIELD_EX32(s->regs[r_region_cfg],
-                                 MP_REGION_CFG_ECC_EN) ==
-               OT_MULTIBITBOOL4_TRUE;
+        unsigned en = scramble ? SHARED_FIELD_EX32(s->regs[r_region_cfg],
+                                                   MP_REGION_CFG_SCRAMBLE_EN) :
+                                 SHARED_FIELD_EX32(s->regs[r_region_cfg],
+                                                   MP_REGION_CFG_ECC_EN);
+        return en == OT_MULTIBITBOOL4_TRUE;
     }
-    return FIELD_EX32(s->regs[R_DEFAULT_REGION], DEFAULT_REGION, ECC_EN) ==
-           OT_MULTIBITBOOL4_TRUE;
+    unsigned def_en = scramble ? FIELD_EX32(s->regs[R_DEFAULT_REGION],
+                                            DEFAULT_REGION, SCRAMBLE_EN) :
+                                 FIELD_EX32(s->regs[R_DEFAULT_REGION],
+                                            DEFAULT_REGION, ECC_EN);
+    return def_en == OT_MULTIBITBOOL4_TRUE;
+}
+
+static bool ot_flash_data_ecc_enabled(const OtFlashState *s, unsigned address)
+{
+    return ot_flash_data_attr_enabled(s, address, false);
 }
 
 static bool
 ot_flash_data_scramble_enabled(const OtFlashState *s, unsigned address)
 {
-    unsigned page = address / BYTES_PER_PAGE;
-    for (unsigned region = 0u; region < NUM_REGIONS; region++) {
-        unsigned r_region_cfg = R_MP_REGION_CFG_0 + region;
-        if (SHARED_FIELD_EX32(s->regs[r_region_cfg], MP_REGION_CFG_EN) !=
-            OT_MULTIBITBOOL4_TRUE) {
-            continue;
-        }
-        unsigned r_region = R_MP_REGION_0 + region;
-        unsigned region_base_page =
-            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_BASE);
-        unsigned region_size =
-            SHARED_FIELD_EX32(s->regs[r_region], MP_REGION_SIZE);
-        if (page < region_base_page ||
-            page >= (region_base_page + region_size)) {
-            continue;
-        }
-        return SHARED_FIELD_EX32(s->regs[r_region_cfg],
-                                 MP_REGION_CFG_SCRAMBLE_EN) ==
-               OT_MULTIBITBOOL4_TRUE;
-    }
-    return FIELD_EX32(s->regs[R_DEFAULT_REGION], DEFAULT_REGION, SCRAMBLE_EN) ==
-           OT_MULTIBITBOOL4_TRUE;
+    return ot_flash_data_attr_enabled(s, address, true);
 }
 
 static bool ot_flash_is_ecc_corrupted(const OtFlashState *s, hwaddr address)
