@@ -117,12 +117,12 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define MEM_OFF(_r_) ((_r_) - R_WHERETO)
 
-#define PULP_RV_DM_DMACT_BASE         (A_HALTED)
-#define PULP_RV_DM_DMACT_SIZE         (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
-#define PULP_RV_DM_PROG_BASE          (A_WHERETO)
-#define PULP_RV_DM_PROG_SIZE          0x100u
-#define PULP_RV_DM_DMFLAG_BASE        (A_FLAGS)
-#define PULP_RV_DM_DMFLAG_SIZE        (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
+#define PULP_RV_DM_DMACT_BASE  (A_HALTED)
+#define PULP_RV_DM_DMACT_SIZE  (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
+#define PULP_RV_DM_PROG_BASE   (A_WHERETO)
+#define PULP_RV_DM_PROG_SIZE   0x100u
+#define PULP_RV_DM_DMFLAG_BASE (A_FLAGS)
+#define PULP_RV_DM_DMFLAG_SIZE (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
 #define PULP_RV_DM_DMFLAG_REGION_SIZE 0x400u
 
 /*
@@ -139,7 +139,7 @@ struct PulpRVDMState {
     MemoryRegion dmact; /* MMIO */
     MemoryRegion prog; /* ROM device */
     MemoryRegion dmflag; /* MMIO */
-    MemoryRegion rom; /* ROM device */
+    MemoryRegion rom; /* ROM */
 
     qemu_irq *ack_out;
     IbexIRQ alert;

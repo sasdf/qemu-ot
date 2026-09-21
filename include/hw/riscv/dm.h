@@ -33,7 +33,7 @@
 #define TYPE_RISCV_DM "riscv-dm"
 OBJECT_DECLARE_TYPE(RISCVDMState, RISCVDMClass, RISCV_DM)
 
-#define RISCV_DM_ACK_LINES     TYPE_RISCV_DM ".ack"
+#define RISCV_DM_ACK_LINES TYPE_RISCV_DM ".ack"
 #define RISCV_DM_NDMRESET_LINE TYPE_RISCV_DM ".ndmreset"
 
 /*
