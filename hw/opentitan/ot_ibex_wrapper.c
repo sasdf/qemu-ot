@@ -49,10 +49,12 @@
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "chardev/char-fe.h"
+#include "exec/icount.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_edn.h"
 #include "hw/opentitan/ot_ibex_wrapper.h"
+#include "hw/riscv/ibex_clock_src.h"
 #include "hw/opentitan/ot_vmapper.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
@@ -235,7 +237,11 @@ struct OtIbexWrapperState {
     bool esc_rx;
     uint32_t nmi_in;
 
+    unsigned pclk;
+    const char *clock_src_name;
     char *ot_id;
+    char *clock_name;
+    DeviceState *clock_src;
     char *lc_ignore_ids;
     OtEDNState *edn;
     OtVMapperState *vmapper;
@@ -1511,6 +1517,9 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
 /* all properties are optional */
 static const Property ot_ibex_wrapper_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtIbexWrapperState, ot_id),
+    DEFINE_PROP_STRING("clock-name", OtIbexWrapperState, clock_name),
+    DEFINE_PROP_LINK("clock-src", OtIbexWrapperState, clock_src, TYPE_DEVICE,
+                     DeviceState *),
     DEFINE_PROP_LINK("edn", OtIbexWrapperState, edn, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_LINK("vmapper", OtIbexWrapperState, vmapper, TYPE_OT_VMAPPER,
                      OtVMapperState *),
@@ -1524,6 +1533,18 @@ static const Property ot_ibex_wrapper_properties[] = {
     DEFINE_PROP_STRING("lc-ignore-ids", OtIbexWrapperState, lc_ignore_ids),
     DEFINE_PROP_CHR("logdev", OtIbexWrapperState, chr),
 };
+
+#define OT_IBEX_WRAPPER_CLOCK_INPUT "clock-in"
+
+static void ot_ibex_wrapper_clock_input(void *opaque, int irq, int level)
+{
+    OtIbexWrapperState *s = opaque;
+
+    g_assert(irq == 0);
+
+    s->pclk = (unsigned)level;
+    icount_set_freq_hz(s->pclk);
+}
 
 static const MemoryRegionOps ot_ibex_wrapper_regs_ops = {
     .read = &ot_ibex_wrapper_regs_read,
@@ -1543,6 +1564,17 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
 
     if (c->parent_phases.enter) {
         c->parent_phases.enter(obj, type);
+    }
+
+    if (!s->clock_src_name && s->clock_src && s->clock_name) {
+        IbexClockSrcIfClass *ic = IBEX_CLOCK_SRC_IF_GET_CLASS(s->clock_src);
+        IbexClockSrcIf *ii = IBEX_CLOCK_SRC_IF(s->clock_src);
+
+        s->clock_src_name =
+            ic->get_clock_source(ii, s->clock_name, DEVICE(s), &error_fatal);
+        qemu_irq in_irq =
+            qdev_get_gpio_in_named(DEVICE(s), OT_IBEX_WRAPPER_CLOCK_INPUT, 0);
+        qdev_connect_gpio_out_named(s->clock_src, s->clock_src_name, 0, in_irq);
     }
 
     if (s->lc_ignore_ids) {
@@ -1669,6 +1701,8 @@ static void ot_ibex_wrapper_init(Object *obj)
         ibex_qdev_init_irq(obj, &s->alerts[ix], OT_DEVICE_ALERT);
     }
 
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_clock_input,
+                            OT_IBEX_WRAPPER_CLOCK_INPUT, 1);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_cpu_enable_recv,
                             OT_IBEX_WRAPPER_CPU_EN, OT_IBEX_CPU_EN_COUNT);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_ibex_wrapper_escalate_rx,

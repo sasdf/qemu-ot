@@ -1531,10 +1531,12 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_ALERT(3, 64)
         ),
         .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("clock-src", CLKMGR),
             OT_EG_SOC_DEVLINK("edn", EDN0),
             OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP("clock-name", "infra.main"),
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
             IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS)
         ),
