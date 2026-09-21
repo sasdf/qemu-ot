@@ -308,8 +308,8 @@ static const MemoryRegionOps ot_otp_ot_be_ops = {
     .read = &ot_otp_ot_be_read,
     .write = &ot_otp_ot_be_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 4u,
-    .impl.max_access_size = 4u,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
     .valid.accepts = &ot_otp_ot_be_accepts,
 };
 

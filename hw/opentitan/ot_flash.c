@@ -3648,8 +3648,6 @@ static const MemoryRegionOps ot_flash_regs_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_flash_regs_accepts,
 };
 
@@ -3659,8 +3657,6 @@ static const MemoryRegionOps ot_flash_csrs_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_flash_csrs_accepts,
 };
 
