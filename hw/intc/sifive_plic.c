@@ -196,7 +196,6 @@ static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
 static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
 {
     SiFivePLICState *plic = opaque;
-    addr &= ~3ULL;
 
     if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
         uint32_t irq = (addr - plic->priority_base) >> 2;

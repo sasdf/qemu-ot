@@ -1439,7 +1439,7 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_kmac_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1694,25 +1694,20 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
 
         switch (share) {
         case 0:
-        case 1: {
-            hwaddr word_offset = offset & ~3ULL;
-            if (word_offset + 4u <= KECCAK_STATE_BYTES) {
-                uint32_t word32 = ldl_le_p(&s->keccak_state[word_offset]);
+        case 1:
+            if (offset + 4u <= KECCAK_STATE_BYTES) {
+                uint32_t word32 = ldl_le_p(&s->keccak_state[offset]);
                 uint32_t mask =
-                    ot_kmac_state_mask_word(s, (unsigned)(word_offset >> 2u));
+                    ot_kmac_state_mask_word(s, (unsigned)(offset >> 2u));
                 uint32_t share_word = (share == 0) ? (word32 ^ mask) : mask;
                 if (byteswap) {
                     share_word = bswap32(share_word);
                 }
-                unsigned shift = (unsigned)((offset & 3ULL) * 8u);
-                uint32_t sz_mask =
-                    (size >= 4u) ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-                val32 = (share_word >> shift) & sz_mask;
+                val32 = share_word;
             } else {
                 val32 = 0;
             }
             break;
-        }
         default:
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n",
                           __func__, s->ot_id, (uint32_t)addr);
@@ -1727,34 +1722,24 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)val32;
 }
 
-static MemTxResult ot_kmac_state_write(void *opaque, hwaddr addr,
-                                       uint64_t value, unsigned size,
-                                       MemTxAttrs attrs)
+static bool ot_kmac_state_accepts(void *opaque, hwaddr addr, unsigned size,
+                                  bool is_write, MemTxAttrs attrs)
 {
-    OtKMACState *s = OT_KMAC(opaque);
+    (void)opaque;
     (void)addr;
-    (void)value;
     (void)size;
     (void)attrs;
-    /* kmac_staterd.sv:56 instantiates u_tlul_adapter with .ErrOnWrite(1) */
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: STATE is read only\n", __func__,
-                  s->ot_id);
-    return MEMTX_ERROR;
+    return !is_write;
 }
 
-static MemTxResult ot_kmac_msgfifo_read(void *opaque, hwaddr addr,
-                                        uint64_t *data, unsigned size,
-                                        MemTxAttrs attrs)
+static bool ot_kmac_msgfifo_accepts(void *opaque, hwaddr addr, unsigned size,
+                                    bool is_write, MemTxAttrs attrs)
 {
-    OtKMACState *s = OT_KMAC(opaque);
+    (void)opaque;
     (void)addr;
     (void)size;
     (void)attrs;
-    /* kmac.sv:999 instantiates u_tlul_adapter_msgfifo with .ErrOnRead(1) */
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: MSG_FIFO is write only\n", __func__,
-                  s->ot_id);
-    *data = 0;
-    return MEMTX_ERROR;
+    return is_write;
 }
 
 static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1978,31 +1963,37 @@ static const MemoryRegionOps ot_kmac_regs_ops = {
     .write = &ot_kmac_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
     .valid = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
         .accepts = &ot_kmac_regs_accepts,
     },
 };
 
 static const MemoryRegionOps ot_kmac_state_ops = {
     .read = &ot_kmac_state_read,
-    .write_with_attrs = &ot_kmac_state_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl = {
+        .min_access_size = 4u,
+        .max_access_size = 4u,
+    },
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_kmac_state_accepts,
     },
 };
 
 static const MemoryRegionOps ot_kmac_msgfifo_ops = {
-    .read_with_attrs = &ot_kmac_msgfifo_read,
     .write = &ot_kmac_msgfifo_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_kmac_msgfifo_accepts,
     },
 };
 

@@ -771,12 +771,9 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
-    hwaddr word_addr = addr & ~3ULL;
     bool valid = true;
-    uint32_t value =
-        ot_otbn_proxy_read_memory(s->proxy, doi, word_addr, &valid);
-    trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)word_addr,
-                           value);
+    uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr, &valid);
+    trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value);
     if (ot_otbn_is_locked(s)) {
         s->last_cmd = OT_OTBN_CMD_NONE;
         timer_del(s->proxy_defer);
@@ -794,10 +791,9 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
          * wdata_int = 0 when we_o = 0, valid idle host reads advance
          * u_mem_load_crc32 with wr_data = 0.
          */
-        ot_otbn_update_checksum(s, doi, word_addr, 0u);
+        ot_otbn_update_checksum(s, doi, addr, 0u);
     } else {
-        hwaddr offset =
-            (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + word_addr;
+        hwaddr offset = (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
     }
     return value;
@@ -836,30 +832,32 @@ static bool ot_otbn_mem_accepts(void *opaque, hwaddr addr, unsigned size,
     return !is_write || (size == 4u && (addr & 3u) == 0u);
 }
 
-static uint64_t ot_otbn_imem_read(void *opaque, hwaddr addr, unsigned size)
+static inline uint64_t
+ot_otbn_imem_read(void *opaque, hwaddr addr, unsigned size)
 {
     (void)size;
 
     return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, true, addr);
 }
 
-static void ot_otbn_imem_write(void *opaque, hwaddr addr, uint64_t val64,
-                               unsigned size)
+static inline void ot_otbn_imem_write(void *opaque, hwaddr addr, uint64_t val64,
+                                      unsigned size)
 {
     (void)size;
 
     ot_otbn_mem_write((OtOTBNState *)opaque, true, addr, (uint32_t)val64);
 }
 
-static uint64_t ot_otbn_dmem_read(void *opaque, hwaddr addr, unsigned size)
+static inline uint64_t
+ot_otbn_dmem_read(void *opaque, hwaddr addr, unsigned size)
 {
     (void)size;
 
     return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, false, addr);
 }
 
-static void ot_otbn_dmem_write(void *opaque, hwaddr addr, uint64_t val64,
-                               unsigned size)
+static inline void ot_otbn_dmem_write(void *opaque, hwaddr addr, uint64_t val64,
+                                      unsigned size)
 {
     (void)size;
 
