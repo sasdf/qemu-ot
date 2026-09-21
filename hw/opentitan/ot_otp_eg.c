@@ -517,19 +517,19 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
     hwaddr reg = R32_OFF(addr);
     uint8_t permit;
     switch (reg) {
-    case R_DIRECT_ACCESS_ADDRESS:
-        permit = 0x3u;
-        break;
-    case R_STATUS:
-        permit = 0x7u;
-        break;
+    /*
+     * OTP_CTRL_CORE_PERMIT (otp_ctrl_core_reg_pkg.sv):
+     * - DIRECT_ACCESS_ADDRESS: 4'b0011 (0x3)
+     * - STATUS: 4'b0111 (0x7)
+     * - 32-bit WDATA/RDATA/PERIOD/DIGEST CSRs: 4'b1111 (0xf)
+     */
     case R_DIRECT_ACCESS_WDATA_0 ... R_DIRECT_ACCESS_RDATA_1:
     case R_CHECK_TIMEOUT ... R_CONSISTENCY_CHECK_PERIOD:
     case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
         permit = 0xfu;
         break;
     default:
-        permit = (reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u;
+        permit = (reg == R_DIRECT_ACCESS_ADDRESS) ? 0x3u : ((reg == R_STATUS) ? 0x7u : ((reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u));
         break;
     }
     uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
