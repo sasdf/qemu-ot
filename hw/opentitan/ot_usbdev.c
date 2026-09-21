@@ -3013,14 +3013,9 @@ static int ot_usbdev_chr_usb_can_receive(void *opaque)
     }
 
     if (s->usb_server.recv_state == OT_USBDEV_SERVER_RECV_WAIT_HEADER &&
-        s->usb_server.recv_rem == sizeof(OtUsbdevServerPktHdr)) {
-        int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        if (now < s->usb_pace_until_ns) {
-            if (!timer_pending(&s->usb_pace_timer)) {
-                timer_mod(&s->usb_pace_timer, s->usb_pace_until_ns);
-            }
-            return 0;
-        }
+        s->usb_server.recv_rem == sizeof(OtUsbdevServerPktHdr) &&
+        qemu_clock_get_ns(OT_VIRTUAL_CLOCK) < s->usb_pace_until_ns) {
+        return 0;
     }
 
     /* Return remaining size in the buffer. */
