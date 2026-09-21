@@ -839,8 +839,6 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     }
 
-    val32 >>= (addr & 0x3u) * 8u;
-
     uint32_t pc = ibex_get_current_pc();
     trace_ot_hmac_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
@@ -1297,7 +1295,7 @@ static const MemoryRegionOps ot_hmac_regs_ops = {
         .accepts = &ot_hmac_regs_accepts,
     },
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
 };
