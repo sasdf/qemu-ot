@@ -951,44 +951,50 @@ static void ot_alert_clock_input(void *opaque, int irq, int level)
     /* TODO: reinitialize timers on PCLK change */
 }
 
-static MemTxResult ot_alert_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                                 uint64_t *val64, unsigned size,
-                                                 MemTxAttrs attrs)
+static bool ot_alert_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                  bool is_write, MemTxAttrs attrs)
 {
     OtAlertState *s = opaque;
     (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= s->reg_count) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return (s->access_table[reg].permit & ~reg_be) == 0u;
+}
+
+static uint64_t ot_alert_regs_read(void *opaque, hwaddr addr, unsigned size)
+{
+    OtAlertState *s = opaque;
+    (void)size;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
 
-    if (reg >= s->reg_count) {
+    if (reg < s->reg_count) {
+        val32 = (*s->access_table[reg].read)(s, reg);
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid register 0x%03x\n",
                       __func__, (uint32_t)addr);
-        *val64 = 0u;
-        return MEMTX_ERROR;
+        val32 = 0u;
     }
-
-    val32 = (*s->access_table[reg].read)(s, reg);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_alert_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(s, reg),
                                val32, pc);
 
-    unsigned byte_off = (unsigned)(addr & 3u);
-    val32 >>= (byte_off * 8u);
-    if (size < 4u) {
-        val32 &= (1u << (size * 8u)) - 1u;
-    }
-    *val64 = (uint64_t)val32;
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_alert_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                  uint64_t val64, unsigned size,
-                                                  MemTxAttrs attrs)
+static void ot_alert_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                unsigned size)
 {
     OtAlertState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
@@ -1000,20 +1006,7 @@ static MemTxResult ot_alert_regs_write_with_attrs(void *opaque, hwaddr addr,
     if (reg >= s->reg_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid register 0x%03x\n",
                       __func__, (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
-    unsigned byte_off = (unsigned)(addr & 3u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    if ((s->access_table[reg].permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: sub-word write wr_err at 0x%03x (%s, be=0x%x)\n",
-                      __func__, (uint32_t)addr, REG_NAME(s, reg), reg_be);
-        return MEMTX_ERROR;
-    }
-
-    if (size < 4u) {
-        val32 = (val32 & ((1u << (size * 8u)) - 1u)) << (byte_off * 8u);
+        return;
     }
 
     bool was_staged = s->regs.shadow[reg].staged_p;
@@ -1032,8 +1025,6 @@ static MemTxResult ot_alert_regs_write_with_attrs(void *opaque, hwaddr addr,
             ot_alert_clear_alert(s, nclass);
         }
     }
-
-    return MEMTX_OK;
 }
 
 static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
@@ -1261,13 +1252,12 @@ static const Property ot_alert_properties[] = {
 };
 
 static const MemoryRegionOps ot_alert_regs_ops = {
-    .read_with_attrs = &ot_alert_regs_read_with_attrs,
-    .write_with_attrs = &ot_alert_regs_write_with_attrs,
+    .read = &ot_alert_regs_read,
+    .write = &ot_alert_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.accepts = &ot_alert_regs_accepts,
 };
 
 static void ot_alert_request_entropy(OtAlertState *s);
