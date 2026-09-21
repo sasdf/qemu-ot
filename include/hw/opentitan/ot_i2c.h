@@ -43,7 +43,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(OtI2CTarget, OT_I2C_TARGET)
 bool ot_i2c_bus_target_is_stretching(I2CBus *bus);
 int ot_i2c_bus_target_get_last_ack(I2CBus *bus);
 bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus);
-void ot_i2c_bus_target_set_matched_address(I2CBus *bus, uint8_t address);
 void ot_i2c_bus_target_repeated_start(I2CBus *bus);
 
 bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns);

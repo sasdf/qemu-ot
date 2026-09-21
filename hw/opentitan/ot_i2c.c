@@ -1692,12 +1692,6 @@ bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus)
     return false;
 }
 
-void ot_i2c_bus_target_set_matched_address(I2CBus *bus, uint8_t address)
-{
-    OtI2CState *s = OT_I2C(BUS(bus)->parent);
-    s->matched_address = address;
-}
-
 void ot_i2c_bus_target_repeated_start(I2CBus *bus)
 {
     OtI2CState *s = OT_I2C(BUS(bus)->parent);
@@ -1899,21 +1893,23 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
 
 I2CBus *ot_i2c_get_active_target_bus(I2CBus *default_bus, uint8_t address)
 {
-    if (default_bus) {
-        OtI2CState *def = OT_I2C(BUS(default_bus)->parent);
-        if (def && ot_i2c_target_enabled(def) &&
-            ot_i2c_check_address_match(def, address)) {
-            return default_bus;
+    I2CBus *bus = default_bus;
+    OtI2CState *def = bus ? OT_I2C(BUS(bus)->parent) : NULL;
+    if (!(def && ot_i2c_target_enabled(def) &&
+          ot_i2c_check_address_match(def, address))) {
+        for (unsigned i = 0; i < ARRAY_SIZE(ot_i2c_instances); i++) {
+            OtI2CState *inst = ot_i2c_instances[i];
+            if (inst && ot_i2c_target_enabled(inst) &&
+                ot_i2c_check_address_match(inst, address)) {
+                bus = inst->bus;
+                break;
+            }
         }
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(ot_i2c_instances); i++) {
-        OtI2CState *inst = ot_i2c_instances[i];
-        if (inst && ot_i2c_target_enabled(inst) &&
-            ot_i2c_check_address_match(inst, address)) {
-            return inst->bus;
-        }
+    if (bus) {
+        OT_I2C(BUS(bus)->parent)->matched_address = address;
     }
-    return default_bus;
+    return bus;
 }
 
 bool ot_i2c_is_target_enabled(OtI2CState *s)
