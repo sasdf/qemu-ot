@@ -987,7 +987,7 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_i2c_io_read(s->ot_id, (unsigned)addr, REG_NAME(reg),
                          (uint64_t)val32, pc);
 
-    return (uint64_t)val32 >> ((addr & 3u) * 8u);
+    return (uint64_t)val32;
 }
 
 static unsigned ot_i2c_host_recv_fill_fifo(OtI2CState *s, unsigned chunk)
@@ -1762,7 +1762,7 @@ static const MemoryRegionOps ot_i2c_ops = {
     .read = &ot_i2c_read,
     .write = &ot_i2c_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1,
+    .impl.min_access_size = 4,
     .impl.max_access_size = 4,
     .valid.accepts = &ot_i2c_accepts,
 };
