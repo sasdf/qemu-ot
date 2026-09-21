@@ -576,12 +576,6 @@ static bool trans_xperm8(DisasContext *ctx, arg_xperm8 *a)
     return gen_arith(ctx, a, EXT_NONE, gen_helper_xperm8, NULL);
 }
 
-#define REQUIRE_XDRAFT093B(ctx) do {            \
-    if (!ctx->cfg_ptr->ext_xdraft093b) {        \
-        return false;                           \
-    }                                           \
-} while (0)
-
 static void gen_packu(TCGv ret, TCGv src1, TCGv src2)
 {
     TCGv t1 = tcg_temp_new();
@@ -596,67 +590,56 @@ static void gen_packu(TCGv ret, TCGv src1, TCGv src2)
 
 static bool trans_packu(DisasContext *ctx, arg_packu *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_packu, NULL);
 }
 
 static bool trans_bfp(DisasContext *ctx, arg_bfp *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_bfp, NULL);
 }
 
 static bool trans_xperm_h(DisasContext *ctx, arg_xperm_h *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_xperm16, NULL);
 }
 
 static bool trans_grev(DisasContext *ctx, arg_grev *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_grev, NULL);
 }
 
 static bool trans_grevi(DisasContext *ctx, arg_grevi *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_helper_grev);
 }
 
 static bool trans_gorc(DisasContext *ctx, arg_gorc *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_gorc, NULL);
 }
 
 static bool trans_gorci(DisasContext *ctx, arg_gorci *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_helper_gorc);
 }
 
 static bool trans_shfl(DisasContext *ctx, arg_shfl *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_shfl, NULL);
 }
 
 static bool trans_shfli(DisasContext *ctx, arg_shfli *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_helper_shfl);
 }
 
 static bool trans_unshfl(DisasContext *ctx, arg_unshfl *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_arith(ctx, a, EXT_NONE, gen_helper_unshfl, NULL);
 }
 
 static bool trans_unshfli(DisasContext *ctx, arg_unshfli *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_helper_unshfl);
 }
 
@@ -680,31 +663,26 @@ static void gen_sro(TCGv ret, TCGv arg1, TCGv shamt)
 
 static bool trans_slo(DisasContext *ctx, arg_slo *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift(ctx, a, EXT_NONE, gen_slo, NULL);
 }
 
 static bool trans_sloi(DisasContext *ctx, arg_sloi *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_slo);
 }
 
 static bool trans_sro(DisasContext *ctx, arg_sro *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift(ctx, a, EXT_NONE, gen_sro, NULL);
 }
 
 static bool trans_sroi(DisasContext *ctx, arg_sroi *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     return gen_shift_imm_tl(ctx, a, EXT_NONE, gen_sro);
 }
 
 static bool trans_fsl(DisasContext *ctx, arg_fsl *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     TCGv dest = dest_gpr(ctx, a->rd);
     TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
     TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
@@ -717,7 +695,6 @@ static bool trans_fsl(DisasContext *ctx, arg_fsl *a)
 
 static bool trans_fsr(DisasContext *ctx, arg_fsr *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     TCGv dest = dest_gpr(ctx, a->rd);
     TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
     TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
@@ -730,7 +707,6 @@ static bool trans_fsr(DisasContext *ctx, arg_fsr *a)
 
 static bool trans_fsri(DisasContext *ctx, arg_fsri *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     TCGv dest = dest_gpr(ctx, a->rd);
     TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
     TCGv shamt = tcg_constant_tl(a->shamt);
@@ -743,7 +719,6 @@ static bool trans_fsri(DisasContext *ctx, arg_fsri *a)
 
 static bool trans_cmix(DisasContext *ctx, arg_cmix *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     TCGv dest = dest_gpr(ctx, a->rd);
     TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
     TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
@@ -760,7 +735,6 @@ static bool trans_cmix(DisasContext *ctx, arg_cmix *a)
 
 static bool trans_cmov(DisasContext *ctx, arg_cmov *a)
 {
-    REQUIRE_XDRAFT093B(ctx);
     TCGv dest = dest_gpr(ctx, a->rd);
     TCGv src1 = get_gpr(ctx, a->rs1, EXT_NONE);
     TCGv src2 = get_gpr(ctx, a->rs2, EXT_NONE);
