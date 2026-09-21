@@ -693,12 +693,30 @@ static void ot_hmac_clock_input(void *opaque, int irq, int level)
     /* TODO: disable HMAC execution when PCLK is 0 */
 }
 
-static MemTxResult ot_hmac_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                                uint64_t *data, unsigned size,
-                                                MemTxAttrs attrs)
+static bool ot_hmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
+    uint32_t permit =
+        (reg <= R_ALERT_TEST || reg == R_CMD) ?
+            0x1u :
+            ((reg == R_CFG || reg == R_STATUS) ? 0x3u : 0xfu);
+    return (permit & ~reg_be) == 0u;
+}
+
+static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtHMACState *s = OT_HMAC(opaque);
-    (void)attrs;
+    (void)size;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -817,52 +835,30 @@ static MemTxResult ot_hmac_regs_read_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        val32 = 0;
+        break;
     }
 
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    val32 = (val32 >> shift) & size_mask;
+    val32 >>= (addr & 0x3u) * 8u;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_hmac_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
 
-    *data = (uint64_t)val32;
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
-static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                 uint64_t value, unsigned size,
-                                                 MemTxAttrs attrs)
+static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
+                               unsigned size)
 {
     OtHMACState *s = OT_HMAC(opaque);
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_hmac_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    /*
-     * Enforce HMAC_PERMIT sub-word write byte-enable check
-     * (hw/ip/hmac/rtl/hmac_reg_pkg.sv:441-501, hmac_reg_top.sv:2010-2070):
-     * - INTR_STATE, INTR_ENABLE, INTR_TEST, ALERT_TEST, CMD: 4'b0001
-     * - CFG, STATUS: 4'b0011
-     * - ERR_CODE..MSG_LENGTH_UPPER: 4'b1111
-     */
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    uint8_t permit =
-        (reg <= R_ALERT_TEST || reg == R_CMD) ?
-            0x1u :
-            ((reg == R_CFG || reg == R_STATUS) ? 0x3u : 0xfu);
-    if ((permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02x (size=%u)\n",
-                      __func__, (uint32_t)addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
 
     OtHMACDigestSize digest_size;
     OtHMACKeyLength key_length;
@@ -1217,24 +1213,18 @@ static MemTxResult ot_hmac_regs_write_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        break;
     }
-
-    return MEMTX_OK;
 }
 
-static MemTxResult ot_hmac_fifo_read_with_attrs(void *opaque, hwaddr addr,
-                                                uint64_t *val64, unsigned size,
-                                                MemTxAttrs attrs)
+static bool ot_hmac_fifo_accepts(void *opaque, hwaddr addr, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
     (void)addr;
-    (void)val64;
     (void)size;
     (void)attrs;
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: MSG_FIFO is write only\n", __func__);
-
-    return MEMTX_ERROR;
+    return is_write;
 }
 
 static void ot_hmac_fifo_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1298,12 +1288,13 @@ static const Property ot_hmac_properties[] = {
 };
 
 static const MemoryRegionOps ot_hmac_regs_ops = {
-    .read_with_attrs = &ot_hmac_regs_read_with_attrs,
-    .write_with_attrs = &ot_hmac_regs_write_with_attrs,
+    .read = &ot_hmac_regs_read,
+    .write = &ot_hmac_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_hmac_regs_accepts,
     },
     .impl = {
         .min_access_size = 1u,
@@ -1312,12 +1303,12 @@ static const MemoryRegionOps ot_hmac_regs_ops = {
 };
 
 static const MemoryRegionOps ot_hmac_fifo_ops = {
-    .read_with_attrs = &ot_hmac_fifo_read_with_attrs,
     .write = &ot_hmac_fifo_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_hmac_fifo_accepts,
     },
 };
 
