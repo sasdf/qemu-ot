@@ -310,8 +310,8 @@ static const char *REG_NAMES[REGS_COUNT] = {
 /* Input FIFO length is 80 bytes (10 x 64 bits) */
 #define FIFO_LENGTH 80u
 
-/* Delay FIFO ingestion and compute by 1000ns (24 cycles at 24MHz) */
-#define BH_TRIGGER_DELAY_NS 1000u
+/* Delay FIFO ingestion and compute by 100ns */
+#define BH_TRIGGER_DELAY_NS 100u
 
 /* Max size of the KECCAK state */
 #define KECCAK_STATE_BITS  1600u
@@ -1343,10 +1343,6 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->cfg);
         break;
     case R_STATUS:
-        if (!s->current_app && !s->edn_pending &&
-            (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING)) {
-            ot_kmac_process(s);
-        }
         val32 = s->regs[R_STATUS] &
                 (R_STATUS_ALERT_FATAL_FAULT_MASK |
                  R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK);
@@ -1489,6 +1485,18 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
     case R_CFG_SHADOWED:
         if (!ot_kmac_check_reg_write(s, reg)) {
             break;
+        }
+
+        if (val32 & R_CFG_SHADOWED_ENTROPY_FAST_PROCESS_MASK) {
+            qemu_log_mask(LOG_UNIMP,
+                          "%s: %s: CFG_SHADOWED.ENTROPY_FAST_PROCESS is not "
+                          "supported\n",
+                          __func__, s->ot_id);
+        }
+        if (val32 & R_CFG_SHADOWED_MSG_MASK_MASK) {
+            qemu_log_mask(LOG_UNIMP,
+                          "%s: %s: CFG_SHADOWED.MSG_MASK is not supported\n",
+                          __func__, s->ot_id);
         }
 
         val32 &= CFG_MASK;
