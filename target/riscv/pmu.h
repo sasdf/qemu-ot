@@ -38,8 +38,5 @@ void riscv_pmu_update_fixed_ctrs(CPURISCVState *env, target_ulong newpriv,
                                  bool new_virt);
 RISCVException riscv_pmu_read_ctr(CPURISCVState *env, target_ulong *val,
                                   bool upper_half, uint32_t ctr_idx);
-uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env);
-void riscv_pmu_update_clock_freq(CPURISCVState *env, uint64_t freq_hz);
-void riscv_pmu_reset(CPURISCVState *env);
 
 #endif /* RISCV_PMU_H */

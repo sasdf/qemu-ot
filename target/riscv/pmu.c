@@ -229,25 +229,6 @@ static void riscv_pmu_icount_update_priv(CPURISCVState *env,
     counter_arr[env->priv] += delta;
 }
 
-uint64_t riscv_pmu_get_cpu_cycles(CPURISCVState *env)
-{
-    int64_t raw = icount_get_raw();
-    if (env->cpu_freq_hz) {
-        int64_t warp_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
-                          icount_to_ns(raw);
-        if (warp_ns > 0) {
-            raw += muldiv64(warp_ns, env->cpu_freq_hz, NANOSECONDS_PER_SECOND);
-        }
-    }
-    return (uint64_t)raw;
-}
-
-void riscv_pmu_update_clock_freq(CPURISCVState *env, uint64_t freq_hz)
-{
-    env->cpu_freq_hz = freq_hz;
-    icount_set_clock_freq(freq_hz);
-}
-
 static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
                                         target_ulong newpriv, bool new_virt)
 {
@@ -257,7 +238,7 @@ static void riscv_pmu_cycle_update_priv(CPURISCVState *env,
     uint64_t delta;
 
     if (icount_enabled()) {
-        current_ticks = riscv_pmu_get_cpu_cycles(env);
+        current_ticks = icount_get() * 24 / 1000;
     } else {
         current_ticks = cpu_get_host_ticks();
     }
@@ -601,17 +582,6 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
     return 0;
 }
 
-void riscv_pmu_reset(CPURISCVState *env)
-{
-    env->mcountinhibit = 0;
-    memset(env->pmu_ctrs, 0, sizeof(env->pmu_ctrs));
-    uint64_t cyc = riscv_pmu_get_cpu_cycles(env);
-    uint64_t inst = icount_enabled() ? icount_get_raw() : cpu_get_host_ticks();
-    env->pmu_ctrs[0].mhpmcounter_prev = (target_ulong)cyc;
-    env->pmu_ctrs[0].mhpmcounterh_prev = (target_ulong)(cyc >> 32);
-    env->pmu_ctrs[2].mhpmcounter_prev = (target_ulong)inst;
-    env->pmu_ctrs[2].mhpmcounterh_prev = (target_ulong)(inst >> 32);
-}
 
 void riscv_pmu_init(RISCVCPU *cpu, Error **errp)
 {
