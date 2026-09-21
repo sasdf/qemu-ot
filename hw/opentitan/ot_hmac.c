@@ -1289,15 +1289,11 @@ static const MemoryRegionOps ot_hmac_regs_ops = {
     .read = &ot_hmac_regs_read,
     .write = &ot_hmac_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-        .accepts = &ot_hmac_regs_accepts,
-    },
     .impl = {
         .min_access_size = 4u,
         .max_access_size = 4u,
     },
+    .valid.accepts = &ot_hmac_regs_accepts,
 };
 
 static const MemoryRegionOps ot_hmac_fifo_ops = {
