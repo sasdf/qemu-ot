@@ -448,15 +448,9 @@ target_ulong helper_mret(CPURISCVState *env)
     env->mstatus = mstatus;
 
     if (env->rnmip || riscv_cpu_all_pending(env)) {
-        bool release_lock = !bql_locked();
-        if (release_lock) {
-            bql_lock();
-        }
+        BQL_LOCK_GUARD();
         cpu_interrupt(env_cpu(env),
                       env->rnmip ? CPU_INTERRUPT_RNMI : CPU_INTERRUPT_HARD);
-        if (release_lock) {
-            bql_unlock();
-        }
     }
 
     if (riscv_has_ext(env, RVH) && prev_virt) {
