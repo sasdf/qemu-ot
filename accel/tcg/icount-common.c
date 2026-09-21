@@ -158,9 +158,7 @@ static uint64_t icount_freq_hz;
 
 void icount_set_freq_hz(uint64_t freq_hz)
 {
-    if (freq_hz && !qatomic_read(&icount_freq_hz)) {
-        qatomic_set(&icount_freq_hz, freq_hz);
-    }
+    qatomic_set(&icount_freq_hz, freq_hz);
 }
 
 int64_t icount_to_ns(int64_t icount)
@@ -174,16 +172,8 @@ int64_t icount_to_ns(int64_t icount)
 
 int64_t icount_get_cycles(void)
 {
-    uint64_t freq = qatomic_read(&icount_freq_hz);
-    int64_t raw = icount_get_raw();
-    int64_t bias_ns = qatomic_read_i64(&timers_state.qemu_icount_bias);
-    if (bias_ns <= 0) {
-        return raw;
-    }
-    if (freq) {
-        return raw + (int64_t)muldiv64(bias_ns, freq, NANOSECONDS_PER_SECOND);
-    }
-    return raw + (bias_ns >> qatomic_read(&timers_state.icount_time_shift));
+    return icount_get_raw() +
+           icount_round(qatomic_read_i64(&timers_state.qemu_icount_bias));
 }
 
 void icount_advance_bias_ns(int64_t delta_ns)
@@ -264,11 +254,12 @@ static void icount_adjust_vm(void *opaque)
 
 int64_t icount_round(int64_t count)
 {
+    if (count <= 0) {
+        return 0;
+    }
     uint64_t freq = qatomic_read(&icount_freq_hz);
     if (freq) {
-        return (int64_t)(((__int128_t)MAX(count, 0) * freq +
-                          NANOSECONDS_PER_SECOND - 1) /
-                         NANOSECONDS_PER_SECOND);
+        return (int64_t)muldiv64(count, freq, NANOSECONDS_PER_SECOND) ?: 1;
     }
     int shift = qatomic_read(&timers_state.icount_time_shift);
     return (count + (1 << shift) - 1) >> shift;
