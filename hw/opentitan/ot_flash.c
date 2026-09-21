@@ -3080,10 +3080,10 @@ static void ot_flash_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_ECC_SINGLE_ERR_ADDR_1:
     case R_PHY_STATUS:
     case R_CURR_FIFO_LVL:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%03x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
-        break;
     case R_RD_FIFO:
+        /*
+         * R_RD_FIFO (0x1bc) is a read-only FIFO window; writes are ignored.
+         */
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%03x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
