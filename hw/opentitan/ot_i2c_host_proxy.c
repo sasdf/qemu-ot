@@ -79,7 +79,7 @@ struct OtI2CHostProxyState {
 
     /* Saved target address of transaction for repeated start conditions */
     uint8_t address;
-    uint8_t stop_wait_ticks;
+    uint32_t stop_wait_ticks;
 
     /*
      * Timer to stall chardev I/O to return control back to the vCPU, so
@@ -222,10 +222,11 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
             }
             if (byte == 'P') {
                 s->parser_state = CMD_I2C_INIT;
-                s->stop_wait_ticks = 200u;
+                s->stop_wait_ticks = 200000u;
                 i2c_end_transfer(s->bus);
             } else {
                 s->parser_state = CMD_I2C_REPEATED_START;
+                s->stop_wait_ticks = 200000u;
                 ot_i2c_bus_target_repeated_start(s->bus);
             }
             ot_i2c_host_proxy_stall(s);

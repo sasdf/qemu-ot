@@ -384,6 +384,8 @@ struct OtI2CState {
     bool nack_transaction;
     bool ack_ctrl_stretching;
     bool tx_stretching;
+    bool cmd_complete_stretching;
+    bool cmd_complete_wait_reenable;
     bool host_pending_stop;
     bool host_pending_nakok;
     uint8_t acq_fifo_next_data;
@@ -478,6 +480,11 @@ static void ot_i2c_irq_set_state(OtI2CState *s, OtI2CInterrupt irq, bool en)
     trace_ot_i2c_irq(s->ot_id, IRQ_NAMES[irq], en);
 
     if (en) {
+        if (irq == CMD_COMPLETE) {
+            s->cmd_complete_stretching = true;
+            s->cmd_complete_wait_reenable =
+                (s->regs[R_INTR_ENABLE] & INTR_CMD_COMPLETE_MASK) != 0;
+        }
         set_bit(irq, addr);
     } else {
         clear_bit(irq, addr);
@@ -1658,10 +1665,22 @@ static void ot_i2c_target_send_async(I2CSlave *target, uint8_t data)
 bool ot_i2c_bus_target_is_stretching(I2CBus *bus)
 {
     OtI2CState *s = OT_I2C(BUS(bus)->parent);
+    if (s->cmd_complete_stretching) {
+        if (s->cmd_complete_wait_reenable) {
+            if (!(s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
+                (s->regs[R_INTR_ENABLE] & INTR_CMD_COMPLETE_MASK) &&
+                (s->in_target_transfer ||
+                 ot_fifo32_is_empty(&s->target_rx_fifo))) {
+                s->cmd_complete_stretching = false;
+            }
+        } else if (!(!s->in_target_transfer &&
+                     (s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
+                     !ot_fifo32_is_empty(&s->target_rx_fifo))) {
+            s->cmd_complete_stretching = false;
+        }
+    }
     return s->ack_ctrl_stretching || s->tx_stretching ||
-           (!s->in_target_transfer &&
-            (s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
-            !ot_fifo32_is_empty(&s->target_rx_fifo)) ||
+           s->cmd_complete_stretching ||
            (ot_fifo32_num_used(&s->target_rx_fifo) >= 64u);
 }
 
@@ -1844,6 +1863,8 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->nack_transaction = false;
     s->ack_ctrl_stretching = false;
     s->tx_stretching = false;
+    s->cmd_complete_stretching = false;
+    s->cmd_complete_wait_reenable = false;
     s->host_pending_stop = false;
     s->host_pending_nakok = false;
     s->acq_fifo_next_data = 0;
