@@ -567,6 +567,8 @@ struct OtUsbdevState {
      * it means that a bus reset signalling is in progress.
      */
     QEMUTimer bus_reset_timer;
+    QEMUTimer usb_pace_timer;
+    int64_t usb_pace_until_ns;
 
     /*
      * Timer to handle frame counting. While this timer is pending,
@@ -1474,6 +1476,19 @@ static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
     timer_mod(&s->bus_reset_timer, now + OT_USBDEV_BUS_RESET_TIME_US);
 }
 
+static void ot_usbdev_pace_timer_expired(void *opaque)
+{
+    OtUsbdevState *s = opaque;
+    qemu_chr_fe_accept_input(&s->usb_chr);
+}
+
+static void ot_usbdev_pace_usb_chr(OtUsbdevState *s, int64_t delay_ns)
+{
+    int64_t deadline = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns;
+    s->usb_pace_until_ns = deadline;
+    timer_mod(&s->usb_pace_timer, deadline);
+}
+
 /*
  * Simulate the reception of a SETUP token followed by an 8-byte
  * DATA packet containing the SETUP packet.
@@ -1560,6 +1575,7 @@ static void ot_usbdev_simulate_setup(OtUsbdevState *s, uint8_t ep,
     ot_usbdev_complete_transfer_out(s, ep, OT_USBDEV_SERVER_STATUS_CANCELLED,
                                     "cancelled by setup packet");
 
+    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
 }
@@ -1738,6 +1754,7 @@ static void ot_usbdev_advance_transfer_in(OtUsbdevState *s, uint8_t epnum)
             FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
     }
     s->regs[R_IN_SENT] |= 1u << epnum;
+    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_irqs(s);
 
     /* Check for overflow */
@@ -1853,6 +1870,7 @@ again:
         s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
     }
 
+    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
     progressed = true;
@@ -2203,6 +2221,11 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
             /* Potentially all endpoints are now able to receive some data. */
             ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
                                       USBDEV_ALL_EP_MASK);
+            if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
+                s->usb_pace_until_ns >
+                    qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
+                ot_usbdev_pace_usb_chr(s, 20000LL);
+            }
         }
         break;
     case R_USBDEV_INTR_TEST:
@@ -2342,6 +2365,11 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_usbdev_update_irqs(s);
         if (val32 & 1u) {
             ot_usbdev_advance_transfer_out(s, 0u);
+        }
+        if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
+            s->usb_pace_until_ns >
+                qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
+            ot_usbdev_pace_usb_chr(s, 20000LL);
         }
         break;
     case R_SET_NAK_OUT:
@@ -2984,6 +3012,17 @@ static int ot_usbdev_chr_usb_can_receive(void *opaque)
         return 0;
     }
 
+    if (s->usb_server.recv_state == OT_USBDEV_SERVER_RECV_WAIT_HEADER &&
+        s->usb_server.recv_rem == sizeof(OtUsbdevServerPktHdr)) {
+        int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        if (now < s->usb_pace_until_ns) {
+            if (!timer_pending(&s->usb_pace_timer)) {
+                timer_mod(&s->usb_pace_timer, s->usb_pace_until_ns);
+            }
+            return 0;
+        }
+    }
+
     /* Return remaining size in the buffer. */
     return (int)s->usb_server.recv_rem;
 }
@@ -3203,6 +3242,8 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
      */
     timer_del(&s->frame_timer);
     timer_del(&s->bus_reset_timer);
+    timer_del(&s->usb_pace_timer);
+    s->usb_pace_until_ns = 0;
 
     /* See BFM (dut_reset) */
     memset(s->regs, 0u, sizeof(s->regs));
@@ -3316,6 +3357,8 @@ static void ot_usbdev_init(Object *obj)
 
     timer_init_us(&s->bus_reset_timer, OT_VIRTUAL_CLOCK,
                   &ot_usbdev_link_reset_complete, s);
+    timer_init_ns(&s->usb_pace_timer, OT_VIRTUAL_CLOCK,
+                  &ot_usbdev_pace_timer_expired, s);
     timer_init_us(&s->frame_timer, OT_VIRTUAL_CLOCK,
                   &ot_usbdev_frame_timer_expired, s);
 }

@@ -483,13 +483,8 @@ static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
 
 static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s);
 
-static void ot_pwrmgr_cdc_sync(void *opaque)
+static void ot_pwrmgr_update_usb_clock(OtPwrMgrState *s)
 {
-    OtPwrMgrState *s = opaque;
-
-    trace_ot_pwrmgr_cdc_sync(s->ot_id);
-
-    ot_pwrmgr_sync_slow_regs(s);
     if (s->clock_ctrl) {
         bool usb_en = s->in_low_power ?
             (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_LP_MASK) :
@@ -497,6 +492,16 @@ static void ot_pwrmgr_cdc_sync(void *opaque)
         OT_CLOCK_CTRL_IF_GET_CLASS(s->clock_ctrl)
             ->clock_enable(OT_CLOCK_CTRL_IF(s->clock_ctrl), "usb", usb_en);
     }
+}
+
+static void ot_pwrmgr_cdc_sync(void *opaque)
+{
+    OtPwrMgrState *s = opaque;
+
+    trace_ot_pwrmgr_cdc_sync(s->ot_id);
+
+    ot_pwrmgr_sync_slow_regs(s);
+    ot_pwrmgr_update_usb_clock(s);
     s->regs[R_CFG_CDC_SYNC] &= ~R_CFG_CDC_SYNC_SYNC_MASK;
     ot_pwrmgr_check_wakeup(s);
 }
@@ -569,6 +574,7 @@ void ot_pwrmgr_cancel_check(OtPwrMgrState *s)
 static void ot_pwrmgr_set_low_power(OtPwrMgrState *s, bool low_power)
 {
     s->in_low_power = low_power;
+    ot_pwrmgr_update_usb_clock(s);
     ibex_irq_set(&s->sleep_en, (int)low_power);
     OtAonTimerState *aon = (OtAonTimerState *)object_resolve_path_type(
         "", TYPE_OT_AON_TIMER, NULL);
