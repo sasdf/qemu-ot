@@ -1158,7 +1158,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
                       (addr & ~TARGET_PAGE_MASK);
     desc->fulltlb[index] = *full;
     full = &desc->fulltlb[index];
-    full->xlat_section = iotlb - addr_page + ofs_diff;
+    full->xlat_section = iotlb - addr_page;
     full->phys_addr = paddr_page + ofs_diff;
 
     /* Now calculate the new entry */
@@ -1589,7 +1589,7 @@ bool tlb_plugin_lookup(CPUState *cpu, vaddr addr, int mmu_idx,
     }
 
     full = &cpu->neg.tlb.d[mmu_idx].fulltlb[index];
-    data->phys_addr = full->phys_addr + (addr & ~TARGET_PAGE_MASK);
+    data->phys_addr = full->phys_addr | (addr & ~TARGET_PAGE_MASK);
 
     /* We must have an iotlb entry for MMIO */
     if (tlb_addr & TLB_MMIO) {
