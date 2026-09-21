@@ -1422,7 +1422,7 @@ static uint64_t ot_edn_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_edn_io_read_out(s->rng.appid, (uint32_t)addr, REG_NAME(reg), val32,
                              pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
 
 static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -1430,7 +1430,7 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtEDNState *s = opaque;
     OtEDNCSRNG *c = &s->rng;
-    uint32_t val32 = (uint32_t)val64;
+    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
     (void)size;
 
     hwaddr reg = R32_OFF(addr);
@@ -1582,49 +1582,14 @@ static const uint8_t EDN_PERMIT[REGS_COUNT] = {
     [R_MAIN_SM_STATE] = 0x3u,
 };
 
-static MemTxResult ot_edn_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                               uint64_t *data, unsigned size,
-                                               MemTxAttrs attrs)
+static bool ot_edn_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        *data = 0u;
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint64_t val64 = ot_edn_regs_read(opaque, addr & ~3ULL, 4u);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_edn_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                uint64_t val64, unsigned size,
-                                                MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((EDN_PERMIT[reg] & ~byte_mask) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: sub-word write error at 0x%02x (size=%u, mask=0x%x)\n",
-                      __func__, (uint32_t)addr, size, byte_mask);
-        return MEMTX_ERROR;
-    }
-
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_edn_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
+    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return reg < REGS_COUNT && (!is_write || !(EDN_PERMIT[reg] & ~mask));
 }
 
 static const Property ot_edn_properties[] = {
@@ -1634,8 +1599,8 @@ static const Property ot_edn_properties[] = {
 };
 
 static const MemoryRegionOps ot_edn_regs_ops = {
-    .read_with_attrs = &ot_edn_regs_read_with_attrs,
-    .write_with_attrs = &ot_edn_regs_write_with_attrs,
+    .read = &ot_edn_regs_read,
+    .write = &ot_edn_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
         .min_access_size = 1u,
@@ -1644,6 +1609,7 @@ static const MemoryRegionOps ot_edn_regs_ops = {
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_edn_regs_accepts,
     },
 };
 
