@@ -59,7 +59,7 @@
 /* fake delayed completion of HW commands */
 #define FSM_COMPLETION_DELAY_NS 100U /* 100 ns (~ BH) */
 /* initial FSM start up delay */
-#define FSM_START_DELAY_NS 20000U /* 20 uS */
+#define FSM_START_DELAY_NS 200U /* 200 ns */
 
 #define TXFIFO_LEN  292U /* (72 + 1) * 4 bytes (u_tx_fifo + u_select) */
 #define RXFIFO_LEN  256U /* bytes */
