@@ -2012,15 +2012,20 @@ ot_spi_device_flash_transfer_passthrough(OtSPIDeviceState *s, uint8_t rx)
     return tx;
 }
 
-static uint64_t
-ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_spi_device_spi_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtSPIDeviceState *s = opaque;
-    (void)size;
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
     SpiDeviceFlash *f = &s->flash;
     uint32_t val32;
 
-    hwaddr reg = R32_OFF(addr);
+    hwaddr reg = R32_OFF(aligned_addr);
 
     switch (reg) {
     case R_INTR_STATE:
@@ -2183,36 +2188,54 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_INTR_TEST:
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, SPI_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr,
+                      SPI_REG_NAME(reg));
         val32 = 0;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         val32 = 0;
         break;
     }
 
     if (reg != R_INTR_STATE || val32 != 0) {
         uint32_t pc = ibex_get_current_pc();
-        trace_ot_spi_device_io_spi_read_out(s->ot_id, (uint32_t)addr,
+        trace_ot_spi_device_io_spi_read_out(s->ot_id, (uint32_t)aligned_addr,
                                             SPI_REG_NAME(reg), val32, pc);
     }
 
-    return (uint64_t)val32;
-};
+    uint64_t mask =
+        (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = ((uint64_t)val32 >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
 
-static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
-                                         uint64_t val64, unsigned size)
+static MemTxResult ot_spi_device_spi_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtSPIDeviceState *s = opaque;
-    (void)size;
-    uint32_t val32 = (uint32_t)val64;
-
-    hwaddr reg = R32_OFF(addr);
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit =
+        ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) ? 0x1u :
+        (reg == R_JEDEC_CC || reg == R_READ_THRESHOLD ||
+         reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) ? 0x3u :
+        (reg == R_FLASH_STATUS || reg == R_JEDEC_ID ||
+         reg == R_UPLOAD_STATUS2) ? 0x7u : 0xfu;
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_spi_device_io_spi_write_in(s->ot_id, (uint32_t)addr,
+    trace_ot_spi_device_io_spi_write_in(s->ot_id, (uint32_t)aligned_addr,
                                         SPI_REG_NAME(reg), val32, pc);
 
     switch (reg) {
@@ -2405,23 +2428,30 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
     case R_UPLOAD_CMDFIFO:
     case R_UPLOAD_ADDRFIFO:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, SPI_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr,
+                      SPI_REG_NAME(reg));
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         break;
     }
-};
+    return MEMTX_OK;
+}
 
-static uint64_t
-ot_spi_device_tpm_regs_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_spi_device_tpm_regs_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtSPIDeviceState *s = opaque;
-    (void)size;
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
     uint32_t val32;
 
-    hwaddr reg = R32_OFF(addr);
+    hwaddr reg = R32_OFF(aligned_addr);
 
     switch (reg) {
     case R_TPM_CMD_ADDR:
@@ -2445,34 +2475,50 @@ ot_spi_device_tpm_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_TPM_READ_FIFO:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, TPM_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr,
+                      TPM_REG_NAME(reg));
         val32 = 0u;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         val32 = 0u;
         break;
     }
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_spi_device_io_tpm_read_out(s->ot_id, (uint32_t)addr,
+    trace_ot_spi_device_io_tpm_read_out(s->ot_id, (uint32_t)aligned_addr,
                                         TPM_REG_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
-};
+    uint64_t mask =
+        (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = ((uint64_t)val32 >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
 
-static void ot_spi_device_tpm_regs_write(void *opaque, hwaddr addr,
-                                         uint64_t val64, unsigned size)
+static MemTxResult ot_spi_device_tpm_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtSPIDeviceState *s = opaque;
-    (void)size;
-    uint32_t val32 = (uint32_t)val64;
-
-    hwaddr reg = R32_OFF(addr);
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = (reg == R_TPM_CAP) ? 0x7u :
+                     (reg == R_TPM_CFG || reg == R_TPM_STATUS ||
+                      reg == R_TPM_ACCESS_1 || reg == R_TPM_INT_VECTOR ||
+                      reg == R_TPM_RID) ? 0x1u : 0xfu;
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_spi_device_io_tpm_write_in(s->ot_id, (uint32_t)addr,
+    trace_ot_spi_device_io_tpm_write_in(s->ot_id, (uint32_t)aligned_addr,
                                         TPM_REG_NAME(reg), val32, pc);
 
     switch (reg) {
@@ -2506,123 +2552,14 @@ static void ot_spi_device_tpm_regs_write(void *opaque, hwaddr addr,
     case R_TPM_CAP:
     case R_TPM_CMD_ADDR:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, TPM_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr,
+                      TPM_REG_NAME(reg));
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         break;
     }
-};
-
-static uint8_t ot_spi_device_spi_permit(hwaddr reg)
-{
-    switch (reg) {
-    case R_INTR_STATE:
-    case R_INTR_ENABLE:
-    case R_INTR_TEST:
-    case R_ALERT_TEST:
-    case R_CONTROL:
-    case R_STATUS:
-    case R_INTERCEPT_EN:
-        return 0x1u;
-    case R_JEDEC_CC:
-    case R_READ_THRESHOLD:
-    case R_UPLOAD_STATUS:
-    case R_UPLOAD_CMDFIFO:
-        return 0x3u;
-    case R_FLASH_STATUS:
-    case R_JEDEC_ID:
-    case R_UPLOAD_STATUS2:
-        return 0x7u;
-    default:
-        return 0xfu;
-    }
-}
-
-static uint8_t ot_spi_device_tpm_permit(hwaddr reg)
-{
-    switch (reg) {
-    case R_TPM_CAP:
-        return 0x7u;
-    case R_TPM_CFG:
-    case R_TPM_STATUS:
-    case R_TPM_ACCESS_1:
-    case R_TPM_INT_VECTOR:
-    case R_TPM_RID:
-        return 0x1u;
-    default:
-        return 0xfu;
-    }
-}
-
-static MemTxResult ot_spi_device_spi_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    uint64_t word = ot_spi_device_spi_regs_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (word >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_spi_device_spi_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= SPI_REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = ot_spi_device_spi_permit(reg);
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
-    ot_spi_device_spi_regs_write(opaque, aligned_addr, wdata, 4u);
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_spi_device_tpm_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    uint64_t word = ot_spi_device_tpm_regs_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (word >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_spi_device_tpm_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= TPM_REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = ot_spi_device_tpm_permit(reg);
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
-    ot_spi_device_tpm_regs_write(opaque, aligned_addr, wdata, 4u);
     return MEMTX_OK;
 }
 

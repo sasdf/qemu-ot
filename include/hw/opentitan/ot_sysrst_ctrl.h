@@ -29,7 +29,7 @@
 #include "hw/sysbus.h"
 
 #define TYPE_OT_SYSRST_CTRL "ot-sysrst_ctrl"
-OBJECT_DECLARE_TYPE(OtSysrstCtrlState, OtSysrstCtrlClass, OT_SYSRST_CTRL)
+OBJECT_DECLARE_SIMPLE_TYPE(OtSysrstCtrlState, OT_SYSRST_CTRL)
 
 #define OT_SYSRST_CTRL_RST_REQ  TYPE_OT_SYSRST_CTRL "-rst-req"
 #define OT_SYSRST_CTRL_WKUP_REQ TYPE_OT_SYSRST_CTRL "-wkup-req"

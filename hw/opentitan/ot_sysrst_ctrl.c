@@ -67,29 +67,14 @@ REG32(KEY_INTR_DEBOUNCE_CTL, 0x48u)
 REG32(AUTO_BLOCK_DEBOUNCE_CTL, 0x4cu)
 REG32(AUTO_BLOCK_OUT_CTL, 0x50u)
 REG32(COM_PRE_SEL_CTL_0, 0x54u)
-REG32(COM_PRE_SEL_CTL_1, 0x58u)
-REG32(COM_PRE_SEL_CTL_2, 0x5cu)
-REG32(COM_PRE_SEL_CTL_3, 0x60u)
 REG32(COM_PRE_DET_CTL_0, 0x64u)
-REG32(COM_PRE_DET_CTL_1, 0x68u)
-REG32(COM_PRE_DET_CTL_2, 0x6cu)
-REG32(COM_PRE_DET_CTL_3, 0x70u)
 REG32(COM_SEL_CTL_0, 0x74u)
-REG32(COM_SEL_CTL_1, 0x78u)
-REG32(COM_SEL_CTL_2, 0x7cu)
-REG32(COM_SEL_CTL_3, 0x80u)
 REG32(COM_DET_CTL_0, 0x84u)
-REG32(COM_DET_CTL_1, 0x88u)
-REG32(COM_DET_CTL_2, 0x8cu)
-REG32(COM_DET_CTL_3, 0x90u)
 REG32(COM_OUT_CTL_0, 0x94u)
     FIELD(COM_OUT_CTL_0, BAT_DISABLE, 0u, 1u)
     FIELD(COM_OUT_CTL_0, INTERRUPT, 1u, 1u)
     FIELD(COM_OUT_CTL_0, EC_RST, 2u, 1u)
     FIELD(COM_OUT_CTL_0, RST_REQ, 3u, 1u)
-REG32(COM_OUT_CTL_1, 0x98u)
-REG32(COM_OUT_CTL_2, 0x9cu)
-REG32(COM_OUT_CTL_3, 0xa0u)
 REG32(COMBO_INTR_STATUS, 0xa4u)
 REG32(KEY_INTR_STATUS, 0xa8u)
 /* clang-format on */
@@ -124,11 +109,6 @@ struct OtSysrstCtrlState {
     QEMUTimer *ulp_timer;
 
     char *ot_id;
-};
-
-struct OtSysrstCtrlClass {
-    SysBusDeviceClass parent_class;
-    ResettablePhases parent_phases;
 };
 
 static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
@@ -509,73 +489,36 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
 static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
 {
     switch (reg) {
+    case R_COM_PRE_DET_CTL_0 ... (R_COM_PRE_DET_CTL_0 + 3u):
+    case R_COM_DET_CTL_0 ... (R_COM_DET_CTL_0 + 3u):
+        return 0xffffffffu;
+    case R_AUTO_BLOCK_DEBOUNCE_CTL:
+        return 0x0001ffffu;
+    case R_EC_RST_CTL:
     case R_ULP_AC_DEBOUNCE_CTL:
     case R_ULP_LID_DEBOUNCE_CTL:
     case R_ULP_PWRB_DEBOUNCE_CTL:
     case R_PIN_ALLOWED_CTL:
     case R_KEY_INTR_DEBOUNCE_CTL:
         return 0x0000ffffu;
+    case R_KEY_INTR_CTL:
+    case R_KEY_INTR_STATUS:
+        return 0x00003fffu;
     case R_KEY_INVERT_CTL:
         return 0x00000fffu;
     case R_PIN_OUT_CTL:
     case R_PIN_OUT_VALUE:
         return 0x000000ffu;
-    case R_KEY_INTR_CTL:
-    case R_KEY_INTR_STATUS:
-        return 0x00003fffu;
-    case R_AUTO_BLOCK_DEBOUNCE_CTL:
-        return 0x0001ffffu;
     case R_AUTO_BLOCK_OUT_CTL:
         return 0x00000077u;
-    case R_COM_PRE_SEL_CTL_0:
-    case R_COM_PRE_SEL_CTL_1:
-    case R_COM_PRE_SEL_CTL_2:
-    case R_COM_PRE_SEL_CTL_3:
-    case R_COM_SEL_CTL_0:
-    case R_COM_SEL_CTL_1:
-    case R_COM_SEL_CTL_2:
-    case R_COM_SEL_CTL_3:
+    case R_COM_PRE_SEL_CTL_0 ... (R_COM_PRE_SEL_CTL_0 + 3u):
+    case R_COM_SEL_CTL_0 ... (R_COM_SEL_CTL_0 + 3u):
         return 0x0000001fu;
-    case R_COM_OUT_CTL_0:
-    case R_COM_OUT_CTL_1:
-    case R_COM_OUT_CTL_2:
-    case R_COM_OUT_CTL_3:
+    case R_COM_OUT_CTL_0 ... (R_COM_OUT_CTL_0 + 3u):
     case R_COMBO_INTR_STATUS:
         return 0x0000000fu;
-    case R_ULP_STATUS:
-    case R_WKUP_STATUS:
+    default:
         return 0x00000001u;
-    default:
-        return 0xffffffffu;
-    }
-}
-
-static uint8_t ot_sysrst_ctrl_permit(hwaddr reg)
-{
-    switch (reg) {
-    case R_COM_PRE_DET_CTL_0:
-    case R_COM_PRE_DET_CTL_1:
-    case R_COM_PRE_DET_CTL_2:
-    case R_COM_PRE_DET_CTL_3:
-    case R_COM_DET_CTL_0:
-    case R_COM_DET_CTL_1:
-    case R_COM_DET_CTL_2:
-    case R_COM_DET_CTL_3:
-        return 0xfu;
-    case R_AUTO_BLOCK_DEBOUNCE_CTL:
-        return 0x7u;
-    case R_EC_RST_CTL:
-    case R_ULP_AC_DEBOUNCE_CTL:
-    case R_ULP_LID_DEBOUNCE_CTL:
-    case R_ULP_PWRB_DEBOUNCE_CTL:
-    case R_KEY_INVERT_CTL:
-    case R_PIN_ALLOWED_CTL:
-    case R_KEY_INTR_CTL:
-    case R_KEY_INTR_DEBOUNCE_CTL:
-    case R_KEY_INTR_STATUS:
-        return 0x3u;
-    default:
-        return 0x1u;
     }
 }
 
@@ -634,12 +577,15 @@ static MemTxResult ot_sysrst_ctrl_write_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
     hwaddr reg = R32_OFF(aligned_addr);
+    uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
+    uint8_t permit = (mask > 0x1ffffu) ? 0xfu :
+                     (mask > 0xffffu) ? 0x7u :
+                     (mask > 0xffu) ? 0x3u : 0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = ot_sysrst_ctrl_permit(reg);
     if ((permit & ~reg_be) != 0u) {
         return MEMTX_ERROR;
     }
-    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u)) & mask;
     s->poll_count = 0;
 
     switch (reg) {
@@ -648,56 +594,52 @@ static MemTxResult ot_sysrst_ctrl_write_with_attrs(
         break;
     case R_INTR_ENABLE:
     case R_INTR_TEST:
-        s->regs[reg] = val32 & 1u;
+        s->regs[reg] = val32;
         ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_ALERT_TEST:
-        if (val32 & 1u) {
+        if (val32) {
             ibex_irq_set(&s->alert, 1);
             ibex_irq_set(&s->alert, 0);
         }
         break;
     case R_REGWEN:
-        s->regs[R_REGWEN] &= (val32 & 1u);
+        s->regs[R_REGWEN] &= val32;
         break;
     case R_EC_RST_CTL:
         if (s->regs[R_REGWEN] & 1u) {
-            s->regs[reg] = val32 & 0xffffu;
-            if (s->regs[reg] == 0u && !s->ec_rst_l_hw) {
-                if (s->ec_rst_timer) {
-                    timer_del(s->ec_rst_timer);
-                }
+            s->regs[reg] = val32;
+            if (val32 == 0u && !s->ec_rst_l_hw) {
+                timer_del(s->ec_rst_timer);
                 s->ec_rst_l_hw = true;
             }
             ot_sysrst_ctrl_check_events(s);
         }
         break;
     case R_ULP_CTL:
-        s->regs[R_ULP_CTL] = val32 & 1u;
-        if (!(val32 & 1u)) {
+        s->regs[R_ULP_CTL] = val32;
+        if (!val32) {
             s->z3_wakeup_hw = false;
             s->ulp_ac_latched = false;
-            if (s->ulp_timer) {
-                timer_del(s->ulp_timer);
-            }
+            timer_del(s->ulp_timer);
         }
         ot_sysrst_ctrl_check_events(s);
         break;
     case R_PIN_OUT_CTL:
     case R_PIN_OUT_VALUE:
-        s->regs[reg] = val32 & ot_sysrst_ctrl_reg_mask(reg);
+        s->regs[reg] = val32;
         ot_sysrst_ctrl_check_events(s);
         break;
     case R_ULP_STATUS:
     case R_WKUP_STATUS:
     case R_COMBO_INTR_STATUS:
     case R_KEY_INTR_STATUS:
-        s->regs[reg] &= ~(val32 & ot_sysrst_ctrl_reg_mask(reg));
+        s->regs[reg] &= ~val32;
         ot_sysrst_ctrl_update_outputs(s);
         break;
     default:
         if (s->regs[R_REGWEN] & 1u) {
-            s->regs[reg] = val32 & ot_sysrst_ctrl_reg_mask(reg);
+            s->regs[reg] = val32;
             ot_sysrst_ctrl_check_events(s);
         }
         break;
@@ -733,15 +675,9 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
         return;
     }
 
-    if (s->ec_rst_timer) {
-        timer_del(s->ec_rst_timer);
-    }
-    if (s->combo_pace_timer) {
-        timer_del(s->combo_pace_timer);
-    }
-    if (s->ulp_timer) {
-        timer_del(s->ulp_timer);
-    }
+    timer_del(s->ec_rst_timer);
+    timer_del(s->combo_pace_timer);
+    timer_del(s->ulp_timer);
 
     s->bat_disable_hw = false;
     s->ec_rst_l_hw = true;
@@ -803,11 +739,7 @@ static void ot_sysrst_ctrl_class_init(ObjectClass *klass, const void *data)
 
     device_class_set_props(dc, ot_sysrst_ctrl_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
-
-    ResettableClass *rc = RESETTABLE_CLASS(dc);
-    OtSysrstCtrlClass *sc = OT_SYSRST_CTRL_CLASS(klass);
-    resettable_class_set_parent_phases(rc, &ot_sysrst_ctrl_reset_enter, NULL,
-                                       NULL, &sc->parent_phases);
+    RESETTABLE_CLASS(dc)->phases.enter = &ot_sysrst_ctrl_reset_enter;
 }
 
 static const TypeInfo ot_sysrst_ctrl_info = {
@@ -816,7 +748,6 @@ static const TypeInfo ot_sysrst_ctrl_info = {
     .instance_size = sizeof(OtSysrstCtrlState),
     .instance_init = &ot_sysrst_ctrl_init,
     .class_init = &ot_sysrst_ctrl_class_init,
-    .class_size = sizeof(OtSysrstCtrlClass),
 };
 
 static void ot_sysrst_ctrl_register_types(void)

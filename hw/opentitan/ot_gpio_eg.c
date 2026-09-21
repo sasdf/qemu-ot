@@ -640,13 +640,18 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
     ot_gpio_eg_update_backend(s, false);
 }
 
-static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult ot_gpio_eg_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtGpioEgState *s = opaque;
-    (void)size;
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
     uint32_t val32;
-
-    hwaddr reg = R32_OFF(addr);
+    hwaddr reg = R32_OFF(aligned_addr);
 
     switch (reg) {
     case R_DATA_IN:
@@ -684,7 +689,7 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
          * same output data register: a masked write must be observable through
          * a DIRECT_OUT read. Return the live output value rather than the last
          * value written specifically through DIRECT_OUT.
-         */
+        */
         val32 = s->data_out;
         break;
     case R_DIRECT_OE:
@@ -706,35 +711,47 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
     case R_INTR_TEST:
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg));
         val32 = 0;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         val32 = 0u;
         break;
     }
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_gpio_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
-                              pc);
+    trace_ot_gpio_io_read_out(s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg),
+                              val32, pc);
 
-    return (uint64_t)val32;
-};
+    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = ((uint64_t)val32 >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
+}
 
-static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
-                             unsigned size)
+static MemTxResult ot_gpio_eg_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtGpioEgState *s = opaque;
-    (void)size;
-    uint32_t val32 = (uint32_t)val64;
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
     uint32_t mask;
 
-    hwaddr reg = R32_OFF(addr);
-
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_gpio_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
+    trace_ot_gpio_io_write(s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg),
+                           val32, pc);
 
     switch (reg) {
     case R_INTR_STATE:
@@ -822,14 +839,15 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_DATA_IN:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg));
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
+                      s->ot_id, (uint32_t)aligned_addr);
         break;
     }
-};
+    return MEMTX_OK;
+}
 
 static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
 {
@@ -1621,41 +1639,6 @@ static int ot_gpio_eg_chr_be_change(void *opaque)
     return 0;
 }
 
-static MemTxResult ot_gpio_eg_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    uint64_t word = ot_gpio_eg_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (word >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_gpio_eg_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
-    ot_gpio_eg_write(opaque, aligned_addr, wdata, 4u);
-    return MEMTX_OK;
-}
-
 static const MemoryRegionOps ot_gpio_eg_regs_ops = {
     .read_with_attrs = &ot_gpio_eg_read_with_attrs,
     .write_with_attrs = &ot_gpio_eg_write_with_attrs,
@@ -1695,9 +1678,7 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    if (s->bb_timer) {
-        timer_del(s->bb_timer);
-    }
+    timer_del(s->bb_timer);
     g_free(s->bb_wbuf);
     g_free(s->bb_rbuf);
     s->bb_wbuf = NULL;

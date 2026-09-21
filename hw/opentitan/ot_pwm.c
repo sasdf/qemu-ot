@@ -49,27 +49,12 @@ REG32(CFG, 0x08u)
 REG32(PWM_EN, 0x0cu)
 REG32(INVERT, 0x10u)
 REG32(PWM_PARAM_0, 0x14u)
-REG32(PWM_PARAM_1, 0x18u)
-REG32(PWM_PARAM_2, 0x1cu)
-REG32(PWM_PARAM_3, 0x20u)
-REG32(PWM_PARAM_4, 0x24u)
-REG32(PWM_PARAM_5, 0x28u)
 REG32(DUTY_CYCLE_0, 0x2cu)
-REG32(DUTY_CYCLE_1, 0x30u)
-REG32(DUTY_CYCLE_2, 0x34u)
-REG32(DUTY_CYCLE_3, 0x38u)
-REG32(DUTY_CYCLE_4, 0x3cu)
-REG32(DUTY_CYCLE_5, 0x40u)
 REG32(BLINK_PARAM_0, 0x44u)
-REG32(BLINK_PARAM_1, 0x48u)
-REG32(BLINK_PARAM_2, 0x4cu)
-REG32(BLINK_PARAM_3, 0x50u)
-REG32(BLINK_PARAM_4, 0x54u)
-REG32(BLINK_PARAM_5, 0x58u)
 /* clang-format on */
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
-#define R_LAST_REG   (R_BLINK_PARAM_5)
+#define R_LAST_REG   (R_BLINK_PARAM_0 + PARAM_NUM_OUTPUTS - 1u)
 #define REGS_COUNT   (R_LAST_REG + 1u)
 #define REGS_SIZE    (REGS_COUNT * sizeof(uint32_t))
 
@@ -83,11 +68,6 @@ struct OtPwmState {
     int64_t cntr_start_ns;
 
     char *ot_id;
-};
-
-struct OtPwmClass {
-    SysBusDeviceClass parent_class;
-    ResettablePhases parent_phases;
 };
 
 void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
@@ -287,7 +267,7 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
     case R_INVERT:
         s->regs[R_INVERT] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
         break;
-    case R_PWM_PARAM_0 ... R_PWM_PARAM_5:
+    case R_PWM_PARAM_0 ... (R_PWM_PARAM_0 + PARAM_NUM_OUTPUTS - 1u):
         s->regs[reg] = val32 & 0xc000ffffu;
         break;
     default:
@@ -315,12 +295,7 @@ static const Property ot_pwm_properties[] = {
 
 static void ot_pwm_reset_enter(Object *obj, ResetType type)
 {
-    OtPwmClass *c = OT_PWM_GET_CLASS(obj);
     OtPwmState *s = OT_PWM(obj);
-
-    if (c->parent_phases.enter) {
-        c->parent_phases.enter(obj, type);
-    }
 
     if (type != RESET_TYPE_COLD && ot_rstmgr_is_low_power_exit()) {
         ibex_irq_set(&s->alert, 0);
@@ -352,10 +327,7 @@ static void ot_pwm_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     (void)data;
 
-    ResettableClass *rc = RESETTABLE_CLASS(klass);
-    OtPwmClass *pc = OT_PWM_CLASS(klass);
-    resettable_class_set_parent_phases(rc, &ot_pwm_reset_enter, NULL, NULL,
-                                       &pc->parent_phases);
+    RESETTABLE_CLASS(klass)->phases.enter = &ot_pwm_reset_enter;
     device_class_set_props(dc, ot_pwm_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
@@ -365,7 +337,6 @@ static const TypeInfo ot_pwm_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(OtPwmState),
     .instance_init = &ot_pwm_init,
-    .class_size = sizeof(OtPwmClass),
     .class_init = &ot_pwm_class_init,
 };
 

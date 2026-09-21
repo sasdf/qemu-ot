@@ -39,36 +39,14 @@
 
 /* clang-format off */
 REG32(INTR_STATE, 0x00u)
-    FIELD(INTR_STATE, DONE_CH0, 0u, 1u)
-    FIELD(INTR_STATE, DONE_CH1, 1u, 1u)
 REG32(INTR_ENABLE, 0x04u)
-    FIELD(INTR_ENABLE, DONE_CH0, 0u, 1u)
-    FIELD(INTR_ENABLE, DONE_CH1, 1u, 1u)
 REG32(INTR_TEST, 0x08u)
-    FIELD(INTR_TEST, DONE_CH0, 0u, 1u)
-    FIELD(INTR_TEST, DONE_CH1, 1u, 1u)
 REG32(ALERT_TEST, 0x0cu)
     FIELD(ALERT_TEST, FATAL_FAULT, 0u, 1u)
 REG32(CTRL, 0x10u)
-    FIELD(CTRL, ENABLE_CH0, 0u, 1u)
-    FIELD(CTRL, ENABLE_CH1, 1u, 1u)
-    FIELD(CTRL, POLARITY_CH0, 2u, 1u)
-    FIELD(CTRL, POLARITY_CH1, 3u, 1u)
-    FIELD(CTRL, INACTIVE_LEVEL_PCL_CH0, 4u, 1u)
-    FIELD(CTRL, INACTIVE_LEVEL_PDA_CH0, 5u, 1u)
-    FIELD(CTRL, INACTIVE_LEVEL_PCL_CH1, 6u, 1u)
-    FIELD(CTRL, INACTIVE_LEVEL_PDA_CH1, 7u, 1u)
 REG32(PREDIV_CH0, 0x14u)
-REG32(PREDIV_CH1, 0x18u)
 REG32(DATA_CH0_0, 0x1cu)
-REG32(DATA_CH0_1, 0x20u)
-REG32(DATA_CH1_0, 0x24u)
-REG32(DATA_CH1_1, 0x28u)
 REG32(SIZE, 0x2cu)
-    FIELD(SIZE, LEN_CH0, 0u, 6u)
-    FIELD(SIZE, REPS_CH0, 6u, 10u)
-    FIELD(SIZE, LEN_CH1, 16u, 6u)
-    FIELD(SIZE, REPS_CH1, 22u, 10u)
 /* clang-format on */
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
@@ -121,9 +99,9 @@ static void ot_pattgen_latch_channel(OtPattgenState *s, unsigned c)
     ch->polarity = (bool)((ctrl >> (2u + c)) & 1u);
     ch->inactive_pcl = (bool)((ctrl >> (4u + 2u * c)) & 1u);
     ch->inactive_pda = (bool)((ctrl >> (5u + 2u * c)) & 1u);
-    ch->prediv = s->regs[c == 0u ? R_PREDIV_CH0 : R_PREDIV_CH1];
-    uint64_t lo = s->regs[c == 0u ? R_DATA_CH0_0 : R_DATA_CH1_0];
-    uint64_t hi = s->regs[c == 0u ? R_DATA_CH0_1 : R_DATA_CH1_1];
+    ch->prediv = s->regs[R_PREDIV_CH0 + c];
+    uint64_t lo = s->regs[R_DATA_CH0_0 + 2u * c];
+    uint64_t hi = s->regs[R_DATA_CH0_0 + 2u * c + 1u];
     ch->data = lo | (hi << 32);
     uint32_t size = s->regs[R_SIZE];
     ch->len = (size >> (c == 0u ? 0u : 16u)) & 0x3fu;
@@ -135,18 +113,7 @@ bool ot_pattgen_get_pin_level(OtPattgenState *s, unsigned pin_idx)
     if (!s || pin_idx >= 4u) {
         return false;
     }
-    switch (pin_idx) {
-    case 0u:
-        return s->pda[0];
-    case 1u:
-        return s->pcl[0];
-    case 2u:
-        return s->pda[1];
-    case 3u:
-        return s->pcl[1];
-    default:
-        return false;
-    }
+    return (pin_idx & 1u) ? s->pcl[pin_idx >> 1u] : s->pda[pin_idx >> 1u];
 }
 
 static void ot_pattgen_timer_cb(void *opaque)
@@ -229,50 +196,20 @@ static void ot_pattgen_timer_cb(void *opaque)
     }
 }
 
-static const uint8_t PATTGEN_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_CTRL] = 0x1u,
-    [R_PREDIV_CH0] = 0xfu,
-    [R_PREDIV_CH1] = 0xfu,
-    [R_DATA_CH0_0] = 0xfu,
-    [R_DATA_CH0_1] = 0xfu,
-    [R_DATA_CH1_0] = 0xfu,
-    [R_DATA_CH1_1] = 0xfu,
-    [R_SIZE] = 0xfu,
-};
-
 static MemTxResult ot_pattgen_read_with_attrs(void *opaque, hwaddr addr,
                                               uint64_t *val64, unsigned size,
                                               MemTxAttrs attrs)
 {
     OtPattgenState *s = opaque;
     (void)attrs;
-    uint32_t val32;
+    uint32_t val32 = 0;
 
     hwaddr reg = R32_OFF(addr);
-    switch (reg) {
-    case R_INTR_STATE:
-    case R_INTR_ENABLE:
-    case R_CTRL:
-    case R_PREDIV_CH0:
-    case R_PREDIV_CH1:
-    case R_DATA_CH0_0:
-    case R_DATA_CH0_1:
-    case R_DATA_CH1_0:
-    case R_DATA_CH1_1:
-    case R_SIZE:
-        val32 = s->regs[reg];
-        break;
-    case R_INTR_TEST:
-    case R_ALERT_TEST:
-    default:
+    if (reg == R_INTR_TEST || reg == R_ALERT_TEST || reg >= REGS_COUNT) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02" HWADDR_PRIx "\n",
                       __func__, addr);
-        val32 = 0;
-        break;
+    } else {
+        val32 = s->regs[reg];
     }
 
     uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
@@ -291,7 +228,8 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
 
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((PATTGEN_PERMIT[reg] & ~reg_be) != 0u) {
+    uint8_t permit = (reg >= R_PREDIV_CH0) ? 0xfu : 0x1u;
+    if ((permit & ~reg_be) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Sub-word write error at 0x%02" HWADDR_PRIx
                       " (size=%u)\n",
@@ -323,13 +261,6 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
     case R_CTRL:
         val32 &= 0xffu;
         /* fall through */
-    case R_PREDIV_CH0:
-    case R_PREDIV_CH1:
-    case R_DATA_CH0_0:
-    case R_DATA_CH0_1:
-    case R_DATA_CH1_0:
-    case R_DATA_CH1_1:
-    case R_SIZE:
     default: {
         uint32_t old_ctrl = s->regs[R_CTRL];
         s->regs[reg] = val32;
