@@ -79,6 +79,7 @@ struct OtI2CHostProxyState {
 
     /* Saved target address of transaction for repeated start conditions */
     uint8_t address;
+    uint8_t stop_wait_ticks;
 
     /*
      * Timer to stall chardev I/O to return control back to the vCPU, so
@@ -221,6 +222,7 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
             }
             if (byte == 'P') {
                 s->parser_state = CMD_I2C_INIT;
+                s->stop_wait_ticks = 200u;
                 i2c_end_transfer(s->bus);
             } else {
                 s->parser_state = CMD_I2C_REPEATED_START;
@@ -247,6 +249,14 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
 static void ot_i2c_host_proxy_timer(void *opaque)
 {
     OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
+    if (s->stop_wait_ticks > 0) {
+        if (ot_i2c_bus_target_is_stretching(s->bus)) {
+            s->stop_wait_ticks--;
+            ot_i2c_host_proxy_stall(s);
+            return;
+        }
+        s->stop_wait_ticks = 0;
+    }
     if (s->pending_op != PROXY_PENDING_NONE) {
         if (ot_i2c_bus_target_is_stretching(s->bus)) {
             ot_i2c_host_proxy_stall(s);
@@ -263,6 +273,10 @@ static void ot_i2c_host_proxy_timer(void *opaque)
             }
             ot_i2c_host_proxy_stall(s);
         } else if (s->pending_op == PROXY_PENDING_READ_BYTE) {
+            if (ot_i2c_bus_target_check_tx_stretch(s->bus)) {
+                ot_i2c_host_proxy_stall(s);
+                return;
+            }
             s->pending_op = PROXY_PENDING_NONE;
             ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
             ot_i2c_host_proxy_stall(s);

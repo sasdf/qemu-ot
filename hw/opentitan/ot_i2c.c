@@ -1659,6 +1659,9 @@ bool ot_i2c_bus_target_is_stretching(I2CBus *bus)
 {
     OtI2CState *s = OT_I2C(BUS(bus)->parent);
     return s->ack_ctrl_stretching || s->tx_stretching ||
+           (!s->in_target_transfer &&
+            (s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
+            !ot_fifo32_is_empty(&s->target_rx_fifo)) ||
            (ot_fifo32_num_used(&s->target_rx_fifo) >= 64u);
 }
 
