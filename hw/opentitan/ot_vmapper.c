@@ -464,8 +464,8 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
                  */
                 if (VMAP_RANGE(current)->prio < VMAP_RANGE(next)->prio) {
                     /*
-                     * case (a1): next is fully masked by current, as next has
-                     * a lower priority than current, skip next entirely
+                     * case (a1): next is fully masked by current, as next as
+                     * a less priority than current, skip next entirely
                      */
                     rglist = g_list_remove_link(rglist, next);
                     g_free(next->data);
@@ -747,7 +747,7 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
     GList *rglist = NULL;
     OtRegionRange *ranges = insn ? s->iranges : s->dranges;
 
-    /* create sortable range items from active translation slots */
+    /* create sortable range items and add them to a new list */
     for (unsigned ix = 0; ix < s->trans_count; ix++) {
         const OtRegionRange *crg = &ranges[ix];
 
@@ -766,7 +766,8 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
     if (rglist) {
         VMAP_SHOW_RANGE_LIST(s, insn, rglist, "initial");
 
-        /* sort the list, in start address order */
+        /* sort the list, in start address order (end address if start are
+         * equal) */
         rglist = g_list_sort_with_data(rglist, &ot_vmapper_compare, NULL);
 
         VMAP_SHOW_RANGE_LIST(s, insn, rglist, "sorted");
