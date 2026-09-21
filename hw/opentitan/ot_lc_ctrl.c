@@ -961,26 +961,26 @@ static bool ot_lc_ctrl_is_known_state(uint32_t state)
     }
 }
 
-static bool ot_lc_ctrl_is_vendor_test_state(OtLcState state)
+static bool ot_lc_ctrl_is_vendor_test_state(uint32_t state)
 {
     switch (state) {
-    case LC_STATE_RAW:
-    case LC_STATE_TESTUNLOCKED0:
-    case LC_STATE_TESTLOCKED0:
-    case LC_STATE_TESTUNLOCKED1:
-    case LC_STATE_TESTLOCKED1:
-    case LC_STATE_TESTUNLOCKED2:
-    case LC_STATE_TESTLOCKED2:
-    case LC_STATE_TESTUNLOCKED3:
-    case LC_STATE_TESTLOCKED3:
-    case LC_STATE_TESTUNLOCKED4:
-    case LC_STATE_TESTLOCKED4:
-    case LC_STATE_TESTUNLOCKED5:
-    case LC_STATE_TESTLOCKED5:
-    case LC_STATE_TESTUNLOCKED6:
-    case LC_STATE_TESTLOCKED6:
-    case LC_STATE_TESTUNLOCKED7:
-    case LC_STATE_RMA:
+    case LC_ENC_STATE_RAW:
+    case LC_ENC_STATE_TESTUNLOCKED0:
+    case LC_ENC_STATE_TESTLOCKED0:
+    case LC_ENC_STATE_TESTUNLOCKED1:
+    case LC_ENC_STATE_TESTLOCKED1:
+    case LC_ENC_STATE_TESTUNLOCKED2:
+    case LC_ENC_STATE_TESTLOCKED2:
+    case LC_ENC_STATE_TESTUNLOCKED3:
+    case LC_ENC_STATE_TESTLOCKED3:
+    case LC_ENC_STATE_TESTUNLOCKED4:
+    case LC_ENC_STATE_TESTLOCKED4:
+    case LC_ENC_STATE_TESTUNLOCKED5:
+    case LC_ENC_STATE_TESTLOCKED5:
+    case LC_ENC_STATE_TESTUNLOCKED6:
+    case LC_ENC_STATE_TESTLOCKED6:
+    case LC_ENC_STATE_TESTUNLOCKED7:
+    case LC_ENC_STATE_RMA:
         return true;
     default:
         return false;
@@ -1572,10 +1572,7 @@ static void ot_lc_ctrl_initialize(OtLcCtrlState *s)
      * the OTP initialization sequence.
      */
     s->regs[R_HW_REVISION0] =
-        FIELD_DP32(0, HW_REVISION0, PRODUCT_ID, (uint32_t)s->product_id);
-    s->regs[R_HW_REVISION0] = FIELD_DP32(s->regs[R_HW_REVISION0], HW_REVISION0,
-                                         SILICON_CREATOR_ID,
-                                         (uint32_t)s->silicon_creator_id);
+        (((uint32_t)s->silicon_creator_id) << 16u) | ((uint32_t)s->product_id);
     s->regs[R_HW_REVISION1] = (uint32_t)s->revision_id;
 
     OtKMACClass *kc = OT_KMAC_GET_CLASS(s->kmac);
@@ -1749,7 +1746,8 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         break;
     case R_OTP_VENDOR_TEST_STATUS:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) &&
-                        ot_lc_ctrl_is_vendor_test_state(s->lc_state) ?
+                        ot_lc_ctrl_is_vendor_test_state(
+                            LC_ENCODE_STATE(s->lc_state)) ?
                     s->regs[reg] :
                     0u;
         break;
@@ -1864,7 +1862,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         }
     }
 
-    return val32;
+    return val32 >> ((addr & 3u) * 8u);
 };
 
 static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
@@ -2012,103 +2010,59 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
     }
 };
 
-static const uint8_t LC_CTRL_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,
-    [R_STATUS] = 0x3u,
-    [R_CLAIM_TRANSITION_IF_REGWEN] = 0x1u,
-    [R_CLAIM_TRANSITION_IF] = 0x1u,
-    [R_TRANSITION_REGWEN] = 0x1u,
-    [R_TRANSITION_CMD] = 0x1u,
-    [R_TRANSITION_CTRL] = 0x1u,
-    [R_TRANSITION_TOKEN_0] = 0xfu,
-    [R_TRANSITION_TOKEN_1] = 0xfu,
-    [R_TRANSITION_TOKEN_2] = 0xfu,
-    [R_TRANSITION_TOKEN_3] = 0xfu,
-    [R_TRANSITION_TARGET] = 0xfu,
-    [R_OTP_VENDOR_TEST_CTRL] = 0xfu,
-    [R_OTP_VENDOR_TEST_STATUS] = 0xfu,
-    [R_LC_STATE] = 0xfu,
-    [R_LC_TRANSITION_CNT] = 0x1u,
-    [R_LC_ID_STATE] = 0xfu,
-    [R_HW_REVISION0] = 0xfu,
-    [R_HW_REVISION1] = 0xfu,
-    [R_DEVICE_ID_0] = 0xfu,
-    [R_DEVICE_ID_1] = 0xfu,
-    [R_DEVICE_ID_2] = 0xfu,
-    [R_DEVICE_ID_3] = 0xfu,
-    [R_DEVICE_ID_4] = 0xfu,
-    [R_DEVICE_ID_5] = 0xfu,
-    [R_DEVICE_ID_6] = 0xfu,
-    [R_DEVICE_ID_7] = 0xfu,
-    [R_MANUF_STATE_0] = 0xfu,
-    [R_MANUF_STATE_1] = 0xfu,
-    [R_MANUF_STATE_2] = 0xfu,
-    [R_MANUF_STATE_3] = 0xfu,
-    [R_MANUF_STATE_4] = 0xfu,
-    [R_MANUF_STATE_5] = 0xfu,
-    [R_MANUF_STATE_6] = 0xfu,
-    [R_MANUF_STATE_7] = 0xfu,
-};
-
-static MemTxResult ot_lc_ctrl_regs_read_with_attrs(OtLcCtrlState *s,
-                                                   hwaddr addr, uint64_t *data,
-                                                   unsigned size,
-                                                   OtLcCtrlIf ifreq)
+static bool ot_lc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                    bool is_write, MemTxAttrs attrs)
 {
-    uint64_t val64 = ot_lc_ctrl_regs_read(s, addr & ~3ULL, ifreq);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_lc_ctrl_regs_write_with_attrs(OtLcCtrlState *s,
-                                                    hwaddr addr, uint64_t val64,
-                                                    unsigned size,
-                                                    OtLcCtrlIf ifreq)
-{
-    hwaddr reg = R32_OFF(addr);
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((LC_CTRL_PERMIT[reg] & ~byte_mask) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: sub-word write error at 0x%02x (size=%u, mask=0x%x)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size, byte_mask);
-        return MEMTX_ERROR;
+    (void)opaque;
+    (void)attrs;
+    if (addr >= REGS_SIZE) {
+        return false;
     }
-
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_lc_ctrl_regs_write(s, addr & ~3ULL, (uint32_t)(val64 << shift), ifreq);
-    return MEMTX_OK;
+    if (!is_write) {
+        return true;
+    }
+    uint32_t permit = (R32_OFF(addr) <= R_TRANSITION_CTRL ||
+                       R32_OFF(addr) == R_LC_TRANSITION_CNT) ?
+                          (R32_OFF(addr) == R_STATUS ? 0x3u : 0x1u) :
+                          0xfu;
+    uint32_t be = ((1u << size) - 1u) << (addr & 3u);
+    return (permit & ~be) == 0u;
 }
 
-static MemTxResult ot_lc_ctrl_sw_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static uint64_t
+ot_lc_ctrl_sw_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
-    (void)attrs;
-    return ot_lc_ctrl_regs_read_with_attrs(opaque, addr, data, size, LC_IF_SW);
+    OtLcCtrlState *s = opaque;
+    (void)size;
+
+    return (uint32_t)ot_lc_ctrl_regs_read(s, addr, LC_IF_SW);
 }
 
-static MemTxResult ot_lc_ctrl_sw_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_lc_ctrl_sw_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                     unsigned size)
 {
-    (void)attrs;
-    return ot_lc_ctrl_regs_write_with_attrs(opaque, addr, val64, size,
-                                            LC_IF_SW);
+    OtLcCtrlState *s = opaque;
+    (void)size;
+
+    ot_lc_ctrl_regs_write(s, addr, (uint32_t)val64, LC_IF_SW);
 }
 
-static MemTxResult ot_lc_ctrl_dmi_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static uint64_t
+ot_lc_ctrl_dmi_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
-    (void)attrs;
-    return ot_lc_ctrl_regs_read_with_attrs(opaque, addr, data, size, LC_IF_DMI);
+    OtLcCtrlState *s = opaque;
+    (void)size;
+
+    return (uint32_t)ot_lc_ctrl_regs_read(s, addr, LC_IF_DMI);
 }
 
-static MemTxResult ot_lc_ctrl_dmi_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_lc_ctrl_dmi_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                      unsigned size)
 {
-    (void)attrs;
-    return ot_lc_ctrl_regs_write_with_attrs(opaque, addr, val64, size,
-                                            LC_IF_DMI);
+    OtLcCtrlState *s = opaque;
+    (void)size;
+
+    ot_lc_ctrl_regs_write(s, addr, (uint32_t)val64, LC_IF_DMI);
 }
 
 static void ot_lc_ctrl_load_transitions(OtLcCtrlState *s,
@@ -2367,31 +2321,25 @@ static const Property ot_lc_ctrl_properties[] = {
 };
 
 static const MemoryRegionOps ot_lc_ctrl_sw_regs_ops = {
-    .read_with_attrs = &ot_lc_ctrl_sw_regs_read_with_attrs,
-    .write_with_attrs = &ot_lc_ctrl_sw_regs_write_with_attrs,
+    .read = &ot_lc_ctrl_sw_regs_read,
+    .write = &ot_lc_ctrl_sw_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_lc_ctrl_regs_accepts,
 };
 
 static const MemoryRegionOps ot_lc_ctrl_dmi_regs_ops = {
-    .read_with_attrs = &ot_lc_ctrl_dmi_regs_read_with_attrs,
-    .write_with_attrs = &ot_lc_ctrl_dmi_regs_write_with_attrs,
+    .read = &ot_lc_ctrl_dmi_regs_read,
+    .write = &ot_lc_ctrl_dmi_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_lc_ctrl_regs_accepts,
 };
 
 static void ot_lc_ctrl_reset_enter(Object *obj, ResetType type)
