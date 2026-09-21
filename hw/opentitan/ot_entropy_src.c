@@ -2249,9 +2249,6 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
     case R_MAIN_SM_STATE:
         permit = 0x3u;
         break;
-    case R_DEBUG_STATUS:
-        permit = 0x7u;
-        break;
     default:
         permit = 0xfu;
         break;
