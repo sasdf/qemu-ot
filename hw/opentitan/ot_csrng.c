@@ -143,7 +143,7 @@ REG32(MAIN_SM_STATE, 0x5cu)
 
 #define R_LAST_REG (R_MAIN_SM_STATE)
 #define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  0x80u
+#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -2124,15 +2124,15 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
         }
         break;
+    case R_RESEED_COUNTER_0:
+    case R_RESEED_COUNTER_1:
+    case R_RESEED_COUNTER_2:
     case R_SW_CMD_STS:
     case R_GENBITS_VLD:
     case R_GENBITS:
     case R_INT_STATE_VAL:
     case R_ERR_CODE:
     case R_MAIN_SM_STATE:
-    case R_RESEED_COUNTER_0:
-    case R_RESEED_COUNTER_1:
-    case R_RESEED_COUNTER_2:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
                       __func__, (uint32_t)addr, REG_NAME(reg));
         break;
@@ -2155,8 +2155,6 @@ static const MemoryRegionOps ot_csrng_regs_ops = {
     .read = &ot_csrng_regs_read,
     .write = &ot_csrng_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_csrng_regs_accepts,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
@@ -2182,7 +2180,7 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     }
     s->entropy_delay = 0;
 
-    memset(s->regs, 0, REGS_COUNT * sizeof(uint32_t));
+    memset(s->regs, 0, REGS_SIZE);
 
     s->regs[R_REGWEN] = 0x1u;
     s->regs[R_CTRL] = 0x9999u;
