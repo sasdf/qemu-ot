@@ -46,12 +46,9 @@ static RISCVException read_cpuctrlsts(CPURISCVState *env, int csrno,
                                       target_ulong *val)
 {
     (void)csrno;
-    target_ulong key_valid = CPUCTRLSTS_IC_SCR_KEY_VALID;
-    if (env->ic_scr_key_inval_cnt > 0) {
-        env->ic_scr_key_inval_cnt--;
-        key_valid = 0;
-    }
-    *val = key_valid | env->cpuctrlsts;
+    *val = (env->ic_scr_key_inval_cnt ? 0 : CPUCTRLSTS_IC_SCR_KEY_VALID) |
+           env->cpuctrlsts;
+    env->ic_scr_key_inval_cnt = 0;
     return RISCV_EXCP_NONE;
 }
 
@@ -132,34 +129,6 @@ static RISCVException write_mtvec(CPURISCVState *env, int csrno,
     return RISCV_EXCP_NONE;
 }
 
-#define CSR_SCONTEXT  0x5a8
-#define CSR_MSCONTEXT 0x7aa
-
-static RISCVException debug_csr(CPURISCVState *env, int csrno)
-{
-    (void)csrno;
-    return riscv_cpu_cfg(env)->debug ? RISCV_EXCP_NONE : RISCV_EXCP_ILLEGAL_INST;
-}
-
-static RISCVException read_zero(CPURISCVState *env, int csrno,
-                                target_ulong *val)
-{
-    (void)env;
-    (void)csrno;
-    *val = 0;
-    return RISCV_EXCP_NONE;
-}
-
-static RISCVException write_nop(CPURISCVState *env, int csrno,
-                                target_ulong val, uintptr_t ra)
-{
-    (void)env;
-    (void)csrno;
-    (void)val;
-    (void)ra;
-    return RISCV_EXCP_NONE;
-}
-
 #endif /* !defined(CONFIG_USER_ONLY) */
 
 const RISCVCSR ibex_csr_list[] = {
@@ -167,14 +136,6 @@ const RISCVCSR ibex_csr_list[] = {
     {
         .csrno = CSR_MTVEC,
         .csr_ops = { "mtvec", any, &read_mtvec, &write_mtvec },
-    },
-    {
-        .csrno = CSR_SCONTEXT,
-        .csr_ops = { "scontext", debug_csr, &read_zero, &write_nop },
-    },
-    {
-        .csrno = CSR_MSCONTEXT,
-        .csr_ops = { "mscontext", debug_csr, &read_zero, &write_nop },
     },
     {
         .csrno = CSR_CPUCTRLSTS,

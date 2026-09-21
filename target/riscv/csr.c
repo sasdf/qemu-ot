@@ -1282,8 +1282,7 @@ static target_ulong riscv_pmu_ctr_get_fixed_counters_val(CPURISCVState *env,
 
     if (!cfg_val) {
         if (icount_enabled()) {
-                curr_val = inst ? icount_get_raw() :
-                                  riscv_pmu_get_cpu_cycles(env);
+                curr_val = inst ? icount_get_raw() : riscv_pmu_get_cpu_cycles(env);
         } else {
             curr_val = cpu_get_host_ticks();
         }
@@ -6404,6 +6403,8 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
     [CSR_TDATA3]    =  { "tdata3",   debug, read_tdata,    write_tdata    },
     [CSR_TINFO]     =  { "tinfo",    debug, read_tinfo,    write_ignore   },
     [CSR_MCONTEXT]  =  { "mcontext", debug, read_mcontext, write_mcontext },
+    [0x5a8]         =  { "scontext", debug, read_zero,     write_ignore   },
+    [0x7aa]         =  { "mscontext", debug, read_zero,    write_ignore   },
 
     /* Debug CSRs */
     [CSR_DCSR]      =  { "dcsr",      debug, read_dcsr,     write_dcsr     },
