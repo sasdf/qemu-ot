@@ -105,7 +105,7 @@ struct OtSysrstCtrlState {
     bool ec_rst_l_hw;
     bool z3_wakeup_hw;
     QEMUTimer *ec_rst_timer;
-    QEMUTimer *combo_pace_timer;
+    QEMUTimer *combo_rst_timer;
     QEMUTimer *ulp_timer;
 
     char *ot_id;
@@ -247,32 +247,10 @@ static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val,
     }
 }
 
-static bool ot_sysrst_ctrl_is_combo_rst_armed(const OtSysrstCtrlState *s)
-{
-    for (unsigned k = 0; k < 4u; k++) {
-        if ((s->regs[R_COM_SEL_CTL_0 + k] & 0x1fu) &&
-            (s->regs[R_COM_OUT_CTL_0 + k] & R_COM_OUT_CTL_0_RST_REQ_MASK)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void ot_sysrst_ctrl_combo_pace_timer_cb(void *opaque)
+static void ot_sysrst_ctrl_combo_rst_timer_cb(void *opaque)
 {
     OtSysrstCtrlState *s = opaque;
-    if (!ot_sysrst_ctrl_is_combo_rst_armed(s)) {
-        return;
-    }
-    if (first_cpu && !first_cpu->halted) {
-        replay_mutex_unlock();
-        bql_unlock();
-        g_usleep(1000);
-        replay_mutex_lock();
-        bql_lock();
-    }
-    timer_mod_ns(s->combo_pace_timer,
-                 qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500000LL);
+    ibex_irq_set(&s->rst_req, 1);
 }
 
 static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
@@ -292,17 +270,6 @@ static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
 
     bool wkup_level = (s->regs[R_WKUP_STATUS] & R_WKUP_STATUS_WAKEUP_STS_MASK) != 0;
     ibex_irq_set(&s->wkup_req, (int)wkup_level);
-
-    if (s->combo_pace_timer) {
-        if (ot_sysrst_ctrl_is_combo_rst_armed(s)) {
-            if (!timer_pending(s->combo_pace_timer)) {
-                timer_mod_ns(s->combo_pace_timer,
-                             qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500000LL);
-            }
-        } else {
-            timer_del(s->combo_pace_timer);
-        }
-    }
 
     ot_gpio_eg_notify_sysrst_change();
 }
@@ -381,6 +348,7 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
     }
 
     bool trigger_rst = false;
+    uint32_t rst_det_cyc = 0;
     for (unsigned k = 0; k < 4u; k++) {
         uint32_t pre_sel = s->regs[R_COM_PRE_SEL_CTL_0 + k] & 0x1fu;
         uint32_t sel = s->regs[R_COM_SEL_CTL_0 + k] & 0x1fu;
@@ -414,12 +382,16 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             }
             if (out_ctl & R_COM_OUT_CTL_0_RST_REQ_MASK) {
                 trigger_rst = true;
+                rst_det_cyc = s->regs[R_COM_DET_CTL_0 + k];
             }
             if (out_ctl & R_COM_OUT_CTL_0_INTERRUPT_MASK) {
                 s->regs[R_COMBO_INTR_STATUS] |= (1u << k);
                 s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
             }
         } else if (prev_trig && !curr_trig) {
+            if (out_ctl & R_COM_OUT_CTL_0_RST_REQ_MASK) {
+                timer_del(s->combo_rst_timer);
+            }
             if (out_ctl & (R_COM_OUT_CTL_0_EC_RST_MASK |
                            R_COM_OUT_CTL_0_RST_REQ_MASK)) {
                 uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
@@ -444,7 +416,12 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
     }
 
     if (trigger_rst) {
-        ibex_irq_set(&s->rst_req, 1);
+        if (rst_det_cyc > 0u) {
+            timer_mod_ns(s->combo_rst_timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 3000000LL);
+        } else {
+            ibex_irq_set(&s->rst_req, 1);
+        }
     }
 
     ot_sysrst_ctrl_update_outputs(s);
@@ -465,6 +442,11 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
         s->pin_in_raw &= ~(1u << irq);
     }
     s->poll_count = 0;
+
+    if (timer_pending(s->combo_rst_timer)) {
+        timer_mod_ns(s->combo_rst_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 3000000LL);
+    }
 
     /*
      * Per sysrst_ctrl_comboact.sv: ec_rst_l_i High -> Low transition
@@ -665,7 +647,7 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
     }
 
     timer_del(s->ec_rst_timer);
-    timer_del(s->combo_pace_timer);
+    timer_del(s->combo_rst_timer);
     timer_del(s->ulp_timer);
 
     s->bat_disable_hw = false;
@@ -712,8 +694,8 @@ static void ot_sysrst_ctrl_init(Object *obj)
     s->ec_rst_l_hw = true;
     s->ec_rst_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
                                    &ot_sysrst_ctrl_ec_rst_timer_cb, s);
-    s->combo_pace_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
-                                       &ot_sysrst_ctrl_combo_pace_timer_cb, s);
+    s->combo_rst_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
+                                      &ot_sysrst_ctrl_combo_rst_timer_cb, s);
     s->ulp_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
                                 &ot_sysrst_ctrl_ulp_timer_cb, s);
 
