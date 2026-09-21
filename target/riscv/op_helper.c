@@ -614,14 +614,9 @@ void helper_wfi(CPURISCVState *env)
             env->wfi_pc = env->pc - 4;
             uint32_t insn = cpu_ldl_code(env, env->wfi_pc - 4);
             if ((insn & 0x7f) == 0x23) {
-                uint32_t rs1 = (insn >> 15) & 0x1f;
                 int32_t imm = (((int32_t)insn >> 25) << 5) |
                               ((insn >> 7) & 0x1f);
-                env->last_data_addr = env->gpr[rs1] + imm;
-            } else if ((insn & 0x7f) == 0x03) {
-                uint32_t rs1 = (insn >> 15) & 0x1f;
-                int32_t imm = (int32_t)insn >> 20;
-                env->last_data_addr = env->gpr[rs1] + imm;
+                env->last_data_addr = env->gpr[(insn >> 15) & 0x1f] + imm;
             }
             cs->halted = 1;
             cs->exception_index = EXCP_HLT;
