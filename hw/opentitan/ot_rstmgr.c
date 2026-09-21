@@ -161,24 +161,6 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #undef REG_NAME_ENTRY
 /* clang-format on */
 
-static const uint8_t RSTMGR_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,      [R_RESET_REQ] = 0x1u,
-    [R_RESET_INFO] = 0x1u,      [R_ALERT_REGWEN] = 0x1u,
-    [R_ALERT_INFO_CTRL] = 0x1u, [R_ALERT_INFO_ATTR] = 0x1u,
-    [R_ALERT_INFO] = 0xfu,      [R_CPU_REGWEN] = 0x1u,
-    [R_CPU_INFO_CTRL] = 0x1u,   [R_CPU_INFO_ATTR] = 0x1u,
-    [R_CPU_INFO] = 0xfu,        [R_SW_RST_REGWEN_0] = 0x1u,
-    [R_SW_RST_REGWEN_1] = 0x1u, [R_SW_RST_REGWEN_2] = 0x1u,
-    [R_SW_RST_REGWEN_3] = 0x1u, [R_SW_RST_REGWEN_4] = 0x1u,
-    [R_SW_RST_REGWEN_5] = 0x1u, [R_SW_RST_REGWEN_6] = 0x1u,
-    [R_SW_RST_REGWEN_7] = 0x1u, [R_SW_RST_CTRL_N_0] = 0x1u,
-    [R_SW_RST_CTRL_N_1] = 0x1u, [R_SW_RST_CTRL_N_2] = 0x1u,
-    [R_SW_RST_CTRL_N_3] = 0x1u, [R_SW_RST_CTRL_N_4] = 0x1u,
-    [R_SW_RST_CTRL_N_5] = 0x1u, [R_SW_RST_CTRL_N_6] = 0x1u,
-    [R_SW_RST_CTRL_N_7] = 0x1u, [R_ERR_CODE] = 0x1u,
-};
-
-
 #define OT_RSTMGR_SW_RESET_MAX 8u
 
 struct OtRstMgrState {
@@ -346,16 +328,6 @@ static void ot_rstmgr_sw_reset_timer_cb(void *opaque)
     }
 }
 
-static int ot_rstmgr_alert_walker(DeviceState *dev, void *opaque)
-{
-    OtAlertState **alert_dev = opaque;
-    if (object_dynamic_cast(OBJECT(dev), TYPE_OT_ALERT)) {
-        *alert_dev = OT_ALERT(dev);
-        return -1;
-    }
-    return 0;
-}
-
 extern void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8]);
 
 static void ot_rstmgr_reset_bus(void *opaque)
@@ -390,10 +362,8 @@ static void ot_rstmgr_reset_bus(void *opaque)
     }
 
     if (s->regs[R_ALERT_INFO_CTRL] & R_ALERT_INFO_CTRL_EN_MASK) {
-        OtAlertState *alert_dev = NULL;
-        qbus_walk_children(s->parent_obj.parent_obj.parent_bus,
-                           &ot_rstmgr_alert_walker, NULL, NULL, NULL,
-                           &alert_dev);
+        OtAlertState *alert_dev =
+            (OtAlertState *)object_resolve_path_type("", TYPE_OT_ALERT, NULL);
         if (alert_dev) {
             ot_alert_get_crash_dump(alert_dev, s->alert_info_dump);
         }
@@ -591,7 +561,7 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_rstmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                 pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
 
 static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -736,26 +706,6 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static MemTxResult ot_rstmgr_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
-{
-    OtRstMgrState *s = opaque;
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint32_t val32 = (uint32_t)ot_rstmgr_regs_read(opaque, addr & ~0x3ULL, 4u);
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    *data = (val32 >> shift) & size_mask;
-    return MEMTX_OK;
-}
-
 static MemTxResult ot_rstmgr_regs_write_with_attrs(
     void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
@@ -763,14 +713,9 @@ static MemTxResult ot_rstmgr_regs_write_with_attrs(
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
 
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
+    uint8_t permit = (reg == R_ALERT_INFO || reg == R_CPU_INFO) ? 0xfu : 0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((RSTMGR_PERMIT[reg] & ~reg_be) != 0u) {
+    if ((permit & ~reg_be) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
                       __func__, s->ot_id, (uint32_t)addr, size);
@@ -791,7 +736,7 @@ static const Property ot_rstmgr_properties[] = {
 };
 
 static const MemoryRegionOps ot_rstmgr_regs_ops = {
-    .read_with_attrs = &ot_rstmgr_regs_read_with_attrs,
+    .read = &ot_rstmgr_regs_read,
     .write_with_attrs = &ot_rstmgr_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
@@ -906,7 +851,7 @@ static void ot_rstmgr_init(Object *obj)
     OtRstMgrState *s = OT_RSTMGR(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_rstmgr_regs_ops, s, TYPE_OT_RSTMGR,
-                          0x80u);
+                          REGS_SIZE);
 
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
