@@ -913,7 +913,8 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     }
 
-    if (s->rx_poll_count >= 4u && fifo8_is_empty(&s->rx_fifo) &&
+    if (s->rx_poll_count >= 4u && !s->regs[R_INTR_ENABLE] &&
+        fifo8_is_empty(&s->rx_fifo) &&
         fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE) {
         timer_del(s->rx_timer);
         icount_advance_bias_ns(ot_uart_char_ns(s));
@@ -929,7 +930,8 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     if (reg == R_STATUS && ot_uart_is_rx_enabled(s) &&
         fifo8_is_empty(&s->rx_fifo) &&
         (fifo8_is_empty(&s->rx_staging_fifo) ||
-         fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE)) {
+         (!s->regs[R_INTR_ENABLE] &&
+          fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE))) {
         if (++s->rx_poll_count >= 4u &&
             fifo8_is_empty(&s->rx_staging_fifo) &&
             !timer_pending(s->rx_pace_timer)) {
