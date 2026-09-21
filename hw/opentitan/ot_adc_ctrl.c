@@ -435,8 +435,6 @@ static const MemoryRegionOps ot_adc_ctrl_regs_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_adc_ctrl_regs_accepts,
 };
 
