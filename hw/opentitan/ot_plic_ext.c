@@ -99,13 +99,12 @@ static const char *ALERT_REG_NAMES[ALERT_REGS_COUNT] = {
 };
 #undef REG_NAME_ENTRY
 
-static MemTxResult ot_plic_ext_msip_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static uint64_t ot_plic_ext_msip_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtPlicExtState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32;
-    unsigned byte_off = (unsigned)(addr & 3u);
+
     hwaddr reg = R32_OFF(addr);
 
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
@@ -116,16 +115,15 @@ static MemTxResult ot_plic_ext_msip_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_plic_ext_io_msip_read_out(s->ot_id, (uint32_t)addr,
                                        MSIP_REG_NAME(reg), val32, pc);
 
-    uint32_t mask = (size >= 4u) ? 0xffffffffu : ((1u << (size * 8u)) - 1u);
-    *val64 = (val32 >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
 static MemTxResult ot_plic_ext_msip_write_with_attrs(
@@ -160,13 +158,12 @@ static MemTxResult ot_plic_ext_msip_write_with_attrs(
     }
 }
 
-static MemTxResult ot_plic_ext_alert_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static uint64_t ot_plic_ext_alert_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtPlicExtState *s = opaque;
     (void)size;
-    (void)attrs;
     uint32_t val32;
+
     hwaddr reg = R32_OFF(addr);
 
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
@@ -179,15 +176,15 @@ static MemTxResult ot_plic_ext_alert_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_plic_ext_io_alert_read_out(s->ot_id, (uint32_t)addr,
                                         ALERT_REG_NAME(reg), val32, pc);
 
-    *val64 = 0;
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
 static MemTxResult ot_plic_ext_alert_write_with_attrs(
@@ -229,7 +226,7 @@ static const Property ot_plic_ext_properties[] = {
 };
 
 static const MemoryRegionOps ot_plic_ext_msip_ops = {
-    .read_with_attrs = &ot_plic_ext_msip_read_with_attrs,
+    .read = &ot_plic_ext_msip_read,
     .write_with_attrs = &ot_plic_ext_msip_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
@@ -239,7 +236,7 @@ static const MemoryRegionOps ot_plic_ext_msip_ops = {
 };
 
 static const MemoryRegionOps ot_plic_ext_alert_ops = {
-    .read_with_attrs = &ot_plic_ext_alert_read_with_attrs,
+    .read = &ot_plic_ext_alert_read,
     .write_with_attrs = &ot_plic_ext_alert_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
