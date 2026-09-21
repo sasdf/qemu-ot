@@ -741,7 +741,7 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
 
         if (!s->init_slot_bm[slot]) {
             if (ot_sram_ctrl_mem_is_fully_initialized(s)) {
-                if (!s->noswitch && !s->scr_invalid) {
+                if (!s->noswitch) {
                     /*
                      * perform the memory switch in a BH so that the current mr
                      * is not in use when switching
