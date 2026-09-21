@@ -3016,9 +3016,9 @@ static int ot_usbdev_chr_usb_can_receive(void *opaque)
         s->usb_server.recv_rem == sizeof(OtUsbdevServerPktHdr)) {
         int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         if (now < s->usb_pace_until_ns) {
-            /*
-             * ot_usbdev_pace_usb_chr already armed s->usb_pace_timer.
-             */
+            if (!timer_pending(&s->usb_pace_timer)) {
+                timer_mod(&s->usb_pace_timer, s->usb_pace_until_ns);
+            }
             return 0;
         }
     }

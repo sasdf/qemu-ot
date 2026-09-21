@@ -625,10 +625,10 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
         }
     }
 
-    if (!timer_pending(s->rx_timer)) {
-        /* Pace RX staging drain: full-FIFO burst delay when RX FIFO is empty */
-        uint64_t mult = ot_uart_is_sys_loopack_enabled(s) ? 0u :
-                        (fifo8_is_empty(&s->rx_fifo) ? OT_UART_TX_FIFO_SIZE : 1u);
+    if (ot_uart_is_sys_loopack_enabled(s)) {
+        ot_uart_step_rx(s);
+    } else if (!timer_pending(s->rx_timer)) {
+        uint64_t mult = fifo8_is_empty(&s->rx_fifo) ? OT_UART_TX_FIFO_SIZE : 1u;
         timer_mod(s->rx_timer,
                   s->last_rx_ns + mult * ot_uart_char_ns(s));
     }
@@ -673,16 +673,16 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
      */
     ot_uart_update_irqs(s);
 
-    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s) &&
-        fifo8_is_empty(&s->rx_staging_fifo)) {
-        /*
-         * Notify the character backend only after the RX staging FIFO has
-         * completely drained so staged bytes are paced into the RX FIFO
-         * at baud rate via rx_timer before accepting new host input.
-         *
-         */
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        /* Staging FIFO is empty; backend may now push additional RX bytes. */
+    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
+        if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+            if (!timer_pending(s->rx_timer)) {
+                timer_mod(s->rx_timer,
+                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                              ot_uart_char_ns(s));
+            }
+        } else {
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        }
     }
 
     return val;
@@ -1187,10 +1187,10 @@ static const Property ot_uart_properties[] = {
     DEFINE_PROP_BOOL("toggle-break", OtUARTState, toggle_break, true),
 };
 
-/* Character backend hot-swap handler */
 static int ot_uart_be_change(void *opaque)
 {
     OtUARTState *s = opaque;
+
     qemu_chr_fe_set_handlers(&s->chr, ot_uart_can_receive, ot_uart_receive,
                              ot_uart_event_handler, ot_uart_be_change, s, NULL,
                              true);
