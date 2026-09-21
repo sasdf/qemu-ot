@@ -767,6 +767,32 @@ static inline size_t ot_kmac_get_keccak_rate_bytes(size_t kstrength)
     return (KECCAK_STATE_BITS - 2u * kstrength) / 8u;
 }
 
+static uint32_t ot_kmac_state_mask_word(const OtKMACState *s, unsigned word_ix)
+{
+    uint32_t word32 = ldl_le_p(&s->keccak_state[word_ix * sizeof(uint32_t)]);
+    uint32_t h = ldl_le_p(&s->keccak_state[0]) ^ word32 ^
+                 (0x9e3779b9u * (word_ix + 1u));
+    h ^= h >> 16u;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13u;
+    h *= 0xc2b2ae35u;
+    h ^= h >> 16u;
+
+    uint32_t mask = 0;
+    for (unsigned b = 0; b < sizeof(uint32_t); b++) {
+        uint8_t mb = (uint8_t)(h >> (b * 8u));
+        uint8_t wb = (uint8_t)(word32 >> (b * 8u));
+        if (mb == 0u || mb == 0xffu || mb == wb || (mb ^ wb) == 0xffu) {
+            mb ^= 0x5au;
+            if (mb == 0u || mb == 0xffu || mb == wb || (mb ^ wb) == 0xffu) {
+                mb ^= 0x3cu;
+            }
+        }
+        mask |= (uint32_t)mb << (b * 8u);
+    }
+    return mask;
+}
+
 static void ot_kmac_reset_state(OtKMACState *s)
 {
     memset(s->keccak_state, 0, sizeof(s->keccak_state));
@@ -881,9 +907,17 @@ static void ot_kmac_process(void *opaque)
                 /* App mode, send response and go back to IDLE state */
                 if (s->current_app->fn) {
                     rsp.done = true;
-                    memcpy(&rsp.digest_share0[0], &s->keccak_state[0],
-                           sizeof(rsp.digest_share0));
-                    memset(&rsp.digest_share1[0], 0, sizeof(rsp.digest_share1));
+                    for (unsigned w = 0;
+                         w < sizeof(rsp.digest_share0) / sizeof(uint32_t);
+                         w++) {
+                        uint32_t word32 =
+                            ldl_le_p(&s->keccak_state[w * sizeof(uint32_t)]);
+                        uint32_t mask = ot_kmac_state_mask_word(s, w);
+                        stl_le_p(&rsp.digest_share0[w * sizeof(uint32_t)],
+                                 word32 ^ mask);
+                        stl_le_p(&rsp.digest_share1[w * sizeof(uint32_t)],
+                                 mask);
+                    }
                     s->current_app->fn(s->current_app->opaque, &rsp);
                 }
                 if (!s->error_awaiting_sw) {
@@ -1681,29 +1715,26 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
         }
 
         switch (share) {
-        case 0: {
+        case 0:
+        case 1: {
             hwaddr word_offset = offset & ~3ULL;
             if (word_offset + 4u <= KECCAK_STATE_BYTES) {
                 uint32_t word32 = ldl_le_p(&s->keccak_state[word_offset]);
+                uint32_t mask =
+                    ot_kmac_state_mask_word(s, (unsigned)(word_offset >> 2u));
+                uint32_t share_word = (share == 0) ? (word32 ^ mask) : mask;
                 if (byteswap) {
-                    word32 = bswap32(word32);
+                    share_word = bswap32(share_word);
                 }
                 unsigned shift = (unsigned)((offset & 3ULL) * 8u);
-                uint32_t mask =
+                uint32_t sz_mask =
                     (size >= 4u) ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-                val32 = (word32 >> shift) & mask;
+                val32 = (share_word >> shift) & sz_mask;
             } else {
                 val32 = 0;
             }
             break;
         }
-        case 1:
-            /*
-             * TODO: implement masking. Current version returns unmasked state
-             * in first share and zeros in second one.
-             */
-            val32 = 0;
-            break;
         default:
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: bad offset 0x%02x\n",
                           __func__, s->ot_id, (uint32_t)addr);
