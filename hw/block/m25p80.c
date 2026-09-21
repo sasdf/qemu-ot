@@ -838,8 +838,6 @@ static void complete_collecting_data(Flash *s)
         case MAN_WINBOND:
             if (s->len > 1) {
                 s->quad_enable = !!(s->data[1] & 0x02);
-            } else {
-                s->quad_enable = extract32(s->data[0], 6, 1);
             }
             break;
         default:
@@ -1362,7 +1360,7 @@ static void decode_new_cmd(Flash *s, uint32_t value)
         }
 
         if (get_man(s) == MAN_MACRONIX || get_man(s) == MAN_ISSI ||
-            get_man(s) == MAN_NUMONYX || get_man(s) == MAN_WINBOND) {
+            get_man(s) == MAN_NUMONYX) {
             s->data[0] |= (!!s->quad_enable) << 6;
         }
         if (get_man(s) == MAN_SST) {
