@@ -156,7 +156,7 @@ int64_t icount_get(void)
 
 int64_t icount_to_ns(int64_t icount)
 {
-    return (int64_t)muldiv64(icount, 1000, 24);
+    return icount << qatomic_read(&timers_state.icount_time_shift);
 }
 
 /*
@@ -225,7 +225,8 @@ static void icount_adjust_vm(void *opaque)
 
 int64_t icount_round(int64_t count)
 {
-    return (MAX(count, 0) * 24 + 999) / 1000;
+    int shift = qatomic_read(&timers_state.icount_time_shift);
+    return (count + (1 << shift) - 1) >> shift;
 }
 
 static void icount_warp_rt(void)
@@ -246,9 +247,6 @@ static void icount_warp_rt(void)
         return;
     }
 
-    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-                                                  ~QEMU_TIMER_ATTR_EXTERNAL);
-
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (runstate_is_running()) {
@@ -257,9 +255,6 @@ static void icount_warp_rt(void)
         int64_t warp_delta;
 
         warp_delta = clock - timers_state.vm_clock_warp_start;
-        if (deadline >= 0) {
-            warp_delta = MIN(warp_delta, deadline);
-        }
         if (icount_enabled() == ICOUNT_ADAPTATIVE) {
             /*
              * In adaptive mode, do not let QEMU_CLOCK_VIRTUAL run too far
