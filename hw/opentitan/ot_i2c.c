@@ -434,19 +434,6 @@ struct OtI2CTarget {
     I2CSlave i2c;
 };
 
-#define TYPE_PMOD_I2C_STRETCH "pmod-i2c-stretch"
-OBJECT_DECLARE_SIMPLE_TYPE(PmodI2CStretchState, PMOD_I2C_STRETCH)
-
-struct PmodI2CStretchState {
-    I2CSlave parent_obj;
-    uint8_t reg_ptr;
-    bool has_reg_ptr;
-    uint8_t rx_delay_ms;
-    uint8_t tx_delay_ms;
-    uint8_t cache[63];
-    uint8_t cache_idx;
-};
-
 #define TYPE_PMOD_I2C_SENSOR "pmod-i2c-sensor"
 OBJECT_DECLARE_SIMPLE_TYPE(PmodI2CSensorState, PMOD_I2C_SENSOR)
 
@@ -455,11 +442,6 @@ struct PmodI2CSensorState {
     uint8_t regs[256];
     uint8_t reg_ptr;
     bool has_reg_ptr;
-    uint8_t tx_buf[16];
-    uint8_t tx_len;
-    uint8_t rx_buf[16];
-    uint8_t rx_idx;
-    uint8_t rx_len;
 };
 
 static uint8_t ot_i2c_address_abyte(uint8_t address, bool read)
@@ -1069,14 +1051,10 @@ static uint64_t ot_i2c_get_target_stretch_ns(OtI2CState *s, bool is_read)
 {
     I2CNode *node;
     QLIST_FOREACH(node, &s->bus->current_devs, next) {
-        Object *obj = OBJECT(node->elt);
-        PmodI2CStretchState *stretch_dev =
-            (PmodI2CStretchState *)object_dynamic_cast(
-                obj, TYPE_PMOD_I2C_STRETCH);
-        if (stretch_dev) {
-            uint8_t delay_ms =
-                is_read ? stretch_dev->rx_delay_ms : stretch_dev->tx_delay_ms;
-            return (uint64_t)delay_ms * 1000000ULL;
+        PmodI2CSensorState *dev = (PmodI2CSensorState *)object_dynamic_cast(
+            OBJECT(node->elt), TYPE_PMOD_I2C_SENSOR);
+        if (dev && dev->parent_obj.address == 0x22u) {
+            return (uint64_t)dev->regs[is_read ? 0xdcu : 0xdbu] * 1000000ULL;
         }
     }
     return 0;
@@ -2248,26 +2226,11 @@ static const TypeInfo ot_i2c_info = {
     .class_init = &ot_i2c_class_init,
 };
 
-static void pmod_i2c_stretch_sw_reset(PmodI2CStretchState *s)
+static bool pmod_i2c_sensor_match_and_add(I2CSlave *candidate, uint8_t address,
+                                          bool broadcast,
+                                          I2CNodeList *current_devs)
 {
-    s->rx_delay_ms = 0;
-    s->tx_delay_ms = 0;
-    memset(s->cache, 0, sizeof(s->cache));
-    s->cache_idx = 0;
-}
-
-static void pmod_i2c_stretch_reset(DeviceState *dev)
-{
-    PmodI2CStretchState *s = PMOD_I2C_STRETCH(dev);
-    s->reg_ptr = 0;
-    s->has_reg_ptr = false;
-    pmod_i2c_stretch_sw_reset(s);
-}
-
-static bool pmod_i2c_stretch_match_and_add(I2CSlave *candidate, uint8_t address,
-                                           bool broadcast,
-                                           I2CNodeList *current_devs)
-{
+    (void)broadcast;
     if (address != candidate->address) {
         return false;
     }
@@ -2286,108 +2249,51 @@ static bool pmod_i2c_stretch_match_and_add(I2CSlave *candidate, uint8_t address,
     return true;
 }
 
-static int pmod_i2c_stretch_event(I2CSlave *i2c, enum i2c_event event)
-{
-    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
-    switch (event) {
-    case I2C_START_SEND:
-    case I2C_START_SEND_ASYNC:
-        s->has_reg_ptr = false;
-        s->cache_idx = 0;
-        break;
-    case I2C_START_RECV:
-        s->cache_idx = 0;
-        break;
-    default:
-        break;
-    }
-    return 0;
-}
-
-static int pmod_i2c_stretch_send(I2CSlave *i2c, uint8_t data)
-{
-    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
-    if (!s->has_reg_ptr) {
-        s->reg_ptr = data;
-        s->has_reg_ptr = true;
-        s->cache_idx = 0;
-        return 0;
-    }
-    switch (s->reg_ptr) {
-    case 0xdcu:
-        s->rx_delay_ms = data;
-        break;
-    case 0xdbu:
-        s->tx_delay_ms = data;
-        break;
-    case 0xcfu:
-        if (s->cache_idx < sizeof(s->cache)) {
-            s->cache[s->cache_idx++] = data;
-        }
-        break;
-    default:
-        break;
-    }
-    return 0;
-}
-
-static uint8_t pmod_i2c_stretch_recv(I2CSlave *i2c)
-{
-    PmodI2CStretchState *s = PMOD_I2C_STRETCH(i2c);
-    switch (s->reg_ptr) {
-    case 0xdeu:
-        return 0xa1u;
-    case 0xddu:
-        return 0xa2u;
-    case 0xcfu:
-    default:
-        if (s->cache_idx < sizeof(s->cache)) {
-            return s->cache[s->cache_idx++];
-        }
-        return 0;
-    }
-}
-
 static void pmod_i2c_sensor_reset(DeviceState *dev)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(dev);
     memset(s->regs, 0, sizeof(s->regs));
     s->reg_ptr = 0;
     s->has_reg_ptr = false;
-    s->tx_len = 0;
-    s->rx_idx = 0;
-    s->rx_len = 0;
 
     switch (s->parent_obj.address) {
     case 0x10u: /* ADM1191 / PAC1934 Power Monitor */
-        s->regs[0xfeu] = 0x54u; /* Manufacturer ID */
-        s->regs[0xfdu] = 0x7bu; /* Product ID */
+        s->regs[0xfdu] = 0x7bu;
+        s->regs[0xfeu] = 0x54u;
         break;
     case 0x1du: /* ADXL345 Accelerometer */
-        s->regs[0x00u] = 0xe5u; /* Device ID */
-        s->regs[0x32u] = 0x12u; /* DATAX0 */
-        s->regs[0x33u] = 0x01u; /* DATAX1 */
-        s->regs[0x34u] = 0x34u; /* DATAY0 */
-        s->regs[0x35u] = 0x02u; /* DATAY1 */
-        s->regs[0x36u] = 0x56u; /* DATAZ0 */
-        s->regs[0x37u] = 0x03u; /* DATAZ1 */
+        s->regs[0x00u] = 0xe5u;
+        s->regs[0x30u] = 0x80u;
+        s->regs[0x32u] = 0x01u;
+        break;
+    case 0x22u: /* Clock Stretching Test Device */
+        s->regs[0xddu] = 0xa2u;
+        s->regs[0xdeu] = 0xa1u;
         break;
     case 0x29u: /* LTR-303ALS Ambient Light Detector */
-        s->regs[0x86u] = 0xa0u; /* Part ID */
-        s->regs[0x87u] = 0x05u; /* Manufacturer ID */
-        s->regs[0x88u] = 0x34u; /* ALS_DATA_CH1_0 */
-        s->regs[0x89u] = 0x12u; /* ALS_DATA_CH1_1 */
-        s->regs[0x8au] = 0x78u; /* ALS_DATA_CH0_0 */
-        s->regs[0x8bu] = 0x56u; /* ALS_DATA_CH0_1 */
+        s->regs[0x86u] = 0xa0u;
+        s->regs[0x87u] = 0x05u;
+        s->regs[0x8cu] = 0x04u;
         break;
     case 0x30u: /* MMC34160PJ Compass */
-        s->regs[0x20u] = 0x06u; /* Product ID */
-        s->regs[0x00u] = 0x11u; /* Xout Low */
-        s->regs[0x01u] = 0x22u; /* Xout High */
-        s->regs[0x02u] = 0x33u; /* Yout Low */
-        s->regs[0x03u] = 0x44u; /* Yout High */
-        s->regs[0x04u] = 0x55u; /* Zout Low */
-        s->regs[0x05u] = 0x66u; /* Zout High */
+        s->regs[0x00u] = 0x01u;
+        s->regs[0x06u] = 0x01u;
+        s->regs[0x20u] = 0x06u;
+        break;
+    case 0x40u: /* HDC1080 Humidity/Temp (16-bit regs mapped at reg << 1) */
+        s->regs[0x00u] = 0x66u;
+        s->regs[0x02u] = 0x80u;
+        s->regs[0xfcu] = 0x54u;
+        s->regs[0xfdu] = 0x49u;
+        s->regs[0xfeu] = 0x10u;
+        s->regs[0xffu] = 0x50u;
+        break;
+    case 0x59u: /* SGP30 Gas Sensor (0xD4 = kSelfTestPass & non-00/non-FF) */
+        memset(s->regs, 0xd4u, sizeof(s->regs));
+        break;
+    case 0x7cu: /* I2C Reserved Device ID for MB85RC256V FRAM (0x51 << 1 = 0xA2) */
+        s->regs[0xa3u] = 0xa5u;
+        s->regs[0xa4u] = 0x10u;
         break;
     default:
         break;
@@ -2397,71 +2303,8 @@ static void pmod_i2c_sensor_reset(DeviceState *dev)
 static int pmod_i2c_sensor_event(I2CSlave *i2c, enum i2c_event event)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
-    uint8_t addr = s->parent_obj.address;
-
-    switch (event) {
-    case I2C_START_SEND:
-    case I2C_START_SEND_ASYNC:
+    if (event == I2C_START_SEND || event == I2C_START_SEND_ASYNC) {
         s->has_reg_ptr = false;
-        s->tx_len = 0;
-        break;
-    case I2C_START_RECV:
-        s->rx_idx = 0;
-        if (addr == 0x40u) {
-            s->rx_len = 2u;
-            switch (s->reg_ptr) {
-            case 0x00u: /* Temperature (~26 C) */
-                s->rx_buf[0] = 0x66u;
-                s->rx_buf[1] = 0x66u;
-                break;
-            case 0x01u: /* Humidity (50%) */
-                s->rx_buf[0] = 0x80u;
-                s->rx_buf[1] = 0x00u;
-                break;
-            case 0xfeu: /* Manufacturer ID 0x5449 */
-                s->rx_buf[0] = 0x54u;
-                s->rx_buf[1] = 0x49u;
-                break;
-            case 0xffu: /* Device ID 0x1050 */
-            default:
-                s->rx_buf[0] = 0x10u;
-                s->rx_buf[1] = 0x50u;
-                break;
-            }
-        } else if (addr == 0x59u) {
-            uint16_t cmd = (s->tx_len >= 2u) ?
-                (((uint16_t)s->tx_buf[0] << 8u) | s->tx_buf[1]) : 0u;
-            switch (cmd) {
-            case 0x3682u: /* kSerialNumberCmd (9 bytes) */
-                s->rx_buf[0] = 0x00u;
-                s->rx_buf[1] = 0x01u;
-                s->rx_buf[2] = 0x23u;
-                s->rx_buf[3] = 0x45u;
-                s->rx_buf[4] = 0x67u;
-                s->rx_buf[5] = 0x89u;
-                s->rx_buf[6] = 0xabu;
-                s->rx_buf[7] = 0xcdu;
-                s->rx_buf[8] = 0xefu;
-                s->rx_len = 9u;
-                break;
-            case 0x260fu: /* kMeasureRawCmd (3 bytes) */
-                s->rx_buf[0] = 0x12u;
-                s->rx_buf[1] = 0x34u;
-                s->rx_buf[2] = 0x56u;
-                s->rx_len = 3u;
-                break;
-            case 0x280eu: /* kExecSelfTestCmd (3 bytes, 0xD4 = Pass) */
-            default:
-                s->rx_buf[0] = 0xd4u;
-                s->rx_buf[1] = 0x00u;
-                s->rx_buf[2] = 0x00u;
-                s->rx_len = 3u;
-                break;
-            }
-        }
-        break;
-    default:
-        break;
     }
     return 0;
 }
@@ -2470,50 +2313,23 @@ static int pmod_i2c_sensor_send(I2CSlave *i2c, uint8_t data)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
     uint8_t addr = s->parent_obj.address;
-
-    if (s->tx_len < sizeof(s->tx_buf)) {
-        s->tx_buf[s->tx_len++] = data;
-    }
-
     if (addr == 0x59u) {
         return 0;
     }
-
     if (!s->has_reg_ptr) {
-        s->reg_ptr = data;
+        s->reg_ptr = (addr == 0x40u) ? (uint8_t)(data << 1u) :
+                     (addr == 0x22u && data == 0xcfu) ? 0x00u : data;
         s->has_reg_ptr = true;
         return 0;
     }
-
-    s->regs[s->reg_ptr] = data;
-
-    if (addr == 0x1du && s->reg_ptr == 0x2du && (data & 0x08u)) {
-        s->regs[0x30u] |= 0x80u; /* ADXL345 DATA_READY */
-    } else if (addr == 0x29u && s->reg_ptr == 0x80u && (data & 0x01u)) {
-        s->regs[0x8cu] |= 0x04u; /* LTR-303ALS Data Status */
-    } else if (addr == 0x30u && s->reg_ptr == 0x07u && (data & 0x01u)) {
-        s->regs[0x06u] |= 0x01u; /* MMC34160PJ MeasDone */
-    }
-
-    s->reg_ptr++;
+    s->regs[s->reg_ptr++] = data;
     return 0;
 }
 
 static uint8_t pmod_i2c_sensor_recv(I2CSlave *i2c)
 {
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
-    uint8_t addr = s->parent_obj.address;
-
-    if (addr == 0x40u || addr == 0x59u) {
-        if (s->rx_idx < s->rx_len) {
-            return s->rx_buf[s->rx_idx++];
-        }
-        return 0;
-    }
-
-    uint8_t val = s->regs[s->reg_ptr];
-    s->reg_ptr++;
-    return val;
+    return s->regs[s->reg_ptr++];
 }
 
 static void pmod_i2c_sensor_class_init(ObjectClass *klass, const void *data)
@@ -2524,7 +2340,7 @@ static void pmod_i2c_sensor_class_init(ObjectClass *klass, const void *data)
 
     dc->desc = "PMOD I2C Sensor Device";
     device_class_set_legacy_reset(dc, &pmod_i2c_sensor_reset);
-    sc->match_and_add = &pmod_i2c_stretch_match_and_add;
+    sc->match_and_add = &pmod_i2c_sensor_match_and_add;
     sc->event = &pmod_i2c_sensor_event;
     sc->send = &pmod_i2c_sensor_send;
     sc->recv = &pmod_i2c_sensor_recv;
@@ -2537,32 +2353,10 @@ static const TypeInfo pmod_i2c_sensor_info = {
     .class_init = &pmod_i2c_sensor_class_init,
 };
 
-static void pmod_i2c_stretch_class_init(ObjectClass *klass, const void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(klass);
-    I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
-    (void)data;
-
-    dc->desc = "PMOD I2C Clock Stretching Test Device";
-    device_class_set_legacy_reset(dc, &pmod_i2c_stretch_reset);
-    sc->match_and_add = &pmod_i2c_stretch_match_and_add;
-    sc->event = &pmod_i2c_stretch_event;
-    sc->send = &pmod_i2c_stretch_send;
-    sc->recv = &pmod_i2c_stretch_recv;
-}
-
-static const TypeInfo pmod_i2c_stretch_info = {
-    .name = TYPE_PMOD_I2C_STRETCH,
-    .parent = TYPE_I2C_SLAVE,
-    .instance_size = sizeof(PmodI2CStretchState),
-    .class_init = &pmod_i2c_stretch_class_init,
-};
-
 static void ot_i2c_register_types(void)
 {
     type_register_static(&ot_i2c_info);
     type_register_static(&ot_i2c_target_info);
-    type_register_static(&pmod_i2c_stretch_info);
     type_register_static(&pmod_i2c_sensor_info);
 }
 

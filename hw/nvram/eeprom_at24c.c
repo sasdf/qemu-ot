@@ -57,62 +57,14 @@ struct EEPROMState {
     const uint8_t *init_rom;
     uint32_t init_rom_size;
 
-    uint32_t device_id;
-    bool in_dev_id;
-    bool dev_id_matched;
-    uint8_t dev_id_idx;
-
     uint8_t write_naks;
     uint8_t pending_naks;
 };
-
-static bool at24c_eeprom_match_and_add(I2CSlave *candidate, uint8_t address,
-                                       bool broadcast,
-                                       I2CNodeList *current_devs)
-{
-    EEPROMState *ee = AT24C_EE(candidate);
-
-    if (broadcast) {
-        return false;
-    }
-    if (address == candidate->address) {
-        ee->in_dev_id = false;
-        I2CNode *node = g_new(struct I2CNode, 1);
-        node->elt = candidate;
-        QLIST_INSERT_HEAD(current_devs, node, next);
-        return true;
-    }
-    if (ee->device_id != 0 && address == 0x7C) {
-        ee->in_dev_id = true;
-        I2CNode *node = g_new(struct I2CNode, 1);
-        node->elt = candidate;
-        QLIST_INSERT_HEAD(current_devs, node, next);
-        return true;
-    }
-    return false;
-}
 
 static
 int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
 {
     EEPROMState *ee = AT24C_EE(s);
-
-    if (ee->in_dev_id) {
-        if (event == I2C_START_SEND) {
-            ee->dev_id_idx = 0;
-            ee->dev_id_matched = false;
-            return 0;
-        }
-        if (event == I2C_START_RECV) {
-            ee->dev_id_idx = 0;
-            return ee->dev_id_matched ? 0 : 1;
-        }
-        if (event == I2C_FINISH) {
-            ee->in_dev_id = false;
-            ee->dev_id_matched = false;
-        }
-        return 0;
-    }
 
     switch (event) {
     case I2C_START_SEND:
@@ -154,15 +106,6 @@ uint8_t at24c_eeprom_recv(I2CSlave *s)
     EEPROMState *ee = AT24C_EE(s);
     uint8_t ret;
 
-    if (ee->in_dev_id) {
-        uint8_t val = 0xff;
-        if (ee->dev_id_matched) {
-            val = extract32(ee->device_id, (2 - ee->dev_id_idx) * 8, 8);
-            ee->dev_id_idx = (ee->dev_id_idx + 1) % 3;
-        }
-        return val;
-    }
-
     /*
      * If got the byte address but not completely with address size
      * will return the invalid value
@@ -183,17 +126,6 @@ static
 int at24c_eeprom_send(I2CSlave *s, uint8_t data)
 {
     EEPROMState *ee = AT24C_EE(s);
-
-    if (ee->in_dev_id) {
-        if (ee->dev_id_idx == 0) {
-            if ((data >> 1) == s->address) {
-                ee->dev_id_matched = true;
-            }
-            ee->dev_id_idx++;
-            return 0;
-        }
-        return 1;
-    }
 
     if (ee->haveaddr < ee->asize) {
         ee->cur <<= 8;
@@ -283,8 +215,6 @@ static void at24c_eeprom_realize(DeviceState *dev, Error **errp)
         DPRINTK("Reset read backing file\n");
     } else if (ee->init_rom) {
         memcpy(ee->mem, ee->init_rom, MIN(ee->init_rom_size, ee->rsize));
-    } else {
-        memset(ee->mem, 0xff, ee->rsize);
     }
 
     /*
@@ -308,9 +238,6 @@ void at24c_eeprom_reset(DeviceState *state)
     ee->changed = false;
     ee->cur = 0;
     ee->haveaddr = 0;
-    ee->in_dev_id = false;
-    ee->dev_id_matched = false;
-    ee->dev_id_idx = 0;
     ee->pending_naks = 0;
 }
 
@@ -319,7 +246,6 @@ static const Property at24c_eeprom_props[] = {
     DEFINE_PROP_UINT8("address-size", EEPROMState, asize, 0),
     DEFINE_PROP_BOOL("writable", EEPROMState, writable, true),
     DEFINE_PROP_DRIVE("drive", EEPROMState, blk),
-    DEFINE_PROP_UINT32("device-id", EEPROMState, device_id, 0),
     DEFINE_PROP_UINT8("write-naks", EEPROMState, write_naks, 0),
 };
 
@@ -333,7 +259,6 @@ void at24c_eeprom_class_init(ObjectClass *klass, const void *data)
     k->event = &at24c_eeprom_event;
     k->recv = &at24c_eeprom_recv;
     k->send = &at24c_eeprom_send;
-    k->match_and_add = &at24c_eeprom_match_and_add;
 
     device_class_set_props(dc, at24c_eeprom_props);
     device_class_set_legacy_reset(dc, at24c_eeprom_reset);
