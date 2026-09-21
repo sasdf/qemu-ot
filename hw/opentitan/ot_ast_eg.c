@@ -482,7 +482,7 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                       (uint32_t)addr);
         break;
     }
-}
+};
 
 static const Property ot_ast_eg_properties[] = {
     DEFINE_PROP_STRING("topclocks", OtASTEgState, cfg_topclocks),
@@ -495,8 +495,6 @@ static const MemoryRegionOps ot_ast_eg_regs_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_ast_eg_regs_accepts,
 };
 
