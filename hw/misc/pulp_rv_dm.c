@@ -42,17 +42,20 @@
 #include "hw/boards.h"
 #include "hw/core/cpu.h"
 #include "hw/irq.h"
+#include "hw/jtag/tap_ctrl.h"
+#include "hw/loader.h"
 #include "hw/misc/pulp_rv_dm.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_otp_if.h"
+#include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/dm.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
+#include "hw/sysbus.h"
 #include "system/memory.h"
-#include "system/replay.h"
 #include "trace.h"
 
 
@@ -197,14 +200,13 @@ static const uint32_t DEFAULT_ABSTRACT_CMD[PULP_RV_DM_ABSTRACTCMD_COUNT] = {
 };
 
 /**
- * Debug ROM blob for 2 debug scratch registers (exact match to RTL
- * hw/vendor/pulp_riscv_dbg/debug_rom/debug_rom.sv).
+ * Debug ROM blob for 2 debug scratch registers.
  *
- * Note that entry points match ROM defined constants, namely:
- * - PULP_RV_DM_HALT_OFFSET (0x00)
- * - PULP_RV_DM_RESUME_OFFSET (0x08)
- * - PULP_RV_DM_EXCEPTION_OFFSET (0x10)
- * - PULP_RV_DM_WHERETO_OFFSET (0x300)
+ * Note that entry points should match ROM defined constants, namely:
+ * - PULP_RV_DM_HALT_OFFSET
+ * - PULP_RV_DM_RESUME_OFFSET
+ * - PULP_RV_DM_EXCEPTION_OFFSET
+ * - PULP_RV_DM_WHERETO_OFFSET
  */
 static const uint32_t DEBUG_ROM[] = {
     /* clang-format off */
@@ -367,15 +369,12 @@ static MemTxResult pulp_rv_dm_regs_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= RV_DM_REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
+    uint64_t val64 = pulp_rv_dm_regs_read(opaque, addr & ~3ULL, 4u);
+    if (R32_OFF(addr) >= RV_DM_REGS_COUNT) {
         *data = 0u;
         return MEMTX_DECODE_ERROR;
     }
 
-    uint64_t val64 = pulp_rv_dm_regs_read(opaque, addr & ~3ULL, 4u);
     unsigned shift = (unsigned)((addr & 3u) * 8u);
     uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
     *data = (val64 >> shift) & mask;
@@ -387,24 +386,20 @@ static MemTxResult pulp_rv_dm_regs_write_with_attrs(
 {
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= RV_DM_REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((RV_DM_REGS_PERMIT[reg] & ~byte_mask) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: sub-word write error at 0x%" HWADDR_PRIx
-                      " (size=%u, mask=0x%x)\n",
-                      __func__, addr, size, byte_mask);
-        return MEMTX_ERROR;
+    if (reg < RV_DM_REGS_COUNT) {
+        uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+        if ((RV_DM_REGS_PERMIT[reg] & ~byte_mask) != 0u) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: sub-word write error at 0x%" HWADDR_PRIx
+                          " (size=%u, mask=0x%x)\n",
+                          __func__, addr, size, byte_mask);
+            return MEMTX_ERROR;
+        }
     }
 
     unsigned shift = (unsigned)((addr & 3u) * 8u);
     pulp_rv_dm_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
+    return (reg >= RV_DM_REGS_COUNT) ? MEMTX_DECODE_ERROR : MEMTX_OK;
 }
 
 static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
@@ -417,6 +412,11 @@ static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
     (void)attrs;
 
     addr += PULP_RV_DM_DMACT_BASE;
+
+    if (addr & 0x1u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+    }
 
     switch (R32_OFF(addr)) {
     case R_HALTED:
@@ -453,18 +453,15 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
     (void)size;
 
     addr += PULP_RV_DM_DMACT_BASE;
-    if (R32_OFF(addr) != R_HALTED && R32_OFF(addr) != R_GOING &&
-        R32_OFF(addr) != R_RESUMING && R32_OFF(addr) != R_EXCEPTION) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_DECODE_ERROR;
-    }
+
     /*
      * In dm_mem.sv:392-395, Halted/Going/Resuming/Exception check
      * gen_wr_err(we_i, be_i, 4'b0001). Any write that does not include byte 0
      * ((addr & 3) != 0) asserts err_d = 1'b1 (MEMTX_ERROR).
      */
     if ((addr & 0x3u) != 0u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
         return MEMTX_ERROR;
     }
 
@@ -528,7 +525,10 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
         res = MEMTX_OK;
         break;
     default:
-        g_assert_not_reached();
+        res = MEMTX_DECODE_ERROR;
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
+        break;
     }
 
     return res;
@@ -538,10 +538,11 @@ static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     (void)opaque;
-    (void)addr;
     (void)val64;
     (void)size;
     (void)attrs;
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid read at 0x%" HWADDR_PRIx "\n",
+                  __func__, addr);
     return MEMTX_ERROR;
 }
 
@@ -549,10 +550,11 @@ static MemTxResult pulp_rv_dm_disabled_write_with_attrs(
     void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     (void)opaque;
-    (void)addr;
     (void)val64;
     (void)size;
     (void)attrs;
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid write at 0x%" HWADDR_PRIx "\n",
+                  __func__, addr);
     return MEMTX_ERROR;
 }
 
@@ -563,6 +565,8 @@ static MemTxResult pulp_rv_dm_prog_write_with_attrs(
 
     if ((addr & 0x3u) || (size != sizeof(uint32_t)) ||
         (addr + size > PULP_RV_DM_PROG_SIZE)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
         return MEMTX_ERROR;
     }
 
@@ -592,23 +596,35 @@ static MemTxResult pulp_rv_dm_dmflag_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     PulpRVDMState *s = opaque;
-    uint32_t val32 = 0u;
+    uint32_t val32;
+    MemTxResult res;
+    (void)size;
     (void)attrs;
 
-    hwaddr word_addr = (addr & ~3ULL) + PULP_RV_DM_DMFLAG_BASE;
-    unsigned reg = R32_OFF(word_addr);
+    addr += PULP_RV_DM_DMFLAG_BASE;
 
-    if (reg >= R_FLAGS_0 && reg <= R_FLAGS_LAST) {
+    unsigned reg = R32_OFF(addr);
+
+    /* NOLINTNEXTLINE */
+    switch (reg) {
+    case R_FLAGS_0 ... R_FLAGS_LAST:
         val32 = s->dmflag_regs[reg - R_FLAGS_0];
-    } else {
+        res = MEMTX_OK;
+        break;
+    default:
+        res = MEMTX_OK;
+        val32 = 0;
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, word_addr);
+                      __func__, addr);
+        break;
     }
 
-    unsigned shift = (unsigned)((addr & 0x3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (val32 >> shift) & mask;
-    return MEMTX_OK;
+    if (MEMTX_OK == res) {
+        unsigned shift = (unsigned)((addr & 0x3u) * 8u);
+        *val64 = val32 >> shift;
+    }
+
+    return res;
 };
 
 static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
@@ -616,15 +632,21 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
 {
     PulpRVDMState *s = opaque;
     uint32_t val32 = (uint32_t)val64;
+    MemTxResult res;
 
     if ((addr & 0x3u) || (size != sizeof(uint32_t))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
+                      __func__, addr);
         return MEMTX_ERROR;
     }
 
     addr += PULP_RV_DM_DMFLAG_BASE;
+
     unsigned reg = R32_OFF(addr);
 
-    if (reg >= R_FLAGS_0 && reg <= R_FLAGS_LAST) {
+    /* NOLINTNEXTLINE */
+    switch (reg) {
+    case R_FLAGS_0 ... R_FLAGS_LAST:
         if ((!attrs.unspecified) &&
             (attrs.requester_id == PULP_RV_DM_REQUESTER_ID)) {
             /* dm_access */
@@ -639,12 +661,16 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
                           "%s: R/O register 0x%" HWADDR_PRIx "\n", __func__,
                           addr);
         }
-    } else {
+        res = MEMTX_OK;
+        break;
+    default:
+        res = MEMTX_OK;
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
+        break;
     }
 
-    return MEMTX_OK;
+    return res;
 };
 
 static const MemoryRegionOps pulp_rv_dm_regs_ops = {
