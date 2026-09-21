@@ -1750,8 +1750,9 @@ static void ot_eg_soc_ast_configure(DeviceState *dev, const IbexDeviceDef *def,
         clock_cfg = "main:500000,io:500000,usb:500000,aon:125000";
     }
 
-    icount_set_freq_hz(!verilator_mode ? 24000000u : 500000u);
     qdev_prop_set_string(dev, "topclocks", clock_cfg);
+    /* Align icount virtual clock frequency with the active AST main clock */
+    icount_set_freq_hz(!verilator_mode ? 24000000u : 500000u);
 }
 
 static void ot_eg_soc_dm_configure(DeviceState *dev, const IbexDeviceDef *def,
