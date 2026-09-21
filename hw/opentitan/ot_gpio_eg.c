@@ -1070,7 +1070,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             if (active_i2c) {
                 ot_i2c_set_waveform_start_ns(
                     active_i2c,
-                    s->bb_start_ns + 100LL * (int64_t)s->bb_period_ns);
+                    s->bb_start_ns + 100LL * (int64_t)s->bb_period_ns, false);
             }
         }
 
@@ -1107,7 +1107,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
                 ot_spi_host_shift_waveform_start_ns(s->spi_host1, -skipped_ns);
             }
             if (active_i2c) {
-                ot_i2c_shift_waveform_start_ns(active_i2c, -skipped_ns);
+                ot_i2c_set_waveform_start_ns(active_i2c, -skipped_ns, true);
             }
         }
 

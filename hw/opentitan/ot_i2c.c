@@ -2097,17 +2097,12 @@ bool ot_i2c_is_override_enabled(OtI2CState *s)
            !s->ovrd_consumed;
 }
 
-void ot_i2c_set_waveform_start_ns(OtI2CState *s, int64_t start_ns)
+void ot_i2c_set_waveform_start_ns(OtI2CState *s, int64_t val_ns, bool relative)
 {
-    if (s) {
-        s->ovrd_start_ns = start_ns;
-    }
-}
-
-void ot_i2c_shift_waveform_start_ns(OtI2CState *s, int64_t delta_ns)
-{
-    if (s && s->ovrd_start_ns != INT64_MAX) {
-        s->ovrd_start_ns += delta_ns;
+    if (!relative) {
+        s->ovrd_start_ns = val_ns;
+    } else if (s->ovrd_start_ns != INT64_MAX) {
+        s->ovrd_start_ns += val_ns;
     }
 }
 
