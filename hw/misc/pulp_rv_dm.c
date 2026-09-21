@@ -500,41 +500,18 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
     return res;
 };
 
-static MemTxResult pulp_rv_dm_disabled_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static bool pulp_rv_dm_prog_accepts(void *opaque, hwaddr addr, unsigned size,
+                                    bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
-    (void)val64;
-    (void)size;
     (void)attrs;
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid read at 0x%" HWADDR_PRIx "\n",
-                  __func__, addr);
-    return MEMTX_ERROR;
-}
-
-static MemTxResult pulp_rv_dm_disabled_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)opaque;
-    (void)val64;
-    (void)size;
-    (void)attrs;
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: Invalid write at 0x%" HWADDR_PRIx "\n",
-                  __func__, addr);
-    return MEMTX_ERROR;
+    return opaque != NULL && is_write && (addr & 3u) == 0u &&
+           size == sizeof(uint32_t);
 }
 
 static MemTxResult pulp_rv_dm_prog_write_with_attrs(
     void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     PulpRVDMState *s = opaque;
-
-    if ((addr & 0x3u) || (size != sizeof(uint32_t)) ||
-        (addr + size > PULP_RV_DM_PROG_SIZE)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_ERROR;
-    }
 
     hwaddr abs_addr = addr + PULP_RV_DM_PROG_BASE;
     bool is_dm =
@@ -598,12 +575,7 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
     PulpRVDMState *s = opaque;
     uint32_t val32 = (uint32_t)val64;
     MemTxResult res;
-
-    if ((addr & 0x3u) || (size != sizeof(uint32_t))) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_ERROR;
-    }
+    (void)size;
 
     addr += PULP_RV_DM_DMFLAG_BASE;
 
@@ -651,37 +623,24 @@ static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
     .read_with_attrs = &pulp_rv_dm_dmact_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmact_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 1u,
+    .impl.max_access_size = 4u,
 };
 
 static const MemoryRegionOps pulp_rv_dm_prog_ops = {
-    .read_with_attrs = &pulp_rv_dm_disabled_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_prog_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.accepts = &pulp_rv_dm_prog_accepts,
 };
 
 static bool pulp_rv_dm_dmflag_accepts(void *opaque, hwaddr addr, unsigned size,
                                       bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
-    (void)addr;
     (void)attrs;
-    return !is_write || size == 4u;
+    return !is_write || ((addr & 3u) == 0u && size == 4u);
 }
 
 static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
@@ -691,14 +650,6 @@ static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
     .valid.accepts = &pulp_rv_dm_dmflag_accepts,
-};
-
-static const MemoryRegionOps pulp_rv_dm_disabled_ops = {
-    .read_with_attrs = &pulp_rv_dm_disabled_read_with_attrs,
-    .write_with_attrs = &pulp_rv_dm_disabled_write_with_attrs,
-    .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
 };
 
 static void pulp_rv_dm_lc_hw_debug_en_in(void *opaque, int n, int level)
@@ -771,11 +722,11 @@ static void pulp_rv_dm_init(Object *obj)
         PULP_RV_DM_PROG_SIZE, &error_fatal);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_PROG_BASE, &s->prog);
 
-    memory_region_init_io(&s->unmapped_prog0, obj, &pulp_rv_dm_disabled_ops, s,
+    memory_region_init_io(&s->unmapped_prog0, obj, &pulp_rv_dm_prog_ops, NULL,
                           TYPE_PULP_RV_DM ".unmapped_prog0", 0x34);
     memory_region_add_subregion_overlap(&s->mem, 0x304, &s->unmapped_prog0, 1);
 
-    memory_region_init_io(&s->unmapped_prog1, obj, &pulp_rv_dm_disabled_ops, s,
+    memory_region_init_io(&s->unmapped_prog1, obj, &pulp_rv_dm_prog_ops, NULL,
                           TYPE_PULP_RV_DM ".unmapped_prog1", 0x78);
     memory_region_add_subregion_overlap(&s->mem, 0x388, &s->unmapped_prog1, 1);
 
@@ -786,7 +737,7 @@ static void pulp_rv_dm_init(Object *obj)
     s->dmflag.disable_reentrancy_guard = true;
 
     memory_region_init_rom_device_nomigrate(
-        &s->rom, obj, &pulp_rv_dm_disabled_ops, s, TYPE_PULP_RV_DM ".rom",
+        &s->rom, obj, &pulp_rv_dm_prog_ops, NULL, TYPE_PULP_RV_DM ".rom",
         PULP_RV_DM_ROM_SIZE, &error_abort);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_ROM_BASE, &s->rom);
 
