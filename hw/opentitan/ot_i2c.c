@@ -1024,7 +1024,7 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_i2c_io_read(s->ot_id, (unsigned)addr, REG_NAME(reg),
                          (uint64_t)val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)val32 >> ((addr & 3u) * 8u);
 }
 
 static unsigned ot_i2c_host_recv_fill_fifo(OtI2CState *s, unsigned chunk)
@@ -1798,47 +1798,23 @@ static const uint8_t I2C_PERMIT[REGS_COUNT] = {
     [R_TARGET_EVENTS] = 0x1u,
 };
 
-static MemTxResult ot_i2c_read_with_attrs(void *opaque, hwaddr addr,
-                                          uint64_t *val64, unsigned size,
-                                          MemTxAttrs attrs)
+static bool ot_i2c_accepts(void *opaque, hwaddr addr, unsigned size,
+                           bool is_write, MemTxAttrs attrs)
 {
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    if ((aligned_addr >> 2u) >= REGS_COUNT) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint64_t val32 = ot_i2c_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (val32 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_i2c_write_with_attrs(void *opaque, hwaddr addr,
-                                           uint64_t val64, unsigned size,
-                                           MemTxAttrs attrs)
-{
+    (void)opaque;
     (void)attrs;
     uint32_t reg = (uint32_t)(addr >> 2u);
-    if (reg >= REGS_COUNT) {
-        return MEMTX_ERROR;
-    }
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((I2C_PERMIT[reg] & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
-    ot_i2c_write(opaque, addr & ~3ULL, val32, 4u);
-    return MEMTX_OK;
+    return reg < REGS_COUNT && (!is_write || (I2C_PERMIT[reg] & ~reg_be) == 0u);
 }
 
 static const MemoryRegionOps ot_i2c_ops = {
-    .read_with_attrs = &ot_i2c_read_with_attrs,
-    .write_with_attrs = &ot_i2c_write_with_attrs,
+    .read = &ot_i2c_read,
+    .write = &ot_i2c_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1,
     .impl.max_access_size = 4,
+    .valid.accepts = &ot_i2c_accepts,
 };
 
 static const Property ot_i2c_properties[] = {
