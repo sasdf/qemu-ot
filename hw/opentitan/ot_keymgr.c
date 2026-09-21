@@ -2455,15 +2455,11 @@ static bool ot_keymgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        return false;
-    }
     if (!is_write) {
         return true;
     }
     uint32_t permit;
-    switch (reg) {
+    switch (R32_OFF(addr)) {
     case R_SEALING_SW_BINDING_0 ... R_SEALING_SW_BINDING_7:
     case R_ATTEST_SW_BINDING_0 ... R_ATTEST_SW_BINDING_7:
     case R_SALT_0 ... R_SALT_7:
@@ -2493,8 +2489,6 @@ static const MemoryRegionOps ot_keymgr_regs_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_keymgr_regs_accepts,
 };
 
