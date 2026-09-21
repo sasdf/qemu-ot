@@ -289,12 +289,26 @@ static uint8_t ot_sensor_eg_reg_permit(hwaddr reg)
     }
 }
 
-static MemTxResult ot_sensor_eg_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_sensor_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    return (ot_sensor_eg_reg_permit(reg) & ~reg_be) == 0u;
+}
+
+static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtSensorEgState *s = opaque;
     (void)size;
-    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -328,36 +342,27 @@ static MemTxResult ot_sensor_eg_regs_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_sensor_eg_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                    unsigned size)
 {
     OtSensorEgState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
-    if ((ot_sensor_eg_reg_permit(reg) & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02x (%s, be=0x%x)\n",
-                      __func__, (uint32_t)addr, REG_NAME(reg), reg_be);
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -440,24 +445,23 @@ static MemTxResult ot_sensor_eg_regs_write_with_attrs(
         }
         val32 &= MANUAL_PAD_ATTR_MASK;
         s->regs[reg] = val32;
+        qemu_log_mask(LOG_UNIMP, "%s: %s is not supported\n", __func__,
+                      REG_NAME(reg));
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
+        break;
     }
-
-    return MEMTX_OK;
-}
+};
 
 static const MemoryRegionOps ot_sensor_eg_regs_ops = {
-    .read_with_attrs = &ot_sensor_eg_regs_read_with_attrs,
-    .write_with_attrs = &ot_sensor_eg_regs_write_with_attrs,
+    .read = &ot_sensor_eg_regs_read,
+    .write = &ot_sensor_eg_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_sensor_eg_regs_accepts,
 };
 
 static void ot_sensor_eg_reset_enter(Object *obj, ResetType type)
