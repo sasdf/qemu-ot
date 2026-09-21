@@ -314,6 +314,50 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
     }
 }
 
+int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
+{
+    OtGpioEgState *s = ot_gpio_eg_instance;
+    if (!s || !s->pinmux || mio_pad >= 47u) {
+        return -1;
+    }
+    uint32_t pad_attr = ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
+    bool pad_inv = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
+    bool pad_in_dis = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK);
+    if (pad_in_dis) {
+        return pad_inv ? 1 : 0;
+    }
+    uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+    if (outsel == 0u) {
+        return 0;
+    }
+    if (outsel == 1u) {
+        return 1;
+    }
+    if (outsel >= 3u && outsel < 35u) {
+        unsigned g_out = outsel - 3u;
+        if ((s->data_oe >> g_out) & 1u) {
+            bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
+            bool od = (bool)(pad_attr &
+                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
+                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
+            if (!(od && (g_out_val ^ pad_inv))) {
+                return g_out_val ? 1 : 0;
+            }
+        }
+    } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
+        return ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
+    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+        return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
+    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+        return ot_pwm_get_channel_level(
+                   s->pwm, outsel - 65u,
+                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
+                   1 :
+                   0;
+    }
+    return -1;
+}
+
 static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 {
     uint32_t prev = s->regs[R_DATA_IN];
@@ -382,69 +426,23 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 
     uint32_t data_mix = 0;
     if (s->pinmux) {
-        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
             bool in_o = false;
-            if (insel == 0u) {
-                in_o = false;
-            } else if (insel == 1u) {
+            if (insel == 1u) {
                 in_o = true;
             } else if (insel >= 2u && (insel - 2u) < 47u) {
                 unsigned mio_pad = insel - 2u;
-                uint32_t pad_attr =
-                    ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
-                bool pad_inv =
-                    (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
-                bool pad_in_dis =
-                    (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK);
-                if (pad_in_dis) {
-                    in_o = pad_inv;
+                int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
+                if (mio_in >= 0) {
+                    in_o = (bool)mio_in;
                 } else {
-                    uint32_t outsel =
-                        ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
-                    bool pad_driven = false;
-                    bool out_core = false;
-                    if (outsel == 0u) {
-                        pad_driven = true;
-                        out_core = false;
-                    } else if (outsel == 1u) {
-                        pad_driven = true;
-                        out_core = true;
-                    } else if (outsel >= 3u && outsel < 35u) {
-                        unsigned g_out = outsel - 3u;
-                        if ((s->data_oe >> g_out) & 1u) {
-                            bool g_out_val =
-                                (bool)((s->data_out >> g_out) & 1u);
-                            bool od = (bool)(pad_attr &
-                                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
-                                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
-                            if (!(od && (g_out_val ^ pad_inv))) {
-                                pad_driven = true;
-                                out_core = g_out_val;
-                            }
-                        }
-                    } else if (outsel >= 72u && outsel <= 77u &&
-                               s->sysrst_ctrl) {
-                        pad_driven = true;
-                        out_core = (bool)ot_sysrst_ctrl_get_outsel_level(
-                            s->sysrst_ctrl, outsel);
-                    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
-                        pad_driven = true;
-                        out_core = ot_pattgen_get_pin_level(s->pattgen,
-                                                            outsel - 49u);
-                    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
-                        pad_driven = true;
-                        out_core = ot_pwm_get_channel_level(
-                            s->pwm, outsel - 65u, now_ns);
-                    }
-
-                    if (pad_driven) {
-                        in_o = out_core;
-                    } else {
-                        bool raw = ((ext_in >> g) & 1u) != 0;
-                        in_o = raw ^ pad_inv;
-                    }
+                    bool pad_inv =
+                        (bool)(ot_pinmux_eg_get_mio_pad_attr(s->pinmux,
+                                                             mio_pad) &
+                               OT_PINMUX_PAD_ATTR_INVERT_MASK);
+                    bool raw = ((ext_in >> g) & 1u) != 0;
+                    in_o = raw ^ pad_inv;
                 }
             }
             if (in_o) {
@@ -463,50 +461,6 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_irqs(s);
 
     ot_gpio_eg_update_pad_in_lines(s);
-}
-
-int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
-{
-    OtGpioEgState *s = ot_gpio_eg_instance;
-    if (!s || !s->pinmux || mio_pad >= 47u) {
-        return -1;
-    }
-    uint32_t pad_attr = ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
-    bool pad_inv = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
-    bool pad_in_dis = (bool)(pad_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK);
-    if (pad_in_dis) {
-        return pad_inv ? 1 : 0;
-    }
-    uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
-    if (outsel == 0u) {
-        return 0;
-    }
-    if (outsel == 1u) {
-        return 1;
-    }
-    if (outsel >= 3u && outsel < 35u) {
-        unsigned g_out = outsel - 3u;
-        if ((s->data_oe >> g_out) & 1u) {
-            bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
-            bool od = (bool)(pad_attr &
-                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
-                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
-            if (!(od && (g_out_val ^ pad_inv))) {
-                return g_out_val ? 1 : 0;
-            }
-        }
-    } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
-        return ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
-    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
-        return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
-    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
-        return ot_pwm_get_channel_level(
-                   s->pwm, outsel - 65u,
-                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
-                   1 :
-                   0;
-    }
-    return -1;
 }
 
 static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
@@ -1405,20 +1359,11 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     uint32_t periph_pull_v = s->pull_sel;
     if (s->pinmux) {
         for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
-            if (p == 14u && s->sysrst_ctrl) {
+            if ((p == 14u || p == 15u) && s->sysrst_ctrl) {
                 bool host_low = !((s->data_bi >> p) & 1u) &&
                                 !((s->data_ib >> p) & 1u);
-                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 100u);
-                out_en |= (1u << p);
-                if (drv != 0 && !host_low) {
-                    out_v |= (1u << p);
-                }
-                continue;
-            }
-            if (p == 15u && s->sysrst_ctrl) {
-                bool host_low = !((s->data_bi >> p) & 1u) &&
-                                !((s->data_ib >> p) & 1u);
-                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 101u);
+                int drv =
+                    ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 86u + p);
                 out_en |= (1u << p);
                 if (drv != 0 && !host_low) {
                     out_v |= (1u << p);

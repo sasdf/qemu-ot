@@ -471,6 +471,24 @@ bool ot_pinmux_eg_is_periph_in_zero(unsigned periph_in)
     return s->regs->mio_periph_insel[periph_in] == 0u;
 }
 
+static int ot_pinmux_eg_eval_mio_sel(const OtPinmuxEgState *s, uint32_t sel)
+{
+    if (sel == 1u) {
+        return 1;
+    }
+    if (sel >= 2u && (sel - 2u) < PARAM_N_MIO_PADS) {
+        unsigned mio_pad = sel - 2u;
+        int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
+        if (mio_in >= 0) {
+            return mio_in;
+        }
+        bool pad_inv = (bool)(s->regs->mio_pad_attr[mio_pad] &
+                              OT_PINMUX_PAD_ATTR_INVERT_MASK);
+        return (int)((s->pad_in_level >> mio_pad) & 1u) ^ (int)pad_inv;
+    }
+    return 0;
+}
+
 static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
 {
     OtPinmuxEgStateRegs *regs = s->regs;
@@ -484,21 +502,7 @@ static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
                 level = (int)((s->dio_in_level >> dio_pad) & 1u);
             }
         } else {
-            uint32_t sel = regs->wkup_detector_padsel[i];
-            if (sel == 1u) {
-                level = 1;
-            } else if (sel >= 2u && (sel - 2u) < PARAM_N_MIO_PADS) {
-                unsigned mio_pad = sel - 2u;
-                int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
-                if (mio_in >= 0) {
-                    level = mio_in;
-                } else {
-                    bool pad_inv = (bool)(regs->mio_pad_attr[mio_pad] &
-                                          OT_PINMUX_PAD_ATTR_INVERT_MASK);
-                    int raw = (int)((s->pad_in_level >> mio_pad) & 1u);
-                    level = raw ^ (int)pad_inv;
-                }
-            }
+            level = ot_pinmux_eg_eval_mio_sel(s, regs->wkup_detector_padsel[i]);
         }
         int prev = (int)s->wkup_prev_level[i];
         s->wkup_prev_level[i] = (uint8_t)level;
@@ -535,23 +539,9 @@ static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
 void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
 {
     for (unsigned i = 0; i < 6u; i++) {
-        uint32_t sel = s->regs->mio_periph_insel[50u + i];
-        int level = 0;
-        if (sel == 1u) {
-            level = 1;
-        } else if (sel >= 2u && (sel - 2u) < PARAM_N_MIO_PADS) {
-            unsigned mio_pad = sel - 2u;
-            int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
-            if (mio_in >= 0) {
-                level = mio_in;
-            } else {
-                bool pad_inv = (bool)(s->regs->mio_pad_attr[mio_pad] &
-                                      OT_PINMUX_PAD_ATTR_INVERT_MASK);
-                int raw = (int)((s->pad_in_level >> mio_pad) & 1u);
-                level = raw ^ (int)pad_inv;
-            }
-        }
-        ibex_irq_set(&s->sysrst_inputs[i], level);
+        ibex_irq_set(&s->sysrst_inputs[i],
+                     ot_pinmux_eg_eval_mio_sel(
+                         s, s->regs->mio_periph_insel[50u + i]));
     }
     ibex_irq_set(&s->sysrst_inputs[OT_SYSRST_CTRL_IN_EC_RST_L],
                  (int)((s->pad_in_level >> 14u) & 1u));
@@ -663,22 +653,10 @@ static void ot_pinmux_eg_pad_in(void *opaque, int irq, int level)
     g_assert((unsigned)irq < PARAM_N_MIO_PADS);
 
     ot_pinmux_eg_set_mio_pad_in(s, (unsigned)irq, level);
-    if (irq <= 3) {
-        ot_pinmux_eg_set_mio_pad_in(s, (unsigned)irq + 9u, level);
-    } else if (irq == 5) {
-        ot_pinmux_eg_set_mio_pad_in(s, 40u, level);
-    } else if (irq == 6) {
-        ot_pinmux_eg_set_mio_pad_in(s, 41u, level);
-    } else if (irq == 7) {
-        ot_pinmux_eg_set_mio_pad_in(s, 42u, level);
-    } else if (irq == 8) {
-        ot_pinmux_eg_set_mio_pad_in(s, 44u, level);
-    } else if (irq == 10) {
-        ot_pinmux_eg_set_mio_pad_in(s, 43u, level);
-    } else if (irq == 12) {
-        ot_pinmux_eg_set_mio_pad_in(s, 45u, level);
-    } else if (irq == 13) {
-        ot_pinmux_eg_set_mio_pad_in(s, 46u, level);
+    for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
+        if (ot_pinmux_eg_mio_to_host_pin(pad) == irq) {
+            ot_pinmux_eg_set_mio_pad_in(s, pad, level);
+        }
     }
 
     ot_pinmux_eg_update_sysrst_inputs(s);
