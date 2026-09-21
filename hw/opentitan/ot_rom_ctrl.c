@@ -952,17 +952,6 @@ static void ot_rom_ctrl_load_rom(OtRomCtrlState *s)
     }
 }
 
-static inline uint32_t ot_rom_ctrl_byte_mask(hwaddr addr, unsigned size)
-{
-    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
-    return (mask << (addr & 3u)) & 0xfu;
-}
-
-static uint32_t ot_rom_ctrl_reg_permit(hwaddr reg)
-{
-    return (reg == R_ALERT_TEST || reg == R_FATAL_ALERT_CAUSE) ? 0x1u : 0xfu;
-}
-
 static uint64_t ot_rom_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtRomCtrlState *s = opaque;
@@ -1007,23 +996,8 @@ static uint64_t ot_rom_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_rom_ctrl_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                   val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
-
-static MemTxResult ot_rom_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                                    uint64_t *data,
-                                                    unsigned size,
-                                                    MemTxAttrs attrs)
-{
-    (void)attrs;
-    uint32_t val32 = (uint32_t)ot_rom_ctrl_regs_read(opaque, addr & ~3ull, 4u);
-    val32 >>= (addr & 3u) * 8u;
-    if (size < 4u) {
-        val32 &= (1u << (size * 8u)) - 1u;
-    }
-    *data = (uint64_t)val32;
-    return MEMTX_OK;
-}
 
 static void ot_rom_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                                    unsigned size)
@@ -1073,24 +1047,19 @@ static void ot_rom_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static MemTxResult ot_rom_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                     uint64_t val64,
-                                                     unsigned size,
-                                                     MemTxAttrs attrs)
+static bool ot_rom_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                     bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    uint32_t be = ot_rom_ctrl_byte_mask(addr, size);
-    uint32_t permit = ot_rom_ctrl_reg_permit(reg);
-    if ((permit & ~be) != 0u) {
-        return MEMTX_ERROR;
+    if (!is_write) {
+        return true;
     }
-    uint32_t shift = (addr & 3u) * 8u;
-    uint32_t mask =
-        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
-    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
-    ot_rom_ctrl_regs_write(opaque, addr & ~3ull, val32, 4u);
-    return MEMTX_OK;
+    hwaddr reg = R32_OFF(addr);
+    uint32_t permit =
+        (reg == R_ALERT_TEST || reg == R_FATAL_ALERT_CAUSE) ? 0x1u : 0xfu;
+    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    return (permit & ~be) == 0u;
 }
 
 static void ot_rom_ctrl_get_rom_digest(const OtRomCtrlState *s,
@@ -1193,18 +1162,12 @@ static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,
     OtRomCtrlState *s = opaque;
     hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
     const uint8_t *rom_ptr = (const uint8_t *)memory_region_get_ram_ptr(&s->mem);
-    uint64_t val = 0;
-
-    if ((rom_offset + size) <= s->size) {
-        val = (uint64_t)ldn_le_p(&rom_ptr[rom_offset], (int)size);
-    }
     if (!s->first_reset) {
         SysBusDevice *sbd = SYS_BUS_DEVICE(s);
         hwaddr mem_off = (sbd->mmio[1].addr - sbd->mmio[0].addr) + rom_offset;
         ot_common_raise_load_integrity_error(DEVICE(s), mem_off);
     }
-
-    return val;
+    return (uint64_t)ldn_le_p(&rom_ptr[rom_offset], (int)size);
 }
 
 static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
@@ -1213,12 +1176,9 @@ static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
 {
     OtRomCtrlState *s = opaque;
     hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
-
     if (!is_write && !s->first_reset) {
-        return (rom_offset + size) <= s->size &&
-               s->unrecoverable_error_count == 0u;
+        return s->unrecoverable_error_count == 0u;
     }
-
     return ot_rom_ctrl_mem_accepts(s, rom_offset, size, is_write, attrs);
 }
 
@@ -1240,13 +1200,12 @@ static const MemoryRegionOps ot_rom_ctrl_mem_ops = {
 };
 
 static const MemoryRegionOps ot_rom_ctrl_regs_ops = {
-    .read_with_attrs = &ot_rom_ctrl_regs_read_with_attrs,
-    .write_with_attrs = &ot_rom_ctrl_regs_write_with_attrs,
+    .read = &ot_rom_ctrl_regs_read,
+    .write = &ot_rom_ctrl_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_rom_ctrl_regs_accepts,
 };
 
 static void ot_rom_ctrl_reset_hold(Object *obj, ResetType type)
