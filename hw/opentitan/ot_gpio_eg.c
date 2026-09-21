@@ -161,6 +161,8 @@ struct OtGpioEgState {
     bool pending_input_ack;
     GString *batch_buf;
     QEMUTimer *bb_timer;
+    QEMUTimer *sync_timer;
+    uint32_t sync_seq;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
     uint64_t bb_period_ns;
@@ -1271,6 +1273,15 @@ static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
     s->pending_input_ack = (written != len);
 }
 
+static void ot_gpio_eg_sync_timer_cb(void *opaque)
+{
+    OtGpioEgState *s = opaque;
+    ot_gpio_eg_update_backend(s, true);
+    char ack[16u];
+    int len = snprintf(ack, sizeof(ack), "R:%08x\r\n", s->sync_seq);
+    qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
+}
+
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
 {
     OtGpioEgState *s = opaque;
@@ -1333,10 +1344,9 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 ot_gpio_eg_send_input_ack(s);
                 ot_gpio_eg_update_backend(s, false);
             } else if (cmd == 'R') {
-                ot_gpio_eg_update_backend(s, true);
-                char ack[16u];
-                int len = snprintf(ack, sizeof(ack), "R:%08x\r\n", data_in);
-                qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
+                s->sync_seq = data_in;
+                timer_mod(s->sync_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL);
             } else {
                 qemu_log_mask(LOG_UNIMP, "%s: unsupported command %c\n",
                               __func__, cmd);
@@ -1757,6 +1767,8 @@ static void ot_gpio_eg_init(Object *obj)
                             OT_PINMUX_PAD, PARAM_NUM_IO);
 
     s->bb_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_bitbang_step, s);
+    s->sync_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_sync_timer_cb, s);
     s->batch_buf = g_string_new(NULL);
 
     /* Backend state persists across reset so initialise it once now */
