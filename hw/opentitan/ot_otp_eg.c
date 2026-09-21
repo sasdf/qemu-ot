@@ -506,46 +506,41 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
     return status;
 }
 
-static uint8_t ot_otp_eg_core_reg_permit(hwaddr reg)
+static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
+                                  bool is_write, MemTxAttrs attrs)
 {
-    switch (reg) {
-    case R_INTR_STATE:
-    case R_INTR_ENABLE:
-    case R_INTR_TEST:
-    case R_ALERT_TEST:
-    case R_ERR_CODE_0 ... R_ERR_CODE_12:
-    case R_DIRECT_ACCESS_REGWEN:
-    case R_DIRECT_ACCESS_CMD:
-    case R_CHECK_TRIGGER_REGWEN:
-    case R_CHECK_TRIGGER:
-    case R_CHECK_REGWEN:
-    case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK:
-        return 0x1u;
-    case R_DIRECT_ACCESS_ADDRESS:
-        return 0x3u;
-    case R_STATUS:
-        return 0x7u;
-    case R_DIRECT_ACCESS_WDATA_0:
-    case R_DIRECT_ACCESS_WDATA_1:
-    case R_DIRECT_ACCESS_RDATA_0:
-    case R_DIRECT_ACCESS_RDATA_1:
-    case R_CHECK_TIMEOUT:
-    case R_INTEGRITY_CHECK_PERIOD:
-    case R_CONSISTENCY_CHECK_PERIOD:
-    case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
-        return 0xfu;
-    default:
-        return 0x0u;
+    (void)opaque;
+    (void)attrs;
+    if (!is_write) {
+        return true;
     }
+    hwaddr reg = R32_OFF(addr);
+    uint8_t permit;
+    switch (reg) {
+    case R_DIRECT_ACCESS_ADDRESS:
+        permit = 0x3u;
+        break;
+    case R_STATUS:
+        permit = 0x7u;
+        break;
+    case R_DIRECT_ACCESS_WDATA_0 ... R_DIRECT_ACCESS_RDATA_1:
+    case R_CHECK_TIMEOUT ... R_CONSISTENCY_CHECK_PERIOD:
+    case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
+        permit = 0xfu;
+        break;
+    default:
+        permit = (reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u;
+        break;
+    }
+    uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
+    return (permit != 0u) && ((permit & ~byte_mask) == 0u);
 }
 
-static MemTxResult ot_otp_eg_reg_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
-    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -611,29 +606,18 @@ static MemTxResult ot_otp_eg_reg_read_with_attrs(
     trace_ot_otp_io_reg_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                  pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_otp_eg_reg_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
+static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
+                                unsigned size)
 {
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
-    (void)attrs;
+    (void)size;
+    uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);
-    uint8_t permit = ot_otp_eg_core_reg_permit(reg);
-    uint32_t byte_offset = (uint32_t)(addr & 3u);
-    uint32_t byte_mask = ((1u << size) - 1u) << byte_offset;
-    if ((permit & ~byte_mask) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: sub-word write not permitted at 0x%03x (size %u)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size);
-        return MEMTX_ERROR;
-    }
-
-    uint32_t val32 = (uint32_t)value << (byte_offset * 8u);
 
     uint32_t pc = ibex_get_current_pc();
 
@@ -653,7 +637,7 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_DIRECT_ACCESS_REGWEN),
                           REG_NAME(reg));
-            return MEMTX_OK;
+            return;
         }
         break;
     case R_CHECK_TRIGGER:
@@ -663,7 +647,7 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_CHECK_TRIGGER_REGWEN),
                           REG_NAME(reg));
-            return MEMTX_OK;
+            return;
         }
         break;
     case R_CHECK_TIMEOUT:
@@ -674,7 +658,7 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_CHECK_REGWEN),
                           REG_NAME(reg));
-            return MEMTX_OK;
+            return;
         }
         break;
     case R_STATUS:
@@ -684,7 +668,7 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
     case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%03x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
-        return MEMTX_OK;
+        return;
     default:
         break;
     }
@@ -759,8 +743,6 @@ static MemTxResult ot_otp_eg_reg_write_with_attrs(
                       s->ot_id, (uint32_t)addr);
         break;
     }
-
-    return MEMTX_OK;
 }
 
 static const char *ot_otp_eg_swcfg_reg_name(unsigned swreg)
@@ -1171,11 +1153,12 @@ static void ot_otp_eg_signal_pwr_sequence(OtOTPImplIf *dev)
 }
 
 static const MemoryRegionOps ot_otp_eg_reg_ops = {
-    .read_with_attrs = &ot_otp_eg_reg_read_with_attrs,
-    .write_with_attrs = &ot_otp_eg_reg_write_with_attrs,
+    .read = &ot_otp_eg_reg_read,
+    .write = &ot_otp_eg_reg_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_otp_eg_reg_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
