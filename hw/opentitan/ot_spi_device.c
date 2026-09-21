@@ -2717,44 +2717,33 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
      * a previous wrap-around of the 2 KiB circular buffer.
      */
     const uint32_t read_buf_size = SPI_SRAM_READ_SIZE * 2u;
-    if (addr < read_buf_size) {
-        if (s->flash.has_pending_magic) {
-            uint32_t word1_addr =
-                (s->flash.pending_magic_addr + 4u) & (read_buf_size - 1u);
-            uint32_t word2_addr =
-                (s->flash.pending_magic_addr + 8u) & (read_buf_size - 1u);
-            if (addr == word1_addr && val32 != 0xa5a5beefu) {
-                s->sram[addr >> 2u] = val32;
-                return MEMTX_OK;
-            }
-            if (addr == word2_addr && val32 != 0xa5a5beefu) {
-                s->sram[addr >> 2u] = val32;
-                uint32_t magic_addr = s->flash.pending_magic_addr;
-                s->sram[magic_addr >> 2u] = 0xa5a5beefu;
-                s->flash.has_pending_magic = false;
-                s->flash.read_buf_modified = true;
-                if (magic_addr == 0u && !s->last_read_addr_polled) {
-                    s->csb_poll_enabled = true;
-                    s->csb_sync = CSB_IDLE_HIGH_SEEN;
-                    s->csb_poll_count = 0u;
-                }
-                if (timer_pending(s->flash.irq_timer)) {
-                    timer_del(s->flash.irq_timer);
-                    qemu_chr_fe_accept_input(&s->chr);
-                }
-                return MEMTX_OK;
-            }
-            s->sram[s->flash.pending_magic_addr >> 2u] = 0xa5a5beefu;
-            s->flash.has_pending_magic = false;
-        }
-        if (val32 == 0xa5a5beefu) {
-            s->sram[addr >> 2u] = 0u;
-            s->flash.pending_magic_addr = (uint32_t)addr;
-            s->flash.has_pending_magic = true;
-            return MEMTX_OK;
-        }
+    if (addr < read_buf_size && val32 == 0xa5a5beefu &&
+        !s->flash.has_pending_magic) {
+        s->sram[addr >> 2u] = 0u;
+        s->flash.pending_magic_addr = (uint32_t)addr;
+        s->flash.has_pending_magic = true;
+        return MEMTX_OK;
     }
     s->sram[addr >> 2u] = val32;
+    if (addr < read_buf_size && s->flash.has_pending_magic) {
+        uint32_t word1_addr =
+            (s->flash.pending_magic_addr + 4u) & (read_buf_size - 1u);
+        if (addr != word1_addr) {
+            uint32_t magic_addr = s->flash.pending_magic_addr;
+            s->sram[magic_addr >> 2u] = 0xa5a5beefu;
+            s->flash.has_pending_magic = false;
+            s->flash.read_buf_modified = true;
+            if (magic_addr == 0u && !s->last_read_addr_polled) {
+                s->csb_poll_enabled = true;
+                s->csb_sync = CSB_IDLE_HIGH_SEEN;
+                s->csb_poll_count = 0u;
+            }
+            if (timer_pending(s->flash.irq_timer)) {
+                timer_del(s->flash.irq_timer);
+                qemu_chr_fe_accept_input(&s->chr);
+            }
+        }
+    }
 
     return MEMTX_OK;
 }
