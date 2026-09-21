@@ -516,20 +516,32 @@ static uint32_t ot_i2c_get_tx_threshold(const OtI2CState *s)
     return ARRAY_FIELD_EX32(s->regs, TARGET_FIFO_CONFIG, TX_THRESH);
 }
 
+static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
+{
+    uint32_t cycles = FIELD_EX32(s->regs[R_TIMING0], TIMING0, THIGH) +
+                      FIELD_EX32(s->regs[R_TIMING0], TIMING0, TLOW);
+    if (!s->pclk || !cycles) {
+        return 10000ULL;
+    }
+    return ((uint64_t)cycles * 9ULL * NANOSECONDS_PER_SECOND) / s->pclk;
+}
+
 static uint32_t ot_i2c_get_fmt_depth(const OtI2CState *s)
 {
     uint32_t queued = ot_fifo32_num_used(&s->host_tx_fifo);
     int64_t rem_ns =
         (int64_t)s->fmt_finish_ns - qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
     if (ot_i2c_host_enabled(s) && rem_ns > 0) {
-        queued += (uint32_t)((rem_ns + 19999) / 20000);
+        uint64_t byte_ns = MAX(ot_i2c_get_byte_ns(s), 1ULL);
+        queued += (uint32_t)(((uint64_t)rem_ns + byte_ns - 1ULL) / byte_ns);
     }
     return MIN(queued, OT_I2C_FIFO_SIZE);
 }
 
 static bool ot_i2c_fmt_threshold_intr(OtI2CState *s)
 {
-    return ot_i2c_get_fmt_depth(s) < ot_i2c_get_fmt_threshold(s);
+    uint32_t thresh = ot_i2c_get_fmt_threshold(s);
+    return ot_i2c_get_fmt_depth(s) < thresh;
 }
 
 static void ot_i2c_update_fmt_threshold(OtI2CState *s)
@@ -537,9 +549,19 @@ static void ot_i2c_update_fmt_threshold(OtI2CState *s)
     bool below = ot_i2c_fmt_threshold_intr(s);
     ot_i2c_irq_set_state(s, FMT_THRESHOLD, below);
     if (s->fmt_timer) {
-        if (!below &&
-            (int64_t)s->fmt_finish_ns > qemu_clock_get_ns(OT_VIRTUAL_CLOCK)) {
-            timer_mod(s->fmt_timer, (int64_t)s->fmt_finish_ns);
+        int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        if ((int64_t)s->fmt_finish_ns > now) {
+            uint64_t next_ns = s->fmt_finish_ns;
+            uint32_t thresh = ot_i2c_get_fmt_threshold(s);
+            if (!below && thresh > 0) {
+                uint64_t drop_ns =
+                    s->fmt_finish_ns -
+                    (uint64_t)(thresh - 1u) * ot_i2c_get_byte_ns(s);
+                if ((int64_t)drop_ns > now && drop_ns < next_ns) {
+                    next_ns = drop_ns;
+                }
+            }
+            timer_mod(s->fmt_timer, (int64_t)next_ns);
         } else {
             timer_del(s->fmt_timer);
         }
@@ -1156,7 +1178,7 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
         s->fmt_finish_ns = now;
     }
     unsigned count = (readb && fbyte > 0) ? fbyte : 1u;
-    s->fmt_finish_ns += (uint64_t)count * 20000ULL;
+    s->fmt_finish_ns += (uint64_t)count * ot_i2c_get_byte_ns(s);
     ot_i2c_update_fmt_threshold(s);
 }
 
