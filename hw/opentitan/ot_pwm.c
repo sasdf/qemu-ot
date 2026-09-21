@@ -200,32 +200,6 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     return invert ? !active : active;
 }
 
-static const uint8_t PWM_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,
-    [R_REGWEN] = 0x1u,
-    [R_CFG] = 0xfu,
-    [R_PWM_EN] = 0x1u,
-    [R_INVERT] = 0x1u,
-    [R_PWM_PARAM_0] = 0xfu,
-    [R_PWM_PARAM_1] = 0xfu,
-    [R_PWM_PARAM_2] = 0xfu,
-    [R_PWM_PARAM_3] = 0xfu,
-    [R_PWM_PARAM_4] = 0xfu,
-    [R_PWM_PARAM_5] = 0xfu,
-    [R_DUTY_CYCLE_0] = 0xfu,
-    [R_DUTY_CYCLE_1] = 0xfu,
-    [R_DUTY_CYCLE_2] = 0xfu,
-    [R_DUTY_CYCLE_3] = 0xfu,
-    [R_DUTY_CYCLE_4] = 0xfu,
-    [R_DUTY_CYCLE_5] = 0xfu,
-    [R_BLINK_PARAM_0] = 0xfu,
-    [R_BLINK_PARAM_1] = 0xfu,
-    [R_BLINK_PARAM_2] = 0xfu,
-    [R_BLINK_PARAM_3] = 0xfu,
-    [R_BLINK_PARAM_4] = 0xfu,
-    [R_BLINK_PARAM_5] = 0xfu,
-};
-
 static MemTxResult ot_pwm_read_with_attrs(void *opaque, hwaddr addr,
                                           uint64_t *val64, unsigned size,
                                           MemTxAttrs attrs)
@@ -264,7 +238,8 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
     }
 
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((PWM_PERMIT[reg] & ~reg_be) != 0u) {
+    uint8_t permit = (reg == R_CFG || reg >= R_PWM_PARAM_0) ? 0xfu : 0x1u;
+    if ((permit & ~reg_be) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
                       __func__, s->ot_id, (uint32_t)addr, size);
@@ -294,15 +269,12 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
     }
 
     switch (reg) {
-    case R_CFG: {
-        bool new_en = (bool)FIELD_EX32(val32, CFG, CNTR_EN);
+    case R_CFG:
         s->regs[R_CFG] = val32;
-        if (new_en) {
+        if (FIELD_EX32(val32, CFG, CNTR_EN)) {
             s->cntr_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
-        ot_gpio_eg_notify_sysrst_change();
         break;
-    }
     case R_PWM_EN: {
         uint32_t prev_en = s->regs[R_PWM_EN];
         s->regs[R_PWM_EN] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
@@ -310,24 +282,20 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
             FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN)) {
             s->cntr_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
-        ot_gpio_eg_notify_sysrst_change();
         break;
     }
     case R_INVERT:
         s->regs[R_INVERT] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
-        ot_gpio_eg_notify_sysrst_change();
         break;
     case R_PWM_PARAM_0 ... R_PWM_PARAM_5:
         s->regs[reg] = val32 & 0xc000ffffu;
-        ot_gpio_eg_notify_sysrst_change();
         break;
-    case R_DUTY_CYCLE_0 ... R_BLINK_PARAM_5:
     default:
         s->regs[reg] = val32;
-        ot_gpio_eg_notify_sysrst_change();
         break;
     }
 
+    ot_gpio_eg_notify_sysrst_change();
     return MEMTX_OK;
 }
 
