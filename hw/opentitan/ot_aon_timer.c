@@ -166,11 +166,7 @@ ot_aon_timer_aon_clks_to_ns(OtAonTimerState *s, uint64_t target_clks)
     if (target_clks >= max_clks) {
         return INT64_MAX;
     }
-    uint64_t ns = muldiv64(target_clks, NANOSECONDS_PER_SECOND, clk);
-    if (muldiv64(ns, clk, NANOSECONDS_PER_SECOND) < target_clks) {
-        ns++;
-    }
-    return (int64_t)ns;
+    return (int64_t)muldiv64(target_clks, NANOSECONDS_PER_SECOND, clk);
 }
 
 static inline bool ot_aon_timer_is_wkup_enabled(OtAonTimerState *s)
