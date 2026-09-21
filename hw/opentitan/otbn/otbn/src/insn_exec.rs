@@ -615,6 +615,18 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
             ))
         }
     }
+
+    fn check_loop_end(&self) -> Result<(), InstructionTrap> {
+        if self
+            .hart_state
+            .loopstack
+            .last()
+            .is_some_and(|hwloop| self.hart_state.pc == hwloop.end)
+        {
+            return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
+        }
+        Ok(())
+    }
 }
 
 // Macros to implement various repeated operations (e.g. ALU reg op reg instructions).
@@ -810,12 +822,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     make_store_op_fn! {sw}
 
     fn process_jal(&mut self, dec_insn: insn_format::JType) -> Self::InstructionResult {
-        let lstack = &self.hart_state.loopstack;
-        if let Some(hwloop) = lstack.last() {
-            if self.hart_state.pc == hwloop.end {
-                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
-            }
-        }
+        self.check_loop_end()?;
         let target_pc = self.hart_state.pc.wrapping_add(dec_insn.imm as u32);
         self.hart_state
             .write_register(dec_insn.rd, self.hart_state.pc + 4)?;
@@ -824,12 +831,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     }
 
     fn process_jalr(&mut self, dec_insn: insn_format::IType) -> Self::InstructionResult {
-        let lstack = &self.hart_state.loopstack;
-        if let Some(hwloop) = lstack.last() {
-            if self.hart_state.pc == hwloop.end {
-                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
-            }
-        }
+        self.check_loop_end()?;
         let target_pc = self
             .hart_state
             .read_register(dec_insn.rs1)?
@@ -884,22 +886,17 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
             start: self.hart_state.pc + 4, // next instruction
             end: self.hart_state.pc + bodysize * 4,
         };
-        let lstack = &mut self.hart_state.loopstack;
-        if lstack.len() == lstack.capacity() {
+        if self.hart_state.loopstack.len() == self.hart_state.loopstack.capacity() {
             // to be handled properly
             return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
         }
         if hwloop.count == 0 {
             return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
         }
-        if let Some(hwloop) = lstack.last() {
-            if self.hart_state.pc == hwloop.end {
-                return Err(InstructionTrap::Exception(ExceptionCause::ELoop, None));
-            }
-        }
+        self.check_loop_end()?;
         // need to check this instruction is not a last instruction in an existing loop
-        lstack.push(hwloop);
-        self.hart_state.updated.loophead = Some((lstack.len(), hwloop.count));
+        self.hart_state.loopstack.push(hwloop);
+        self.hart_state.updated.loophead = Some((self.hart_state.loopstack.len(), hwloop.count));
         Ok(false)
     }
 

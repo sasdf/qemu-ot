@@ -183,6 +183,20 @@ impl Proxy {
         }
     }
 
+    fn lock_illegal_bus_access(&mut self) {
+        self.registers
+            .fatal_bits
+            .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
+        self.registers
+            .status
+            .store(otbn::Status::Locked as u32, Ordering::Relaxed);
+        self.syncurnd.abort_wait();
+        self.rnd.abort_wait();
+        if let Some(ref mut cb) = self.on_complete {
+            cb.signal();
+        }
+    }
+
     /// Read one 32-bit from memory
     fn read_memory(&mut self, doi: bool, addr: u32, valid: &mut bool) -> u32 {
         match self.get_status() {
@@ -193,17 +207,7 @@ impl Proxy {
             }
             _ => {
                 *valid = false;
-                self.registers
-                    .fatal_bits
-                    .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
-                self.registers
-                    .status
-                    .store(otbn::Status::Locked as u32, Ordering::Relaxed);
-                self.syncurnd.abort_wait();
-                self.rnd.abort_wait();
-                if let Some(ref mut cb) = self.on_complete {
-                    cb.signal();
-                }
+                self.lock_illegal_bus_access();
                 return 0;
             }
         }
@@ -233,17 +237,7 @@ impl Proxy {
             otbn::Status::Idle => (),
             otbn::Status::Locked => return false, // Writes have no effect in Locked state
             _ => {
-                self.registers
-                    .fatal_bits
-                    .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
-                self.registers
-                    .status
-                    .store(otbn::Status::Locked as u32, Ordering::Relaxed);
-                self.syncurnd.abort_wait();
-                self.rnd.abort_wait();
-                if let Some(ref mut cb) = self.on_complete {
-                    cb.signal();
-                }
+                self.lock_illegal_bus_access();
                 return false;
             }
         }
