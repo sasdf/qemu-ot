@@ -927,7 +927,6 @@ static void ot_ibex_wrapper_cpu_enable_recv(void *opaque, int n, int level)
 extern void riscv_cpu_set_rnmi(CPUState *cpu, uint32_t irq, bool level);
 extern void riscv_cpu_set_rnmi_int(CPUState *cpu, uint32_t cause,
                                    uint64_t mtval);
-extern void riscv_cpu_set_clock_freq(CPUState *cpu, uint64_t freq_hz);
 
 void ot_ibex_wrapper_raise_load_integrity_error(OtIbexWrapperState *s,
                                                 hwaddr addr)
@@ -1000,12 +999,22 @@ static uint32_t ot_ibex_wrapper_read_reg(OtIbexWrapperState *s, unsigned reg)
 static bool ot_ibex_wrapper_rnd_is_fetching(OtIbexWrapperState *s)
 {
     if (s->rnd_inval_reads > 0) {
-        if (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) >= s->rnd_inval_until_ns) {
-            s->rnd_inval_reads = 0;
-            return false;
+        if (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) < s->rnd_inval_until_ns) {
+            s->rnd_inval_reads--;
+            return true;
         }
-        s->rnd_inval_reads--;
-        return true;
+        s->rnd_inval_reads = 0;
+    }
+    if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
+        ot_ibex_wrapper_request_entropy(s);
+        if (bql_locked()) {
+            for (int i = 0;
+                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
+                 i++) {
+                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
+                aio_bh_poll(qemu_get_aio_context());
+            }
+        }
     }
     return false;
 }
@@ -1022,18 +1031,6 @@ ot_ibex_wrapper_read_rnd_data(OtIbexWrapperState *s, unsigned reg)
 
     if (ot_ibex_wrapper_rnd_is_fetching(s)) {
         return 0;
-    }
-
-    if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
-        ot_ibex_wrapper_request_entropy(s);
-        if (bql_locked()) {
-            for (int i = 0;
-                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
-                 i++) {
-                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
-                aio_bh_poll(qemu_get_aio_context());
-            }
-        }
     }
 
     uint32_t value = s->regs.rnd_data;
@@ -1062,18 +1059,6 @@ ot_ibex_wrapper_read_rnd_status(OtIbexWrapperState *s, unsigned reg)
 
     if (ot_ibex_wrapper_rnd_is_fetching(s)) {
         return 0;
-    }
-
-    if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
-        ot_ibex_wrapper_request_entropy(s);
-        if (bql_locked()) {
-            for (int i = 0;
-                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
-                 i++) {
-                qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
-                aio_bh_poll(qemu_get_aio_context());
-            }
-        }
     }
 
     return s->regs.rnd_status;
