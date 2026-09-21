@@ -330,8 +330,10 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
         }
     }
 
-    uint32_t ratio = target_clk->frequency ? (target_clk->frequency / 250000u) :
-                                             target_clk->ratio;
+    const OtClkMgrClock *ref = ot_clkmgr_find_clock(s->clocks, s->cfg_refclock);
+    uint32_t ratio = (ref && ref->frequency && target_clk->frequency) ?
+                     (target_clk->frequency / ref->frequency) :
+                     target_clk->ratio;
     return ratio > 0 ? (ratio - 1u) : 0u;
 }
 
