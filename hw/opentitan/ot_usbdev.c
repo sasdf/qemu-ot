@@ -567,8 +567,6 @@ struct OtUsbdevState {
      * it means that a bus reset signalling is in progress.
      */
     QEMUTimer bus_reset_timer;
-    QEMUTimer usb_pace_timer;
-    int64_t usb_pace_until_ns;
 
     /*
      * Timer to handle frame counting. While this timer is pending,
@@ -1476,19 +1474,6 @@ static void ot_usbdev_simulate_link_reset(OtUsbdevState *s)
     timer_mod(&s->bus_reset_timer, now + OT_USBDEV_BUS_RESET_TIME_US);
 }
 
-static void ot_usbdev_pace_timer_expired(void *opaque)
-{
-    OtUsbdevState *s = opaque;
-    qemu_chr_fe_accept_input(&s->usb_chr);
-}
-
-static void ot_usbdev_pace_usb_chr(OtUsbdevState *s, int64_t delay_ns)
-{
-    int64_t deadline = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns;
-    s->usb_pace_until_ns = deadline;
-    timer_mod(&s->usb_pace_timer, deadline);
-}
-
 /*
  * Simulate the reception of a SETUP token followed by an 8-byte
  * DATA packet containing the SETUP packet.
@@ -1575,7 +1560,6 @@ static void ot_usbdev_simulate_setup(OtUsbdevState *s, uint8_t ep,
     ot_usbdev_complete_transfer_out(s, ep, OT_USBDEV_SERVER_STATUS_CANCELLED,
                                     "cancelled by setup packet");
 
-    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
 }
@@ -1754,7 +1738,6 @@ static void ot_usbdev_advance_transfer_in(OtUsbdevState *s, uint8_t epnum)
             FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
     }
     s->regs[R_IN_SENT] |= 1u << epnum;
-    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_irqs(s);
 
     /* Check for overflow */
@@ -1870,7 +1853,6 @@ again:
         s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
     }
 
-    ot_usbdev_pace_usb_chr(s, 500000LL);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
     progressed = true;
@@ -2140,27 +2122,34 @@ static uint8_t ot_usbdev_reg_permit(hwaddr reg)
     }
 }
 
-static MemTxResult ot_usbdev_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_usbdev_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    return (ot_usbdev_reg_permit(reg) & ~reg_be) == 0u;
+}
+
+static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtUsbdevState *s = opaque;
     (void)size;
-    (void)attrs;
     uint32_t val32;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        *data = 0;
-        return MEMTX_OK;
+        return 0;
     }
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     /* Reads with no side-effects */
@@ -2216,11 +2205,6 @@ static MemTxResult ot_usbdev_read_with_attrs(
             /* Potentially all endpoints are now able to receive some data. */
             ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
                                       USBDEV_ALL_EP_MASK);
-            if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
-                s->usb_pace_until_ns >
-                    qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
-                ot_usbdev_pace_usb_chr(s, 20000LL);
-            }
         }
         break;
     case R_USBDEV_INTR_TEST:
@@ -2241,20 +2225,19 @@ static MemTxResult ot_usbdev_read_with_attrs(
     trace_ot_usbdev_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                 pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
-static MemTxResult ot_usbdev_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
+                            unsigned size)
 {
     OtUsbdevState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return MEMTX_OK;
+        return;
     }
 
     hwaddr reg = R32_OFF(addr);
@@ -2262,20 +2245,6 @@ static MemTxResult ot_usbdev_write_with_attrs(
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                              pc);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_ERROR;
-    }
-
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
-    if ((ot_usbdev_reg_permit(reg) & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s Sub-word write error at 0x%02x (%s, be=0x%x)\n",
-                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg), reg_be);
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_USBDEV_INTR_STATE:
@@ -2381,11 +2350,6 @@ static MemTxResult ot_usbdev_write_with_attrs(
         if (val32 & 1u) {
             ot_usbdev_advance_transfer_out(s, 0u);
         }
-        if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
-            s->usb_pace_until_ns >
-                qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
-            ot_usbdev_pace_usb_chr(s, 20000LL);
-        }
         break;
     case R_SET_NAK_OUT:
         s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
@@ -2452,23 +2416,20 @@ static MemTxResult ot_usbdev_write_with_attrs(
         break;
     }
     }
-
-    return MEMTX_OK;
 }
 
-static MemTxResult ot_usbdev_buffer_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_usbdev_buffer_accepts(void *opaque, hwaddr addr, unsigned size,
+                                     bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    return !is_write || (size == 4u && (addr & 3u) == 0u);
+}
+
+static uint64_t ot_usbdev_buffer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtUsbdevState *s = opaque;
     (void)size;
-    (void)attrs;
-
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
-                                              USBDEV_BUFFER_OFFSET + addr);
-        *data = 0;
-        return MEMTX_OK;
-    }
 
     hwaddr word = R32_OFF(addr);
     uint32_t val32 = s->buffer[word];
@@ -2476,38 +2437,21 @@ static MemTxResult ot_usbdev_buffer_read_with_attrs(
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_buffer_read_out(s->ot_id, (uint32_t)addr, val32, pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
-static MemTxResult ot_usbdev_buffer_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_usbdev_buffer_write(void *opaque, hwaddr addr, uint64_t val64,
+                                   unsigned size)
 {
     OtUsbdevState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
-
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
-                                              USBDEV_BUFFER_OFFSET + addr);
-        return MEMTX_OK;
-    }
-
-    if (size != 4u || (addr & 3u) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: Sub-word write error on packet buffer at 0x%03x "
-                      "(size=%u)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size);
-        return MEMTX_ERROR;
-    }
 
     hwaddr word = R32_OFF(addr);
     s->buffer[word] = val32;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_usbdev_io_buffer_write(s->ot_id, (uint32_t)addr, val32, pc);
-
-    return MEMTX_OK;
 }
 
 /*
@@ -3043,17 +2987,6 @@ static int ot_usbdev_chr_usb_can_receive(void *opaque)
         return 0;
     }
 
-    if (s->usb_server.recv_state == OT_USBDEV_SERVER_RECV_WAIT_HEADER &&
-        s->usb_server.recv_rem == sizeof(OtUsbdevServerPktHdr)) {
-        int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        if (now < s->usb_pace_until_ns) {
-            if (!timer_pending(&s->usb_pace_timer)) {
-                timer_mod(&s->usb_pace_timer, s->usb_pace_until_ns);
-            }
-            return 0;
-        }
-    }
-
     /* Return remaining size in the buffer. */
     return (int)s->usb_server.recv_rem;
 }
@@ -3184,23 +3117,26 @@ static const Property ot_usbdev_properties[] = {
 };
 
 static const MemoryRegionOps ot_usbdev_ops = {
-    .read_with_attrs = &ot_usbdev_read_with_attrs,
-    .write_with_attrs = &ot_usbdev_write_with_attrs,
+    .read = &ot_usbdev_read,
+    .write = &ot_usbdev_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = sizeof(uint32_t),
     .impl.max_access_size = sizeof(uint32_t),
     .valid.min_access_size = 1u,
     .valid.max_access_size = sizeof(uint32_t),
+    .valid.accepts = &ot_usbdev_regs_accepts,
 };
 
 static const MemoryRegionOps ot_usbdev_buffer_ops = {
-    .read_with_attrs = &ot_usbdev_buffer_read_with_attrs,
-    .write_with_attrs = &ot_usbdev_buffer_write_with_attrs,
+    .read = &ot_usbdev_buffer_read,
+    .write = &ot_usbdev_buffer_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    /* @todo The RTL probably supports sub-word reads, implement this */
+    .impl.min_access_size = sizeof(uint32_t),
     .impl.max_access_size = sizeof(uint32_t),
     .valid.min_access_size = 1u,
     .valid.max_access_size = sizeof(uint32_t),
+    .valid.accepts = &ot_usbdev_buffer_accepts,
 };
 
 /*
@@ -3270,8 +3206,6 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
      */
     timer_del(&s->frame_timer);
     timer_del(&s->bus_reset_timer);
-    timer_del(&s->usb_pace_timer);
-    s->usb_pace_until_ns = 0;
 
     /* See BFM (dut_reset) */
     memset(s->regs, 0u, sizeof(s->regs));
@@ -3385,8 +3319,6 @@ static void ot_usbdev_init(Object *obj)
 
     timer_init_us(&s->bus_reset_timer, OT_VIRTUAL_CLOCK,
                   &ot_usbdev_link_reset_complete, s);
-    timer_init_ns(&s->usb_pace_timer, OT_VIRTUAL_CLOCK,
-                  &ot_usbdev_pace_timer_expired, s);
     timer_init_us(&s->frame_timer, OT_VIRTUAL_CLOCK,
                   &ot_usbdev_frame_timer_expired, s);
 }

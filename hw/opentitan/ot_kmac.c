@@ -429,7 +429,6 @@ struct OtKMACState {
 
     Fifo8 input_fifo;
     QEMUTimer *bh_timer; /* timer to delay bh when triggered from vCPU */
-    QEMUTimer *bh_timer_rt; /* RT fallback timer when vCPU is halted/reset */
     QEMUTimer *edn_wait_timer; /* timer for EDN wait timeout */
     QEMUBH *bh;
 
@@ -465,33 +464,22 @@ ot_kmac_change_fsm_state_line(OtKMACState *s, OtKMACFsmState state, int line)
 #define ot_kmac_change_fsm_state(_s_, _st_) \
     ot_kmac_change_fsm_state_line(_s_, _st_, __LINE__)
 
-#define BH_RT_FALLBACK_DELAY_NS (2u * 1000u * 1000u)
-
 static void ot_kmac_trigger_deferred_bh(OtKMACState *s)
 {
     timer_del(s->bh_timer);
-    timer_del(s->bh_timer_rt);
     timer_mod(s->bh_timer,
               qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + BH_TRIGGER_DELAY_NS);
-    timer_mod(s->bh_timer_rt,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) +
-                  BH_RT_FALLBACK_DELAY_NS);
 }
-
-static void ot_kmac_process(void *opaque);
 
 static void ot_kmac_bh_timer_handler(void *opaque)
 {
     OtKMACState *s = opaque;
-    timer_del(s->bh_timer);
-    timer_del(s->bh_timer_rt);
-    ot_kmac_process(s);
+    qemu_bh_schedule(s->bh);
 }
 
 static void ot_kmac_cancel_bh(OtKMACState *s)
 {
     timer_del(s->bh_timer);
-    timer_del(s->bh_timer_rt);
     timer_del(s->edn_wait_timer);
     qemu_bh_cancel(s->bh);
 }
@@ -544,6 +532,8 @@ static void ot_kmac_report_error(OtKMACState *s, int code, uint32_t info)
     s->regs[R_INTR_STATE] |= INTR_KMAC_ERR_MASK;
     ot_kmac_update_irq(s);
 }
+
+static void ot_kmac_process(void *opaque);
 
 static void ot_kmac_edn_wait_timer_handler(void *opaque)
 {
@@ -1893,7 +1883,11 @@ static void ot_kmac_start_pending_app(OtKMACState *s)
         ot_kmac_change_fsm_state(s, KMAC_ST_MSG_FEED);
 
         /* compute app request */
-        ot_kmac_trigger_deferred_bh(s);
+        if (app_idx == 0u) {
+            ot_kmac_trigger_deferred_bh(s);
+        } else {
+            qemu_bh_schedule(s->bh);
+        }
     }
 }
 
@@ -2155,10 +2149,7 @@ static void ot_kmac_init(Object *obj)
                                 &s->msgfifo_mmio);
 
     /* setup deferred processing */
-    s->bh_timer =
-        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_bh_timer_handler, s);
-    s->bh_timer_rt =
-        timer_new_ns(QEMU_CLOCK_VIRTUAL_RT, &ot_kmac_bh_timer_handler, s);
+    s->bh_timer = timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_bh_timer_handler, s);
     s->edn_wait_timer =
         timer_new_ns(OT_VIRTUAL_CLOCK, &ot_kmac_edn_wait_timer_handler, s);
     s->bh = qemu_bh_new(&ot_kmac_process, s);
