@@ -1785,6 +1785,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     case R_TRANSITION_TOKEN_2:
     case R_TRANSITION_TOKEN_3:
     case R_TRANSITION_TARGET:
+        g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ?
                     s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] :
                     0u;
@@ -1931,7 +1932,8 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         if (val32 & R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK) {
             s->ext_clock_en = true; /* rw1s */
             if (s->state == ST_IDLE &&
-                ot_lc_ctrl_is_vendor_test_state(s->lc_state)) {
+                ot_lc_ctrl_is_vendor_test_state(
+                    LC_ENCODE_STATE(s->lc_state))) {
                 s->regs[R_STATUS] |= R_STATUS_EXT_CLOCK_SWITCHED_MASK;
             }
         }
@@ -1952,6 +1954,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                           __func__, s->ot_id);
             break;
         }
+        g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
         s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
         break;
     case R_TRANSITION_TARGET:
@@ -1963,10 +1966,11 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         /*
          * In RTL (lc_ctrl.sv:359, 451-456), transition_target_q stores any
          * 30-bit value when TRANSITION_REGWEN == 1; validity is checked when
-         * a transition is triggered.
+         * transition starts (lc_ctrl_fsm.sv:349-354).
          */
-        val32 &= R_TRANSITION_TARGET_STATE_MASK;
-        s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] = val32;
+        g_assert(LC_XSLOT(ifreq) < EXCLUSIVE_SLOTS_COUNT);
+        s->xregs[LC_XSLOT(ifreq)][reg - R_FIRST_EXCLUSIVE_REG] =
+            val32 & R_TRANSITION_TARGET_STATE_MASK;
         break;
     case R_OTP_VENDOR_TEST_CTRL:
         if (!ot_lc_ctrl_is_transition_en(s, ifreq)) {
