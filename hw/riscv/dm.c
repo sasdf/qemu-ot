@@ -349,7 +349,6 @@ struct RISCVDMState {
     MemTxAttrs mta_sba; /* MemTxAttrs to access system bus devices */
     bool cmd_busy; /* A command is being executed */
     bool dtm_ok; /* DTM is available */
-    bool in_ndmreset; /* System reset triggered by DMCONTROL.ndmreset */
     IbexIRQ ndmreset;
 
     /* config */
@@ -561,6 +560,7 @@ static const char *RISCVDM_DM_PROGBUF_NAMES[16u] = {
 #undef MAKE_REG_ENTRY
 
 static const char *riscv_dm_get_reg_name(unsigned addr);
+static void riscv_dm_reset_exit(Object *obj, ResetType type);
 
 /* -------------------------------------------------------------------------- */
 /* DMI interface implementation */
@@ -1347,7 +1347,6 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
     bool cur_ndmreset = (bool)(value & R_DMCONTROL_NDMRESET_MASK);
 
     if (cur_ndmreset) {
-        dm->in_ndmreset = true;
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
         ibex_irq_set(&dm->ndmreset, 1);
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
@@ -1361,11 +1360,8 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             hart->resuming = false;
         }
     } else if (prev_ndmreset) {
-        dm->in_ndmreset = true;
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
         ibex_irq_set(&dm->ndmreset, 0);
-        dm->in_ndmreset = false;
-        RISCV_DEBUG_DEVICE(dm)->in_ndmreset = false;
         for (unsigned step = 0; step < 32u; step++) {
             bool any_disabled = false;
             for (unsigned ix = 0; ix < dm->hart_count; ix++) {
@@ -1382,21 +1378,8 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
             aio_bh_poll(qemu_get_aio_context());
         }
-        for (unsigned ix = 0; ix < dm->hart_count; ix++) {
-            RISCVDMHartState *hart = &dm->harts[ix];
-            uint64_t hartbit = 1u << ix;
-            hart->have_reset = true;
-            hart->halted = false;
-            hart->resumed = false;
-            hart->resuming = false;
-            if (dm->haltreq_bm & hartbit) {
-                CPUState *cs = CPU(hart->cpu);
-                riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
-                cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
-                riscv_dm_set_cs(dm, true);
-                riscv_dm_ensure_running(dm);
-            }
-        }
+        riscv_dm_reset_exit(OBJECT(dm), RESET_TYPE_WAKEUP);
+        RISCV_DEBUG_DEVICE(dm)->in_ndmreset = false;
     } else if (dm->hart) {
         if (!hasel && (hartsel < dm->hart_count)) {
             uint64_t hartbit = 1u << hartsel;
@@ -1571,13 +1554,11 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
             RISCVDMHartState *hart = &dm->harts[hix];
             CPUState *cs = CPU(hart->cpu);
             uint64_t mask = 1ULL << hix;
-            if (cs->disabled) {
-                continue;
-            }
-            if (hart->resuming ||
-                (!hart->halted &&
-                 ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
-                  (dm->haltreq_bm & mask)))) {
+            if (!cs->disabled &&
+                (hart->resuming ||
+                 (!hart->halted &&
+                  ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
+                   (dm->haltreq_bm & mask))))) {
                 riscv_dm_ensure_running(dm);
                 qemu_cpu_kick(cs);
                 pending = true;
@@ -2679,7 +2660,7 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
 
-    if (dm->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
+    if (RISCV_DEBUG_DEVICE(dm)->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
         return;
     }
 
@@ -2731,7 +2712,7 @@ static void riscv_dm_reset_exit(Object *obj, ResetType type)
     RISCVDMClass *c = RISCV_DM_GET_CLASS(obj);
     RISCVDMState *dm = RISCV_DM(obj);
 
-    if (dm->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
+    if (RISCV_DEBUG_DEVICE(dm)->in_ndmreset || (type == RESET_TYPE_WAKEUP)) {
         for (unsigned ix = 0; ix < dm->hart_count; ix++) {
             RISCVDMHartState *hart = &dm->harts[ix];
             uint64_t hartbit = 1u << ix;
@@ -2745,6 +2726,7 @@ static void riscv_dm_reset_exit(Object *obj, ResetType type)
                 riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
                 cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
                 riscv_dm_set_cs(dm, true);
+                riscv_dm_ensure_running(dm);
             }
         }
         return;
