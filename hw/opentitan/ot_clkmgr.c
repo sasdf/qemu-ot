@@ -136,7 +136,6 @@ typedef struct {
     GList *outputs; /* wekrefs to OtClkMgrClockOutput */
     unsigned divider; /* divider applied on parent clock if any (0 if top) */
     unsigned ratio; /* ratio w/ reference clock (may be 0) */
-    unsigned frequency; /* actual clock frequency in Hz */
     bool ref; /* reference clock */
     bool loose; /* clock which is declared but not connected */
 } OtClkMgrClock;
@@ -330,19 +329,7 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
         }
     }
 
-    const OtClkMgrClock *ref_clk = NULL;
-    for (GList *node = s->clocks; node; node = node->next) {
-        const OtClkMgrClock *c = (const OtClkMgrClock *)node->data;
-        if (c->ref) {
-            ref_clk = c;
-            break;
-        }
-    }
-    uint32_t ratio = target_clk->ratio;
-    if (ref_clk && ref_clk->frequency > 0 && target_clk->frequency > 0) {
-        ratio = target_clk->frequency / ref_clk->frequency;
-    }
-    return ratio > 0 ? (ratio - 1u) : 0u;
+    return target_clk->ratio > 0 ? (target_clk->ratio - 1u) : 0u;
 }
 
 static unsigned ot_clkmgr_get_measure_width(const OtClkMgrClock *clk)
@@ -380,8 +367,6 @@ static void ot_clkmgr_update_clock_frequency(
 {
     unsigned frequency =
         clk->divider > 1 ? (input_freq / clk->divider) : input_freq;
-
-    clk->frequency = frequency;
 
     trace_ot_clkmgr_update_clock(s->ot_id, clk->name, frequency);
 
@@ -971,16 +956,9 @@ static gint ot_clkmgr_compare_swcg_by_name(gconstpointer a, gconstpointer b)
 {
     const OtClkMgrSwCgClock *sa = a;
     const OtClkMgrSwCgClock *sb = b;
+    int diff = (int)sb->output->clock->divider - (int)sa->output->clock->divider;
 
-    if (sa->output && sb->output && sa->output->clock && sb->output->clock) {
-        int div_diff = (int)sb->output->clock->divider -
-                       (int)sa->output->clock->divider;
-        if (div_diff != 0) {
-            return div_diff;
-        }
-    }
-
-    return strcmp(sa->name, sb->name);
+    return diff ? diff : strcmp(sa->name, sb->name);
 }
 
 static gint ot_clkmgr_compare_swcg_by_name_with_data(
