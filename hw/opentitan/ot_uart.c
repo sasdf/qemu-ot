@@ -844,12 +844,12 @@ static gboolean ot_uart_watch_cb(void *do_not_use, GIOCondition cond,
 
 static void uart_write_tx_fifo(OtUARTState *s, uint8_t val)
 {
+    s->rx_poll_count = 0u;
     if (fifo8_is_full(&s->tx_fifo)) {
         qemu_log_mask(LOG_GUEST_ERROR, "ot_uart: TX FIFO overflow");
         return;
     }
 
-    s->rx_poll_count = 0u;
     fifo8_push(&s->tx_fifo, val);
 
     if (ot_uart_is_tx_enabled(s)) {
@@ -971,9 +971,6 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
             break;
         }
         /* report TXEMPTY+TXIDLE or TXFULL */
-        if (!fifo8_is_empty(&s->tx_fifo) && ot_uart_is_tx_enabled(s)) {
-            ot_uart_tx_schedule(s);
-        }
         switch (fifo8_num_used(&s->tx_fifo)) {
         case 0:
             val32 |= R_STATUS_TXEMPTY_MASK;
@@ -1121,7 +1118,6 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_WDATA:
-        s->rx_poll_count = 0;
         uart_write_tx_fifo(s, (uint8_t)(val32 & R_WDATA_WDATA_MASK));
         break;
     case R_FIFO_CTRL:
