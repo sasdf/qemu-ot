@@ -61,7 +61,7 @@ struct OtSPIHostClass {
 #define OT_SPI_HOST_PASSTHROUGH_EN (TYPE_OT_SPI_HOST "-passthrough-en")
 #define OT_SPI_HOST_PASSTHROUGH_CS (TYPE_OT_SPI_HOST "-passthrough-cs")
 
-bool ot_spi_host_is_waveform_ready(OtSPIHostState *s, int64_t now_ns);
+bool ot_spi_host_is_waveform_ready(OtSPIHostState *s);
 void ot_spi_host_set_waveform_start_ns(OtSPIHostState *s, int64_t val_ns,
                                        bool relative);
 void ot_spi_host_clear_waveform(OtSPIHostState *s);

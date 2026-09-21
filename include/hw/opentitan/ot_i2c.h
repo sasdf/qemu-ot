@@ -45,7 +45,7 @@ int ot_i2c_bus_target_get_last_ack(I2CBus *bus);
 bool ot_i2c_bus_target_check_tx_stretch(I2CBus *bus);
 void ot_i2c_bus_target_repeated_start(I2CBus *bus);
 
-bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns);
+bool ot_i2c_is_override_waveform_ready(OtI2CState *s);
 bool ot_i2c_is_override_enabled(OtI2CState *s);
 void ot_i2c_set_waveform_start_ns(OtI2CState *s, int64_t val_ns, bool relative);
 bool ot_i2c_get_override_pin_level(OtI2CState *s, bool is_sda,

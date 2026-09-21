@@ -375,7 +375,6 @@ struct OtSPIHostState {
     OtSPIHostHalfClk bb_half_clks[2048];
     unsigned bb_len;
     int64_t bb_start_ns;
-    int64_t bb_last_cmd_ns;
     uint64_t bb_half_clk_ns;
     bool bb_cpol;
     bool bb_cpha;
@@ -816,7 +815,6 @@ void ot_spi_host_clear_waveform(OtSPIHostState *s)
         s->bb_cur_tx_len = 0;
         s->bb_last_tx_bit = 0;
         s->bb_completed_txns = 0;
-        s->bb_last_cmd_ns = 0;
     }
 }
 
@@ -839,7 +837,6 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
     if (s->bb_len >= ARRAY_SIZE(s->bb_half_clks)) {
         s->bb_cur_tx_len = 0;
         s->bb_completed_txns++;
-        s->bb_last_cmd_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         return;
     }
     uint8_t cpol = s->bb_cpol ? 1u : 0u;
@@ -890,18 +887,11 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
     }
     s->bb_cur_tx_len = 0;
     s->bb_completed_txns++;
-    s->bb_last_cmd_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
 }
 
-bool ot_spi_host_is_waveform_ready(OtSPIHostState *s, int64_t now_ns)
+bool ot_spi_host_is_waveform_ready(OtSPIHostState *s)
 {
-    if (!s || s->bb_len == 0) {
-        return false;
-    }
-    if (s->bb_completed_txns >= 3u) {
-        return true;
-    }
-    return (now_ns - s->bb_last_cmd_ns) > 2000000LL;
+    return s && s->bb_completed_txns >= 3u;
 }
 
 void ot_spi_host_set_waveform_start_ns(OtSPIHostState *s, int64_t val_ns,
@@ -1117,14 +1107,11 @@ post:
 
     int64_t delay;
     if (s->active.state == CMD_EXECUTED && byte_count) {
-        if (!s->completion_delay_ns || clkdiv > 0u) {
-            uint64_t pclk = s->pclk ? s->pclk : 1u;
-            uint64_t clk_period_ns =
-                (NANOSECONDS_PER_SECOND * ((uint64_t)clkdiv + 1u) * 2u) / pclk;
-            delay = (int64_t)(clk_period_ns * s->active.size * 8u) >> speed;
-            if (delay < (int64_t)s->completion_delay_ns) {
-                delay = (int64_t)s->completion_delay_ns;
-            }
+        if (!s->completion_delay_ns) {
+            unsigned spiclock = s->pclk / ((clkdiv + 1u) * 2u);
+            delay = NANOSECONDS_PER_SECOND / (int64_t)spiclock;
+            delay *= s->active.size;
+            delay >>= speed;
         } else {
             delay = (int64_t)s->completion_delay_ns;
         }
@@ -1284,12 +1271,6 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
         break;
     case R_STATUS:
         val32 = ot_spi_host_get_status(s);
-        if (timer_pending(s->fsm_delay) &&
-            (s->active.state != CMD_EXECUTED ||
-             FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) == 0u)) {
-            timer_del(s->fsm_delay);
-            ot_spi_host_schedule_fsm(s);
-        }
         break;
     case R_RXDATA: {
         /* here, size != 4 is illegal, what to do in this case? */

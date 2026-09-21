@@ -192,8 +192,6 @@ struct OtUARTState {
     bool tx_busy;
     QEMUTimer *rx_timer;
     Fifo8 rx_staging_fifo;
-    int64_t rx_next_ns;
-    int64_t last_rx_ns;
     QEMUTimer *rx_pace_timer;
     QEMUTimer *rx_timeout_timer;
     uint32_t rx_poll_count;
@@ -543,15 +541,7 @@ static void ot_uart_receive_bytes(OtUARTState *s, OtUARTState *rx_owner,
 static void ot_uart_step_rx(OtUARTState *s)
 {
     if (!(s->regs[R_CTRL] & R_CTRL_RX_MASK) ||
-        fifo8_is_empty(&s->rx_staging_fifo)) {
-        return;
-    }
-
-    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    if (now < s->rx_next_ns) {
-        if (!timer_pending(s->rx_timer)) {
-            timer_mod(s->rx_timer, s->rx_next_ns);
-        }
+        fifo8_is_empty(&s->rx_staging_fifo) || timer_pending(s->rx_timer)) {
         return;
     }
 
@@ -561,29 +551,19 @@ static void ot_uart_step_rx(OtUARTState *s)
                      !(s->regs[R_INTR_STATE] & INTR_RX_OVERFLOW_MASK));
     if (can_push) {
         uint8_t ch = fifo8_pop(&s->rx_staging_fifo);
-        OtUARTState *rx_owner = ot_uart_get_rx_owner(s);
-        ot_uart_receive_bytes(s, rx_owner, &ch, 1);
-
-        uint64_t char_ns = ot_uart_char_ns(s);
-        s->rx_next_ns = now + (int64_t)char_ns;
-    }
-
-    if (can_push && !fifo8_is_empty(&s->rx_staging_fifo)) {
-        timer_mod(s->rx_timer, s->rx_next_ns);
-    } else {
-        timer_del(s->rx_timer);
+        ot_uart_receive_bytes(s, ot_uart_get_rx_owner(s), &ch, 1);
+        if (!fifo8_is_empty(&s->rx_staging_fifo)) {
+            timer_mod(s->rx_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + ot_uart_char_ns(s));
+        } else if (!ot_uart_is_sys_loopack_enabled(s)) {
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+        }
     }
 }
 
 static void ot_uart_rx_timer_cb(void *opaque)
 {
-    OtUARTState *s = opaque;
-    ot_uart_step_rx(s);
-    bool rx_or_llpbk = ot_uart_is_rx_enabled(s) || (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK);
-    if (fifo8_is_empty(&s->rx_staging_fifo) && rx_or_llpbk &&
-        !ot_uart_is_sys_loopack_enabled(s)) {
-        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-    }
+    ot_uart_step_rx(opaque);
 }
 
 static void ot_uart_reset_rx_fifo(OtUARTState *s)
@@ -591,7 +571,6 @@ static void ot_uart_reset_rx_fifo(OtUARTState *s)
     if (s->rx_timer) {
         timer_del(s->rx_timer);
     }
-    s->rx_next_ns = 0;
     fifo8_reset(&s->rx_staging_fifo);
     fifo8_reset(&s->rx_fifo);
     ot_uart_update_rx_timeout(s);
@@ -638,22 +617,13 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
         return;
     }
 
-    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    s->last_rx_ns = now;
-    bool was_empty = fifo8_is_empty(&s->rx_staging_fifo);
-
     for (int i = 0; i < size; i++) {
         if (!fifo8_is_full(&s->rx_staging_fifo)) {
             fifo8_push(&s->rx_staging_fifo, buf[i]);
         }
     }
 
-    if (was_empty && !fifo8_is_empty(&s->rx_staging_fifo)) {
-        if (s->rx_next_ns <= now) {
-            s->rx_next_ns = now;
-        }
-        ot_uart_step_rx(s);
-    }
+    ot_uart_step_rx(s);
 }
 
 static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
@@ -885,45 +855,19 @@ static void ot_uart_clock_input(void *opaque, int irq, int level)
     ot_uart_check_baudrate(s);
 }
 
-static int64_t ot_uart_rx_pace_step_ns(const OtUARTState *s, int64_t now_ns,
-                                       unsigned *sleep_us)
-{
-    /*
-     * When the UART RX channel has recently received host input (within 1.5s
-     * of virtual time), pace empty-FIFO status polling at >= 1x wall-clock
-     * time (150 us virtual / 200 us sleep) so host tools with 1s silence
-     * timers (e.g. lrzsz rx) do not race ahead of virtual timeouts. When the
-     * RX line has been idle, advance virtual time faster (1 ms virtual /
-     * 120 us sleep) so multi-second inactivity timeouts complete well within
-     * host console timeouts.
-     */
-    if (s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL) {
-        if (sleep_us) {
-            *sleep_us = 200u;
-        }
-        return 150000;
-    }
-    if (sleep_us) {
-        *sleep_us = 100u;
-    }
-    return 2000000;
-}
-
 static void ot_uart_rx_pace_timer_cb(void *opaque)
 {
     OtUARTState *s = opaque;
 
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
-        fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2) {
-        int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        unsigned sleep_us = 0;
-        int64_t step_ns = ot_uart_rx_pace_step_ns(s, now_ns, &sleep_us);
-        s->rx_poll_count = 1;
-        g_usleep(sleep_us);
+        fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2u) {
+        s->rx_poll_count = 1u;
+        g_usleep(150u);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        timer_mod(s->rx_pace_timer, now_ns + step_ns);
+        timer_mod(s->rx_pace_timer,
+                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 150000LL);
     } else {
-        s->rx_poll_count = 0;
+        s->rx_poll_count = 0u;
     }
 }
 
@@ -939,7 +883,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     if (fifo8_is_empty(&s->rx_fifo) && !fifo8_is_empty(&s->rx_staging_fifo)) {
-        s->rx_next_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        timer_del(s->rx_timer);
     }
     ot_uart_step_rx(s);
 
@@ -951,15 +895,13 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = R32_OFF(addr);
     if (reg == R_STATUS && ot_uart_is_rx_enabled(s) &&
         fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo)) {
-        s->rx_poll_count++;
-        if (s->rx_poll_count >= 4 && !timer_pending(s->rx_pace_timer)) {
-            int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-            int64_t step_ns = ot_uart_rx_pace_step_ns(s, now_ns, NULL);
-            timer_mod(s->rx_pace_timer, now_ns + step_ns);
+        if (++s->rx_poll_count >= 4u && !timer_pending(s->rx_pace_timer)) {
+            timer_mod(s->rx_pace_timer,
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 150000LL);
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
-        s->rx_poll_count = 0;
+        s->rx_poll_count = 0u;
     }
 
     switch (reg) {
@@ -1255,18 +1197,13 @@ static void ot_uart_reset_enter(Object *obj, ResetType type)
     for (unsigned index = 0; index < ARRAY_SIZE(s->irqs); index++) {
         ibex_irq_set(&s->irqs[index], 0);
     }
-    if (s->tx_timer) {
-        timer_del(s->tx_timer);
-    }
     if (s->rx_pace_timer) {
         timer_del(s->rx_pace_timer);
     }
     if (s->rx_timeout_timer) {
         timer_del(s->rx_timeout_timer);
     }
-    s->tx_busy = false;
     s->rx_poll_count = 0;
-    s->last_rx_ns = 0;
     ot_uart_reset_tx_fifo(s);
     ot_uart_reset_rx_fifo(s);
 

@@ -879,9 +879,8 @@ static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
     if (!has_i2c_pad) {
         return NULL;
     }
-    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     for (unsigned i = 0; i < 3u; i++) {
-        if (s->i2c[i] && ot_i2c_is_override_waveform_ready(s->i2c[i], now_ns)) {
+        if (s->i2c[i] && ot_i2c_is_override_waveform_ready(s->i2c[i])) {
             return s->i2c[i];
         }
     }
@@ -1035,40 +1034,17 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
          * advancing QEMU virtual time in 100 us steps until firmware finishes
          * its debounce and enables PWM.
          */
-        if (s->bb_idx == 5u && uses_pwm && !ot_pwm_is_active(s->pwm) &&
-            s->bb_wait_pwm_ticks > 0) {
+        if (s->bb_idx == 5u && s->bb_wait_pwm_ticks > 0 &&
+            ((uses_pwm && !ot_pwm_is_active(s->pwm)) ||
+             (uses_spi_host1 && !ot_spi_host_is_waveform_ready(s->spi_host1)) ||
+             (active_i2c && !ot_i2c_is_override_waveform_ready(active_i2c)))) {
             s->bb_wait_pwm_ticks--;
-            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              (active_i2c ? 1000000LL : 100000LL);
             s->bb_start_ns =
                 next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
             timer_mod_ns(s->bb_timer, next_ns);
             return;
-        }
-
-        if (s->bb_idx == 5u && uses_spi_host1) {
-            int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-            if (!ot_spi_host_is_waveform_ready(s->spi_host1, now_ns) &&
-                s->bb_wait_pwm_ticks > 0) {
-                s->bb_wait_pwm_ticks--;
-                int64_t next_ns = now_ns + 100000LL;
-                s->bb_start_ns =
-                    next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
-                timer_mod_ns(s->bb_timer, next_ns);
-                return;
-            }
-        }
-
-        if (s->bb_idx == 5u && active_i2c) {
-            int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-            if (!ot_i2c_is_override_waveform_ready(active_i2c, now_ns) &&
-                s->bb_wait_pwm_ticks > 0) {
-                s->bb_wait_pwm_ticks--;
-                int64_t next_ns = now_ns + 1000000LL;
-                s->bb_start_ns =
-                    next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
-                timer_mod_ns(s->bb_timer, next_ns);
-                return;
-            }
         }
 
         if (s->bb_idx == 5u) {

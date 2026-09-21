@@ -399,8 +399,6 @@ struct OtI2CState {
     /* Override bitbang waveform recording state */
     OtI2cOvrdStep ovrd_steps[64];
     unsigned ovrd_len;
-    int64_t ovrd_first_ns;
-    int64_t ovrd_last_ns;
     int64_t ovrd_start_ns;
     bool ovrd_consumed;
 
@@ -518,37 +516,15 @@ static uint32_t ot_i2c_get_tx_threshold(const OtI2CState *s)
     return ARRAY_FIELD_EX32(s->regs, TARGET_FIFO_CONFIG, TX_THRESH);
 }
 
-static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
-{
-    if (!s->pclk) {
-        return 10000ULL;
-    }
-    uint32_t thigh = FIELD_EX32(s->regs[R_TIMING0], TIMING0, THIGH);
-    uint32_t tlow = FIELD_EX32(s->regs[R_TIMING0], TIMING0, TLOW);
-    uint32_t cycles = thigh + tlow;
-    if (cycles == 0) {
-        return 10000ULL;
-    }
-    return ((uint64_t)cycles * 9ULL * NANOSECONDS_PER_SECOND) / s->pclk;
-}
-
 static uint32_t ot_i2c_get_fmt_depth(const OtI2CState *s)
 {
     uint32_t queued = ot_fifo32_num_used(&s->host_tx_fifo);
-    if (!ot_i2c_host_enabled(s)) {
-        return queued;
+    int64_t rem_ns =
+        (int64_t)s->fmt_finish_ns - qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+    if (ot_i2c_host_enabled(s) && rem_ns > 0) {
+        queued += (uint32_t)((rem_ns + 19999) / 20000);
     }
-    uint64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    if (s->fmt_finish_ns <= now) {
-        return queued;
-    }
-    uint64_t byte_ns = ot_i2c_get_byte_ns(s);
-    if (byte_ns == 0) {
-        return queued;
-    }
-    uint64_t depth =
-        queued + (s->fmt_finish_ns - now + byte_ns - 1ULL) / byte_ns;
-    return depth > OT_I2C_FIFO_SIZE ? OT_I2C_FIFO_SIZE : (uint32_t)depth;
+    return MIN(queued, OT_I2C_FIFO_SIZE);
 }
 
 static bool ot_i2c_fmt_threshold_intr(OtI2CState *s)
@@ -560,26 +536,13 @@ static void ot_i2c_update_fmt_threshold(OtI2CState *s)
 {
     bool below = ot_i2c_fmt_threshold_intr(s);
     ot_i2c_irq_set_state(s, FMT_THRESHOLD, below);
-
-    if (!s->fmt_timer) {
-        return;
-    }
-
-    uint64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-    if (s->fmt_finish_ns > now) {
-        uint32_t thresh = ot_i2c_get_fmt_threshold(s);
-        uint64_t byte_ns = ot_i2c_get_byte_ns(s);
-        uint64_t next_ns = s->fmt_finish_ns;
-        if (!below && thresh > 0) {
-            uint64_t drop_ns =
-                s->fmt_finish_ns - (uint64_t)(thresh - 1u) * byte_ns;
-            if (drop_ns > now && drop_ns < next_ns) {
-                next_ns = drop_ns;
-            }
+    if (s->fmt_timer) {
+        if (!below &&
+            (int64_t)s->fmt_finish_ns > qemu_clock_get_ns(OT_VIRTUAL_CLOCK)) {
+            timer_mod(s->fmt_timer, (int64_t)s->fmt_finish_ns);
+        } else {
+            timer_del(s->fmt_timer);
         }
-        timer_mod(s->fmt_timer, (int64_t)next_ns);
-    } else {
-        timer_del(s->fmt_timer);
     }
 }
 
@@ -1192,9 +1155,8 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
     if (s->fmt_finish_ns < now) {
         s->fmt_finish_ns = now;
     }
-    uint64_t byte_ns = ot_i2c_get_byte_ns(s);
     unsigned count = (readb && fbyte > 0) ? fbyte : 1u;
-    s->fmt_finish_ns += (uint64_t)count * byte_ns;
+    s->fmt_finish_ns += (uint64_t)count * 20000ULL;
     ot_i2c_update_fmt_threshold(s);
 }
 
@@ -1346,32 +1308,20 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             bool scl = (bool)(val32 & R_OVRD_SCLVAL_MASK);
             bool sda = (bool)(val32 & R_OVRD_SDAVAL_MASK);
             if (!s->ovrd_consumed) {
-                int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
                 if (s->ovrd_len == 0) {
                     if (scl && sda) {
-                        s->ovrd_first_ns = now_ns;
-                        s->ovrd_last_ns = now_ns;
-                        s->ovrd_steps[0].offset_ns = 0;
-                        s->ovrd_steps[0].scl = scl;
-                        s->ovrd_steps[0].sda = sda;
+                        s->ovrd_steps[0] = (OtI2cOvrdStep){ 0, scl, sda };
                         s->ovrd_len = 1u;
                         s->ovrd_start_ns = INT64_MAX;
                     }
                 } else if (s->ovrd_len < ARRAY_SIZE(s->ovrd_steps)) {
-                    int64_t offset_ns = now_ns - s->ovrd_first_ns;
                     int64_t prev_ns = s->ovrd_steps[s->ovrd_len - 1u].offset_ns;
                     bool prev_scl = s->ovrd_steps[s->ovrd_len - 1u].scl;
-                    int64_t min_delta =
+                    int64_t delta =
                         (prev_scl && !scl && s->ovrd_len > 3u) ? 40000LL :
                                                                  20000LL;
-                    if (offset_ns < prev_ns + min_delta) {
-                        offset_ns = prev_ns + min_delta;
-                    }
-                    s->ovrd_steps[s->ovrd_len].offset_ns = offset_ns;
-                    s->ovrd_steps[s->ovrd_len].scl = scl;
-                    s->ovrd_steps[s->ovrd_len].sda = sda;
-                    s->ovrd_len++;
-                    s->ovrd_last_ns = now_ns;
+                    s->ovrd_steps[s->ovrd_len++] =
+                        (OtI2cOvrdStep){ prev_ns + delta, scl, sda };
                 }
             }
         } else {
@@ -1875,8 +1825,6 @@ static void ot_i2c_reset_enter(Object *obj, ResetType type)
     s->last_ack_result = 0;
     s->active_target_addr = 0x0u;
     s->ovrd_len = 0;
-    s->ovrd_first_ns = 0;
-    s->ovrd_last_ns = 0;
     s->ovrd_start_ns = INT64_MAX;
     s->ovrd_consumed = false;
     ot_i2c_reset_bitbang_target(s);
@@ -2058,13 +2006,9 @@ bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in)
     return sda_in && !s->bb_drive_sda_low;
 }
 
-bool ot_i2c_is_override_waveform_ready(OtI2CState *s, int64_t now_ns)
+bool ot_i2c_is_override_waveform_ready(OtI2CState *s)
 {
-    if (!s || s->ovrd_consumed) {
-        return false;
-    }
-    return s->ovrd_len >= 31u ||
-           (s->ovrd_len > 0u && (now_ns - s->ovrd_last_ns) > 200000LL);
+    return s && !s->ovrd_consumed && s->ovrd_len >= 31u;
 }
 
 bool ot_i2c_is_override_enabled(OtI2CState *s)
