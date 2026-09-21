@@ -126,14 +126,13 @@ static uint64_t ot_plic_ext_msip_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_plic_ext_msip_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_plic_ext_msip_write(void *opaque, hwaddr addr, uint64_t val64,
+                                   unsigned size)
 {
     OtPlicExtState *s = opaque;
-    (void)attrs;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
+    uint32_t val32 = (uint32_t)val64;
+    (void)size;
+
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -143,18 +142,14 @@ static MemTxResult ot_plic_ext_msip_write_with_attrs(
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
     switch (reg) {
     case R_MSIP0:
-        /* RV_PLIC_PERMIT[200] (MSIP0) = 4'b0001 */
-        if (0x1u & ~reg_be) {
-            return MEMTX_DECODE_ERROR;
-        }
         val32 &= R_MSIP0_EN_MASK;
         s->msip_regs[reg] = val32;
         ibex_irq_set(&s->irq, (int)(bool)val32);
-        return MEMTX_OK;
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        break;
     }
 }
 
@@ -187,14 +182,13 @@ static uint64_t ot_plic_ext_alert_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)val32;
 }
 
-static MemTxResult ot_plic_ext_alert_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_plic_ext_alert_write(void *opaque, hwaddr addr, uint64_t val64,
+                                    unsigned size)
 {
     OtPlicExtState *s = opaque;
-    (void)attrs;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
+    uint32_t val32 = (uint32_t)val64;
+    (void)size;
+
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -204,21 +198,26 @@ static MemTxResult ot_plic_ext_alert_write_with_attrs(
     /* NOLINTNEXTLINE(hicpp-multiway-paths-covered) */
     switch (reg) {
     case R_ALERT_TEST:
-        /* RV_PLIC_PERMIT[201] (ALERT_TEST) = 4'b0001 */
-        if (0x1u & ~reg_be) {
-            return MEMTX_DECODE_ERROR;
-        }
         val32 &= R_ALERT_TEST_FATAL_FAULT_MASK;
         if (val32) {
             ibex_irq_set(&s->alert, 1);
             ibex_irq_set(&s->alert, 0);
         }
-        return MEMTX_OK;
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%01x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        break;
     }
+}
+
+static bool ot_plic_ext_accepts(void *opaque, hwaddr addr, unsigned size,
+                                bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)size;
+    (void)attrs;
+    return !is_write || (addr & 3u) == 0u;
 }
 
 static const Property ot_plic_ext_properties[] = {
@@ -227,20 +226,22 @@ static const Property ot_plic_ext_properties[] = {
 
 static const MemoryRegionOps ot_plic_ext_msip_ops = {
     .read = &ot_plic_ext_msip_read,
-    .write_with_attrs = &ot_plic_ext_msip_write_with_attrs,
+    .write = &ot_plic_ext_msip_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_plic_ext_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
 
 static const MemoryRegionOps ot_plic_ext_alert_ops = {
     .read = &ot_plic_ext_alert_read,
-    .write_with_attrs = &ot_plic_ext_alert_write_with_attrs,
+    .write = &ot_plic_ext_alert_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_plic_ext_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
