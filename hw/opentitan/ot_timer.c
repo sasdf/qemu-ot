@@ -249,13 +249,21 @@ static const uint8_t RV_TIMER_PERMIT[REGS_COUNT] = {
     [R_COMPARE_UPPER0_0] = 0xfu,
 };
 
-static MemTxResult ot_timer_read_with_attrs(void *opaque, hwaddr addr,
-                                            uint64_t *data, unsigned size,
-                                            MemTxAttrs attrs)
+static bool ot_timer_accepts(void *opaque, hwaddr addr, unsigned size,
+                             bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    uint8_t permit = reg < REGS_COUNT ? RV_TIMER_PERMIT[reg] : 0u;
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return permit != 0u && (!is_write || (permit & ~reg_be) == 0u);
+}
+
+static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtTimerState *s = opaque;
     (void)size;
-    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -291,38 +299,28 @@ static MemTxResult ot_timer_read_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_timer_write_with_attrs(void *opaque, hwaddr addr,
-                                             uint64_t value, unsigned size,
-                                             MemTxAttrs attrs)
+static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
+                           unsigned size)
 {
     OtTimerState *s = opaque;
-    (void)attrs;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint32_t val32 = (uint32_t)(value << (byte_off * 8u));
+    (void)size;
+    uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_timer_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (reg < REGS_COUNT && (RV_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%03x (be=0x%x)\n",
-                      __func__, (uint32_t)addr, reg_be);
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_ALERT_TEST:
@@ -421,20 +419,16 @@ static MemTxResult ot_timer_write_with_attrs(void *opaque, hwaddr addr,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
     }
-
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_timer_ops = {
-    .read_with_attrs = &ot_timer_read_with_attrs,
-    .write_with_attrs = &ot_timer_write_with_attrs,
+    .read = &ot_timer_read,
+    .write = &ot_timer_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.accepts = &ot_timer_accepts,
 };
 
 static const Property ot_timer_properties[] = {
