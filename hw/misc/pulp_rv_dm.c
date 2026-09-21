@@ -382,6 +382,7 @@ static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
     if (addr & 0x1u) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
+        return MEMTX_ERROR;
     }
 
     switch (R32_OFF(addr)) {
@@ -419,17 +420,6 @@ static MemTxResult pulp_rv_dm_dmact_write_with_attrs(
     (void)size;
 
     addr += PULP_RV_DM_DMACT_BASE;
-
-    /*
-     * In dm_mem.sv:392-395, Halted/Going/Resuming/Exception check
-     * gen_wr_err(we_i, be_i, 4'b0001). Any write that does not include byte 0
-     * ((addr & 3) != 0) asserts err_d = 1'b1 (MEMTX_ERROR).
-     */
-    if ((addr & 0x3u) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad alignment 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_ERROR;
-    }
 
 #ifdef DISCARD_REPEATED_IO_TRACES
     static TraceCache trace_cache;
@@ -619,12 +609,22 @@ static const MemoryRegionOps pulp_rv_dm_regs_ops = {
     .valid.accepts = &pulp_rv_dm_regs_accepts,
 };
 
+static bool pulp_rv_dm_dmact_accepts(void *opaque, hwaddr addr, unsigned size,
+                                     bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)size;
+    (void)attrs;
+    return !is_write || (addr & 3u) == 0u;
+}
+
 static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
     .read_with_attrs = &pulp_rv_dm_dmact_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmact_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
-    .impl.max_access_size = 4u,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.accepts = &pulp_rv_dm_dmact_accepts,
 };
 
 static const MemoryRegionOps pulp_rv_dm_prog_ops = {
