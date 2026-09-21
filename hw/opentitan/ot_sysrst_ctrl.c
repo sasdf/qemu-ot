@@ -377,7 +377,9 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
         bool lid_l2h = (prev_lid == 0u && curr_lid == 1u);
         bool ac_high = (curr_ac == 1u);
 
-        if (pwrb_h2l || lid_l2h) {
+        uint32_t debounce = s->regs[R_ULP_AC_DEBOUNCE_CTL] & 0xffffu;
+        if (pwrb_h2l || lid_l2h ||
+            (ac_high && !s->ulp_ac_latched && debounce == 0u)) {
             s->ulp_ac_latched = true;
             s->z3_wakeup_hw = true;
             s->regs[R_ULP_STATUS] |= 1u;
@@ -385,22 +387,12 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
         } else if (ac_high) {
             if (!s->ulp_ac_latched && s->ulp_timer &&
                 !timer_pending(s->ulp_timer)) {
-                uint32_t debounce = s->regs[R_ULP_AC_DEBOUNCE_CTL] & 0xffffu;
-                if (debounce == 0u) {
-                    s->ulp_ac_latched = true;
-                    s->z3_wakeup_hw = true;
-                    s->regs[R_ULP_STATUS] |= 1u;
-                    s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
-                } else {
-                    timer_mod_ns(s->ulp_timer,
-                                 qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                                     (int64_t)(debounce + 1u) * 5000LL);
-                }
+                timer_mod_ns(s->ulp_timer,
+                             qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                 (int64_t)(debounce + 1u) * 5000LL);
             }
-        } else {
-            if (!s->ulp_ac_latched && s->ulp_timer) {
-                timer_del(s->ulp_timer);
-            }
+        } else if (!s->ulp_ac_latched && s->ulp_timer) {
+            timer_del(s->ulp_timer);
         }
     }
 
@@ -550,21 +542,58 @@ static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
     case R_COM_OUT_CTL_3:
     case R_COMBO_INTR_STATUS:
         return 0x0000000fu;
+    case R_ULP_STATUS:
+    case R_WKUP_STATUS:
+        return 0x00000001u;
     default:
         return 0xffffffffu;
     }
 }
 
-static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
+static uint8_t ot_sysrst_ctrl_permit(hwaddr reg)
+{
+    switch (reg) {
+    case R_COM_PRE_DET_CTL_0:
+    case R_COM_PRE_DET_CTL_1:
+    case R_COM_PRE_DET_CTL_2:
+    case R_COM_PRE_DET_CTL_3:
+    case R_COM_DET_CTL_0:
+    case R_COM_DET_CTL_1:
+    case R_COM_DET_CTL_2:
+    case R_COM_DET_CTL_3:
+        return 0xfu;
+    case R_AUTO_BLOCK_DEBOUNCE_CTL:
+        return 0x7u;
+    case R_EC_RST_CTL:
+    case R_ULP_AC_DEBOUNCE_CTL:
+    case R_ULP_LID_DEBOUNCE_CTL:
+    case R_ULP_PWRB_DEBOUNCE_CTL:
+    case R_KEY_INVERT_CTL:
+    case R_PIN_ALLOWED_CTL:
+    case R_KEY_INTR_CTL:
+    case R_KEY_INTR_DEBOUNCE_CTL:
+    case R_KEY_INTR_STATUS:
+        return 0x3u;
+    default:
+        return 0x1u;
+    }
+}
+
+static MemTxResult ot_sysrst_ctrl_read_with_attrs(
+    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
 {
     OtSysrstCtrlState *s = opaque;
-    (void)size;
-    hwaddr reg = R32_OFF(addr);
-
-    if (reg == R_INTR_TEST || reg == R_ALERT_TEST) {
-        return 0;
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
     }
 
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint64_t word = 0;
     if (reg == R_PIN_IN_VALUE) {
         uint32_t val32 = ot_sysrst_ctrl_get_pin_in_value(s);
         if (val32 == s->last_read_pin_in) {
@@ -581,32 +610,45 @@ static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
             s->poll_count = 0;
             s->last_read_pin_in = val32;
         }
-        return val32;
+        word = val32;
+    } else if (reg != R_INTR_TEST && reg != R_ALERT_TEST) {
+        word = s->regs[reg];
     }
 
-    return s->regs[reg];
+    uint64_t mask =
+        (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
+    *val64 = (word >> (byte_off * 8u)) & mask;
+    return MEMTX_OK;
 }
 
-static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
-                                 unsigned size)
+static MemTxResult ot_sysrst_ctrl_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
 {
     OtSysrstCtrlState *s = opaque;
-    (void)size;
-    uint32_t val32 = (uint32_t)val64;
-    hwaddr reg = R32_OFF(addr);
-
+    (void)attrs;
+    hwaddr aligned_addr = addr & ~3ULL;
+    unsigned byte_off = (unsigned)(addr & 3u);
+    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
+                      (uint32_t)addr);
+        return MEMTX_DECODE_ERROR;
+    }
+    hwaddr reg = R32_OFF(aligned_addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
+    uint8_t permit = ot_sysrst_ctrl_permit(reg);
+    if ((permit & ~reg_be) != 0u) {
+        return MEMTX_ERROR;
+    }
+    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
     s->poll_count = 0;
 
     switch (reg) {
     case R_INTR_STATE:
-        /* INTR_STATE is RO (Status-type interrupt) */
+    case R_PIN_IN_VALUE:
         break;
     case R_INTR_ENABLE:
-        s->regs[R_INTR_ENABLE] = val32 & 1u;
-        ot_sysrst_ctrl_update_outputs(s);
-        break;
     case R_INTR_TEST:
-        s->regs[R_INTR_TEST] = val32 & 1u;
+        s->regs[reg] = val32 & 1u;
         ot_sysrst_ctrl_update_outputs(s);
         break;
     case R_ALERT_TEST:
@@ -647,19 +689,11 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_sysrst_ctrl_check_events(s);
         break;
     case R_ULP_STATUS:
-        s->regs[reg] &= ~(val32 & 1u);
-        ot_sysrst_ctrl_update_outputs(s);
-        break;
+    case R_WKUP_STATUS:
     case R_COMBO_INTR_STATUS:
     case R_KEY_INTR_STATUS:
         s->regs[reg] &= ~(val32 & ot_sysrst_ctrl_reg_mask(reg));
         ot_sysrst_ctrl_update_outputs(s);
-        break;
-    case R_WKUP_STATUS:
-        s->regs[R_WKUP_STATUS] &= ~(val32 & 1u);
-        ot_sysrst_ctrl_update_outputs(s);
-        break;
-    case R_PIN_IN_VALUE:
         break;
     default:
         if (s->regs[R_REGWEN] & 1u) {
@@ -668,73 +702,6 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     }
-}
-
-static uint8_t ot_sysrst_ctrl_permit(hwaddr reg)
-{
-    switch (reg) {
-    case R_COM_PRE_DET_CTL_0:
-    case R_COM_PRE_DET_CTL_1:
-    case R_COM_PRE_DET_CTL_2:
-    case R_COM_PRE_DET_CTL_3:
-    case R_COM_DET_CTL_0:
-    case R_COM_DET_CTL_1:
-    case R_COM_DET_CTL_2:
-    case R_COM_DET_CTL_3:
-        return 0xfu;
-    case R_AUTO_BLOCK_DEBOUNCE_CTL:
-        return 0x7u;
-    case R_EC_RST_CTL:
-    case R_ULP_AC_DEBOUNCE_CTL:
-    case R_ULP_LID_DEBOUNCE_CTL:
-    case R_ULP_PWRB_DEBOUNCE_CTL:
-    case R_KEY_INVERT_CTL:
-    case R_PIN_ALLOWED_CTL:
-    case R_KEY_INTR_CTL:
-    case R_KEY_INTR_DEBOUNCE_CTL:
-    case R_KEY_INTR_STATUS:
-        return 0x3u;
-    default:
-        return 0x1u;
-    }
-}
-
-static MemTxResult ot_sysrst_ctrl_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-    uint64_t word = ot_sysrst_ctrl_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (word >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_sysrst_ctrl_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = ot_sysrst_ctrl_permit(reg);
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t wdata = (uint32_t)(val64 << (byte_off * 8u));
-    ot_sysrst_ctrl_write(opaque, aligned_addr, wdata, 4u);
     return MEMTX_OK;
 }
 
