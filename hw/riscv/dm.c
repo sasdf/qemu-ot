@@ -1574,14 +1574,6 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
             if (cs->disabled) {
                 continue;
             }
-            if (dm->unavailable_bm & mask) {
-                if ((dm->haltreq_bm & mask) && !hart->halted) {
-                    riscv_dm_halt_hart(dm, hix);
-                }
-                trace_riscv_dm_status(dm->soc, cs->cpu_index,
-                                      "became available");
-                dm->unavailable_bm &= ~mask;
-            }
             if (hart->resuming ||
                 (!hart->halted &&
                  ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
@@ -1604,8 +1596,6 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
 
 static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
 {
-    riscv_dm_sync_vcpu(dm);
-
     unsigned halted = 0u;
     unsigned running = 0u;
     unsigned unavail = 0u;
@@ -1654,8 +1644,19 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "became available");
             /* clear the unavailability flag and resume w/ "regular" states */
             dm->unavailable_bm &= ~mask;
+
             /*
-             * Unfortunately, some tests rely on this implementation-dependent
+             * If a pending haltreq exists for this hart, enter debug mode.
+             *
+             * @todo: This is a workaround for the fact that the current
+             * implementation does not conform to the debug specification. See
+             * e.g. section C.1.4: "When a hart comes out of reset and haltreq
+             * is set, the hart will immediately enter Debug Mode". To support
+             * this the CPU would need to query the DM when it begins executing
+             * instructions, and hence would need a reference to the DM, which
+             * is not ideal.
+             *
+             * For now, we can support most real use cases by exploiting the
              * fact that reasonable SW will usually send a haltreq and then
              * repeatedly poll `dmstatus` to see the hart(s) halt. Hence, we
              * latch haltreqs for unresponsive cores and halt any hart that is
@@ -1665,20 +1666,7 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
                 riscv_dm_halt_hart(dm, hix);
             }
         }
-        if (!cs->disabled && !hart->halted &&
-            (cs->interrupt_request & CPU_INTERRUPT_DEBUG) &&
-            runstate_is_running()) {
-            riscv_dm_ensure_running(dm);
-            replay_mutex_unlock();
-            bql_unlock();
-            for (unsigned wait = 0;
-                 wait < 200u && !hart->halted && !cs->disabled; wait++) {
-                qemu_cpu_kick(cs);
-                g_usleep(100);
-            }
-            replay_mutex_lock();
-            bql_lock();
-        }
+        riscv_dm_sync_vcpu(dm);
         if (hart->resumed) {
             resumeack += 1;
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "resumed");
