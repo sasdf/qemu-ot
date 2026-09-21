@@ -32,7 +32,6 @@
 
 #include "qemu/osdep.h"
 #include <termios.h>
-#include "exec/icount.h"
 #include "qemu/fifo8.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -882,15 +881,9 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
         bool recent = s->last_rx_ns > 0 &&
                       (now_ns - s->last_rx_ns) < 1500000000LL;
         s->rx_poll_count = 1u;
-        g_usleep(recent ? 200u : 10u);
+        g_usleep(recent ? 200u : 100u);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        if (fifo8_is_empty(&s->rx_fifo) &&
-            fifo8_is_empty(&s->rx_staging_fifo)) {
-            int64_t advance_ns = recent ? 100000LL : 1800000LL;
-            icount_advance_bias_ns(advance_ns);
-            now_ns += advance_ns;
-        }
-        timer_mod(s->rx_pace_timer, now_ns + (recent ? 50000LL : 200000LL));
+        timer_mod(s->rx_pace_timer, now_ns + (recent ? 150000LL : 2000000LL));
     } else {
         s->rx_poll_count = 0u;
     }
@@ -928,7 +921,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
             bool recent = s->last_rx_ns > 0 &&
                           (now_ns - s->last_rx_ns) < 1500000000LL;
             timer_mod(s->rx_pace_timer,
-                      now_ns + (recent ? 50000LL : 200000LL));
+                      now_ns + (recent ? 150000LL : 2000000LL));
         }
     } else if (!fifo8_is_empty(&s->rx_fifo)) {
         s->rx_poll_count = 0u;

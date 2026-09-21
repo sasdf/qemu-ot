@@ -29,6 +29,7 @@
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "exec/icount.h"
 #include "hw/block/flash.h"
 #include "hw/boards.h"
 #include "hw/core/split-irq.h"
@@ -1531,12 +1532,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_ALERT(3, 64)
         ),
         .link = IBEXDEVICELINKDEFS(
-            OT_EG_SOC_DEVLINK("clock-src", CLKMGR),
             OT_EG_SOC_DEVLINK("edn", EDN0),
             OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP("clock-name", "infra.main"),
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
             IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS)
         ),
@@ -1747,8 +1746,10 @@ static void ot_eg_soc_ast_configure(DeviceState *dev, const IbexDeviceDef *def,
     if (!verilator_mode) {
         /* EarlGrey/CW310 */
         clock_cfg = "main:24000000,io:24000000,usb:48000000,aon:250000";
+        icount_set_freq_hz(24000000u);
     } else {
         clock_cfg = "main:500000,io:500000,usb:500000,aon:125000";
+        icount_set_freq_hz(500000u);
     }
 
     qdev_prop_set_string(dev, "topclocks", clock_cfg);

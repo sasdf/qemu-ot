@@ -52,9 +52,6 @@ int64_t icount_get_cycles(void);
 /* set nominal CPU clock frequency in Hz for exact cycle-to-ns conversion */
 void icount_set_freq_hz(uint64_t freq_hz);
 
-/* advance virtual clock / cycle bias while polling empty I/O in icount mode */
-void icount_advance_bias_ns(int64_t delta_ns);
-
 /* return the virtual CPU time in ns, based on the instruction counter. */
 int64_t icount_get(void);
 /*
