@@ -1685,7 +1685,7 @@ ot_entropy_src_lo_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_entropy_src_io_read_out(s->ot_id, (uint32_t)addr, REG_LO_NAME(reg),
                                      val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
 static uint64_t
@@ -1714,7 +1714,7 @@ ot_entropy_src_rev_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_entropy_src_io_read_out(s->ot_id, (uint32_t)addr + REGS_REV_BASE,
                                      REG_REV_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
 static uint64_t
@@ -1851,7 +1851,7 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
                                      ot_entropy_src_hi_reg_addr(s, addr),
                                      REG_HI_NAME(reg), val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
 #define CHECK_MULTIBOOT(_s_, _g_, _r_, _b_) \
@@ -1884,7 +1884,7 @@ static void ot_entropy_src_lo_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)val64;
+    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -1950,7 +1950,7 @@ static void ot_entropy_src_rev_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)val64;
+    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -1976,7 +1976,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)val64;
+    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
 
     hwaddr reg = R32_OFF(addr);
 
@@ -2325,88 +2325,41 @@ static const uint8_t ENTROPY_SRC_HI_PERMIT[REGS_HI_COUNT] = {
     [R_MAIN_SM_STATE] = 0x3u,
 };
 
-static MemTxResult ot_entropy_src_lo_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_entropy_src_lo_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
-    uint64_t val64 = ot_entropy_src_lo_regs_read(opaque, addr & ~3ULL, 4u);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
+    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return !is_write || !(ENTROPY_SRC_LO_PERMIT[R32_OFF(addr)] & ~mask);
 }
 
-static MemTxResult ot_entropy_src_lo_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static bool ot_entropy_src_rev_accepts(void *opaque, hwaddr addr, unsigned size,
+                                       bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((ENTROPY_SRC_LO_PERMIT[reg] & ~byte_mask) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_entropy_src_lo_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
+    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return !is_write || !(ENTROPY_SRC_REV_PERMIT[R32_OFF(addr)] & ~mask);
 }
 
-static MemTxResult ot_entropy_src_rev_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
-    uint64_t val64 = ot_entropy_src_rev_regs_read(opaque, addr & ~3ULL, 4u);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_entropy_src_rev_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((ENTROPY_SRC_REV_PERMIT[reg] & ~byte_mask) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_entropy_src_rev_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_entropy_src_hi_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    uint64_t val64 = ot_entropy_src_hi_regs_read(opaque, addr & ~3ULL, 4u);
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_entropy_src_hi_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((ENTROPY_SRC_HI_PERMIT[reg] & ~byte_mask) != 0u) {
-        return MEMTX_ERROR;
-    }
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    ot_entropy_src_hi_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return MEMTX_OK;
+    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return !is_write || !(ENTROPY_SRC_HI_PERMIT[R32_OFF(addr)] & ~mask);
 }
 
 static const MemoryRegionOps ot_entropy_src_lo_ops = {
-    .read_with_attrs = &ot_entropy_src_lo_regs_read_with_attrs,
-    .write_with_attrs = &ot_entropy_src_lo_regs_write_with_attrs,
+    .read = &ot_entropy_src_lo_regs_read,
+    .write = &ot_entropy_src_lo_regs_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_entropy_src_lo_accepts,
     },
     .impl = {
         .min_access_size = 1u,
@@ -2415,12 +2368,13 @@ static const MemoryRegionOps ot_entropy_src_lo_ops = {
 };
 
 static const MemoryRegionOps ot_entropy_src_rev_ops = {
-    .read_with_attrs = &ot_entropy_src_rev_regs_read_with_attrs,
-    .write_with_attrs = &ot_entropy_src_rev_regs_write_with_attrs,
+    .read = &ot_entropy_src_rev_regs_read,
+    .write = &ot_entropy_src_rev_regs_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_entropy_src_rev_accepts,
     },
     .impl = {
         .min_access_size = 1u,
@@ -2429,12 +2383,13 @@ static const MemoryRegionOps ot_entropy_src_rev_ops = {
 };
 
 static const MemoryRegionOps ot_entropy_src_hi_ops = {
-    .read_with_attrs = &ot_entropy_src_hi_regs_read_with_attrs,
-    .write_with_attrs = &ot_entropy_src_hi_regs_write_with_attrs,
+    .read = &ot_entropy_src_hi_regs_read,
+    .write = &ot_entropy_src_hi_regs_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_entropy_src_hi_accepts,
     },
     .impl = {
         .min_access_size = 1u,
