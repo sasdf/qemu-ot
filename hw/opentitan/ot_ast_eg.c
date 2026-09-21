@@ -29,6 +29,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/guest-random.h"
 #include "qemu/log.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
@@ -156,8 +157,6 @@ struct OtASTEgState {
 
     char *cfg_topclocks;
     char *cfg_aonclocks;
-    uint64_t rng_state;
-    uint64_t rng_word;
 };
 
 struct OtASTEgClass {
@@ -264,17 +263,9 @@ static unsigned ot_ast_eg_get_fill_rate(OtNoiseSrcIf *dev)
 static void ot_ast_eg_get_noise(OtNoiseSrcIf *dev, uint8_t *buffer,
                                 size_t length)
 {
-    OtASTEgState *s = OT_AST_EG(dev);
+    (void)dev;
 
-    for (size_t i = 0; i < length; i++) {
-        if ((i & 7u) == 0u) {
-            uint64_t z = (s->rng_state += 0x9e3779b97f4a7c15ULL);
-            z = (z ^ (z >> 30u)) * 0xbf58476d1ce4e5b9ULL;
-            z = (z ^ (z >> 27u)) * 0x94d049bb133111ebULL;
-            s->rng_word = z ^ (z >> 31u);
-        }
-        buffer[i] = (uint8_t)(s->rng_word >> ((i & 7u) * 8u));
-    }
+    qemu_guest_getrandom_nofail((void *)buffer, length);
 }
 
 static void ot_ast_eg_parse_clocks(OtASTEgState *s, Error **errp)
@@ -338,12 +329,20 @@ static void ot_ast_eg_parse_clocks(OtASTEgState *s, Error **errp)
 }
 
 
-static MemTxResult ot_ast_eg_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool ot_ast_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    return (reg <= R_REGAL || (reg >= R_REGB0 && reg <= R_REGB4)) &&
+           (!is_write || size == 4u);
+}
+
+static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtASTEgState *s = opaque;
     (void)size;
-    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -404,35 +403,27 @@ static MemTxResult ot_ast_eg_regs_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        *data = 0xffffffffu;
-        return MEMTX_ERROR;
+        val32 = 0;
+        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ast_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
-    return MEMTX_OK;
-}
+    return (uint64_t)val32;
+};
 
-static MemTxResult ot_ast_eg_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                 unsigned size)
 {
     OtASTEgState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ast_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (size != 4u || (addr & 3u) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%03x (%s, size=%u)\n",
-                      __func__, (uint32_t)addr, REG_NAME(reg), size);
-        return MEMTX_ERROR;
-    }
 
     switch (reg) {
     case R_REGA0:
@@ -489,10 +480,8 @@ static MemTxResult ot_ast_eg_regs_write_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_ERROR;
+        break;
     }
-
-    return MEMTX_OK;
 }
 
 static const Property ot_ast_eg_properties[] = {
@@ -501,13 +490,14 @@ static const Property ot_ast_eg_properties[] = {
 };
 
 static const MemoryRegionOps ot_ast_eg_regs_ops = {
-    .read_with_attrs = &ot_ast_eg_regs_read_with_attrs,
-    .write_with_attrs = &ot_ast_eg_regs_write_with_attrs,
+    .read = &ot_ast_eg_regs_read,
+    .write = &ot_ast_eg_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_ast_eg_regs_accepts,
 };
 
 static void ot_ast_eg_reset_enter(Object *obj, ResetType type)
@@ -594,7 +584,6 @@ static void ot_ast_eg_init(Object *obj)
 
     s->regsa = g_new0(uint32_t, REGSA_COUNT);
     s->regsb = g_new0(uint32_t, REGSB_COUNT);
-    s->rng_state = 0x243f6a8885a308d3ULL;
 }
 
 static void ot_ast_eg_class_init(ObjectClass *klass, const void *data)
