@@ -2717,7 +2717,8 @@ void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8])
     dump[7] = env->double_fault_seen ? 1u : 0u;
 }
 
-void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr)
+G_NORETURN void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs,
+                                                  uint64_t phys_addr)
 {
     RISCVCPU *cpu = RISCV_CPU(cs);
     CPURISCVState *env = &cpu->env;
