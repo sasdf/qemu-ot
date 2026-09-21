@@ -416,12 +416,9 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
     }
 
     if (trigger_rst) {
-        if (rst_det_cyc > 0u) {
-            timer_mod_ns(s->combo_rst_timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 3000000LL);
-        } else {
-            ibex_irq_set(&s->rst_req, 1);
-        }
+        timer_mod_ns(s->combo_rst_timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
+                         (rst_det_cyc > 0u ? 3000000LL : 0LL));
     }
 
     ot_sysrst_ctrl_update_outputs(s);
