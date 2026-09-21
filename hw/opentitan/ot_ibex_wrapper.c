@@ -1284,8 +1284,8 @@ static bool ot_ibex_wrapper_regs_accepts(void *opaque, hwaddr addr,
     return permit != 0u && (!is_write || (permit & ~reg_be) == 0u);
 }
 
-static uint64_t ot_ibex_wrapper_regs_read(void *opaque, hwaddr addr,
-                                          unsigned size)
+static uint64_t
+ot_ibex_wrapper_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtIbexWrapperState *s = opaque;
     (void)size;
@@ -1293,21 +1293,21 @@ static uint64_t ot_ibex_wrapper_regs_read(void *opaque, hwaddr addr,
 
     hwaddr reg = R32_OFF(addr);
 
-    if (reg < s->reg_count) {
-        g_assert(s->access_table[reg].read);
-        val32 = (*s->access_table[reg].read)(s, reg);
-    } else {
+    if (reg >= s->reg_count) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Invalid register 0x%03x\n",
                       __func__, s->ot_id, (uint32_t)addr);
-        val32 = 0;
+        return 0;
     }
+
+    g_assert(s->access_table[reg].read);
+    val32 = (*s->access_table[reg].read)(s, reg);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_ibex_wrapper_io_read_out(s->ot_id, (uint32_t)addr,
                                       REG_NAME(s, reg), val32, pc);
 
     return (uint64_t)val32;
-}
+};
 
 static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
                                        uint64_t val64, unsigned size)
@@ -1332,7 +1332,7 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
 
     g_assert(s->access_table[reg].write);
     (*s->access_table[reg].write)(s, reg, val32);
-}
+};
 
 static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
 {
@@ -1452,9 +1452,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, nmi_state)].permit = 0x1u;
     s->access_table[R32_DYN_POS(s, err_status)].mask = ERR_STATUS_MASK;
     s->access_table[R32_DYN_POS(s, err_status)].permit = 0x3u;
-    s->access_table[R32_DYN_POS(s, rnd_data)].permit = 0xfu;
     s->access_table[R32_DYN_POS(s, rnd_status)].permit = 0x1u;
-    s->access_table[R32_DYN_POS(s, fpga_info)].permit = 0xfu;
 
     unsigned base = FIRST_REMAP_REG_POS;
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
@@ -1473,13 +1471,11 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = UINT32_MAX;
-            s->access_table[base + mix].permit = 0xfu;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = UINT32_MAX;
-            s->access_table[base + mix].permit = 0xfu;
         }
         base += s->num_regions;
     }
