@@ -739,12 +739,9 @@ ot_lc_ctrl_change_state_line(OtLcCtrlState *s, OtLcCtrlFsmState state, int line)
 
 static void ot_lc_ctrl_update_alerts(OtLcCtrlState *s)
 {
-    uint32_t fatal_level = 0;
-
-    if (s->regs[R_STATUS] & R_STATUS_OTP_ERROR_MASK) {
-        fatal_level |= ALERT_FATAL_PROG_ERROR_MASK;
-    }
-
+    uint32_t fatal_level = (s->regs[R_STATUS] & R_STATUS_OTP_ERROR_MASK) ?
+                               ALERT_FATAL_PROG_ERROR_MASK :
+                               0u;
     uint32_t level = fatal_level | s->regs[R_ALERT_TEST];
 
     for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
@@ -1277,15 +1274,6 @@ static void ot_lc_ctrl_handle_otp_ack(void *opaque, bool ack)
         trace_ot_lc_ctrl_info(s->ot_id, "Ignore OTP completion in IDLE");
         break;
     case ST_CNT_PROG:
-        if (!ack) {
-            trace_ot_lc_ctrl_info(s->ot_id,
-                                  "Failed to program transition count");
-            s->regs[R_STATUS] |= R_STATUS_OTP_ERROR_MASK;
-            ot_lc_ctrl_update_alerts(s);
-            LC_FSM_CHANGE_STATE(s, ST_POST_TRANS);
-            s->lc_state = LC_STATE_POST_TRANSITION;
-            break;
-        }
         LC_FSM_CHANGE_STATE(s, ST_TRANS_CHECK);
         /*
          * Notes:
