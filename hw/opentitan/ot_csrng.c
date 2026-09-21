@@ -1808,47 +1808,51 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
     return val32;
 }
 
-static const uint8_t CSRNG_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_REGWEN] = 0x1u,
-    [R_CTRL] = 0x3u,
-    [R_CMD_REQ] = 0xfu,
-    [R_RESEED_INTERVAL] = 0xfu,
-    [R_RESEED_COUNTER_0] = 0xfu,
-    [R_RESEED_COUNTER_1] = 0xfu,
-    [R_RESEED_COUNTER_2] = 0xfu,
-    [R_SW_CMD_STS] = 0x1u,
-    [R_GENBITS_VLD] = 0x1u,
-    [R_GENBITS] = 0xfu,
-    [R_INT_STATE_READ_ENABLE] = 0x1u,
-    [R_INT_STATE_READ_ENABLE_REGWEN] = 0x1u,
-    [R_INT_STATE_NUM] = 0x1u,
-    [R_INT_STATE_VAL] = 0xfu,
-    [R_FIPS_FORCE] = 0x1u,
-    [R_HW_EXC_STS] = 0x3u,
-    [R_RECOV_ALERT_STS] = 0x3u,
-    [R_ERR_CODE] = 0xfu,
-    [R_ERR_CODE_TEST] = 0x1u,
-    [R_MAIN_SM_STATE] = 0x1u,
-};
+static bool ot_csrng_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                  bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint32_t permit;
+    switch (reg) {
+    case R_CMD_REQ:
+    case R_RESEED_INTERVAL:
+    case R_RESEED_COUNTER_0:
+    case R_RESEED_COUNTER_1:
+    case R_RESEED_COUNTER_2:
+    case R_GENBITS:
+    case R_INT_STATE_VAL:
+    case R_ERR_CODE:
+        permit = 0xfu;
+        break;
+    case R_CTRL:
+    case R_HW_EXC_STS:
+    case R_RECOV_ALERT_STS:
+        permit = 0x3u;
+        break;
+    default:
+        permit = 0x1u;
+        break;
+    }
+    uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
+    return (permit & ~reg_be) == 0u;
+}
 
-static MemTxResult ot_csrng_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtCSRNGState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32;
     OtCSRNGInstance *inst;
 
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -1930,25 +1934,23 @@ static MemTxResult ot_csrng_regs_read_with_attrs(
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        val32 = 0;
+        break;
     }
 
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    val32 = (val32 >> shift) & size_mask;
+    val32 >>= (addr & 0x3u) * 8u;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_csrng_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    *data = (uint64_t)val32;
-    return MEMTX_OK;
-}
+    return (uint64_t)val32;
+};
 
-static MemTxResult ot_csrng_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                unsigned size)
 {
     OtCSRNGState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
     OtCSRNGInstance *inst;
 
@@ -1956,20 +1958,6 @@ static MemTxResult ot_csrng_regs_write_with_attrs(
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_csrng_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((CSRNG_PERMIT[reg] & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02x (size=%u)\n",
-                      __func__, (uint32_t)addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
 
     switch (reg) {
     case R_INTR_STATE:
@@ -2154,11 +2142,9 @@ static MemTxResult ot_csrng_regs_write_with_attrs(
         // JW: handle new registers.
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
+        break;
     }
-
-    return MEMTX_OK;
-}
+};
 
 static const Property ot_csrng_properties[] = {
     DEFINE_PROP_LINK("entropy-src", OtCSRNGState, entropy_src,
@@ -2168,11 +2154,12 @@ static const Property ot_csrng_properties[] = {
 };
 
 static const MemoryRegionOps ot_csrng_regs_ops = {
-    .read_with_attrs = &ot_csrng_regs_read_with_attrs,
-    .write_with_attrs = &ot_csrng_regs_write_with_attrs,
+    .read = &ot_csrng_regs_read,
+    .write = &ot_csrng_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_csrng_regs_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
