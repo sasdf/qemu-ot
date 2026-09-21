@@ -310,8 +310,8 @@ static const char *REG_NAMES[REGS_COUNT] = {
 /* Input FIFO length is 80 bytes (10 x 64 bits) */
 #define FIFO_LENGTH 80u
 
-/* Delay FIFO ingestion and compute by 100ns */
-#define BH_TRIGGER_DELAY_NS 100u
+/* Delay FIFO ingestion and compute by 50us */
+#define BH_TRIGGER_DELAY_NS 50000u
 
 /* Max size of the KECCAK state */
 #define KECCAK_STATE_BITS  1600u
