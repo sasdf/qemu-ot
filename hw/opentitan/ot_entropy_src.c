@@ -631,16 +631,6 @@ static int ot_entropy_src_get_entropy(
         return OT_ENTROPY_SRC_WAIT_DELAY_NS;
     }
 
-    bool fips_compliant;
-    if (ess->state == ENTROPY_SRC_BOOT_PHASE_DONE ||
-        (ot_entropy_src_is_bypass_mode(ess) &&
-         !ot_entropy_src_is_fw_ov_entropy_insert(ess))) {
-        fips_compliant = false;
-    } else {
-        fips_compliant = ot_entropy_src_is_fips_enabled(ess) ||
-                         REG_MB4_IS_TRUE(ess, hi, CONF, FIPS_FLAG);
-    }
-
     uint32_t *randu32 = (uint32_t *)random;
     size_t pos = 0;
     while (pos < ES_WORD_COUNT) {
@@ -664,7 +654,7 @@ static int ot_entropy_src_get_entropy(
         REG_MB4_IS_TRUE(ess, hi, ENTROPY_CONTROL, ES_ROUTE),
         REG_MB4_IS_TRUE(ess, hi, ENTROPY_CONTROL, ES_TYPE),
         REG_MB4_IS_FALSE(ess, hi, CONF, RNG_BIT_ENABLE), fips_capable,
-        fips_compliant, *fips);
+        *fips, *fips);
 
     if (ot_fifo32_num_used(&ess->final_fifo) < ES_WORD_COUNT) {
         ot_entropy_src_update_filler(ess);
@@ -774,9 +764,6 @@ static bool ot_entropy_src_is_fw_ov_entropy_insert(const OtEntropySrcState *s)
 
 static bool ot_entropy_src_is_fips_capable(const OtEntropySrcState *s)
 {
-    if (REG_MB4_IS_TRUE(s, hi, CONF, FIPS_FLAG)) {
-        return true;
-    }
     return ot_entropy_src_is_fips_enabled(s) &&
            !(REG_MB4_IS_TRUE(s, hi, ENTROPY_CONTROL, ES_ROUTE) &&
              REG_MB4_IS_TRUE(s, hi, ENTROPY_CONTROL, ES_TYPE)) &&
@@ -904,63 +891,25 @@ static bool ot_entropy_src_mb4_is_invalid(uint8_t mbbool)
 
 static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
 {
-    uint32_t alerts = 0u;
-
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_MODULE_ENABLE], MODULE_ENABLE,
-                       MODULE_ENABLE))) {
-        alerts |= R_RECOV_ALERT_STS_MODULE_ENABLE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_CONF], CONF, FIPS_ENABLE))) {
-        alerts |= R_RECOV_ALERT_STS_FIPS_ENABLE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_CONF], CONF, FIPS_FLAG))) {
-        alerts |= R_RECOV_ALERT_STS_FIPS_FLAG_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_CONF], CONF, RNG_FIPS))) {
-        alerts |= R_RECOV_ALERT_STS_RNG_FIPS_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_CONF], CONF, RNG_BIT_ENABLE))) {
-        alerts |= R_RECOV_ALERT_STS_RNG_BIT_ENABLE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(FIELD_EX32(
-            s->regs_hi[R_CONF], CONF, V2_ENTROPY_DATA_REG_ENABLE))) {
-        alerts |=
-            R_RECOV_ALERT_STS_ENTROPY_DATA_REG_ENABLE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_CONF], CONF, V2_THRESHOLD_SCOPE))) {
-        alerts |= R_RECOV_ALERT_STS_THRESHOLD_SCOPE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_ENTROPY_CONTROL], ENTROPY_CONTROL,
-                       ES_ROUTE))) {
-        alerts |= R_RECOV_ALERT_STS_ES_ROUTE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_ENTROPY_CONTROL], ENTROPY_CONTROL,
-                       ES_TYPE))) {
-        alerts |= R_RECOV_ALERT_STS_ES_TYPE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_FW_OV_CONTROL], FW_OV_CONTROL,
-                       FW_OV_MODE))) {
-        alerts |= R_RECOV_ALERT_STS_FW_OV_MODE_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_FW_OV_CONTROL], FW_OV_CONTROL,
-                       FW_OV_ENTROPY_INSERT))) {
-        alerts |= R_RECOV_ALERT_STS_FW_OV_ENTROPY_INSERT_FIELD_ALERT_MASK;
-    }
-    if (ot_entropy_src_mb4_is_invalid(
-            FIELD_EX32(s->regs_hi[R_FW_OV_SHA3_START], FW_OV_SHA3_START,
-                       FW_OV_INSERT_START))) {
-        alerts |= R_RECOV_ALERT_STS_FW_OV_SHA3_START_FIELD_ALERT_MASK;
-    }
+#define CHK_MB4(_reg_, _fld_, _bit_) \
+    (ot_entropy_src_mb4_is_invalid( \
+         FIELD_EX32(s->regs_hi[R_##_reg_], _reg_, _fld_)) ? \
+         R_RECOV_ALERT_STS_##_bit_##_FIELD_ALERT_MASK : \
+         0u)
+    uint32_t alerts =
+        CHK_MB4(MODULE_ENABLE, MODULE_ENABLE, MODULE_ENABLE) |
+        CHK_MB4(CONF, FIPS_ENABLE, FIPS_ENABLE) |
+        CHK_MB4(CONF, FIPS_FLAG, FIPS_FLAG) |
+        CHK_MB4(CONF, RNG_FIPS, RNG_FIPS) |
+        CHK_MB4(CONF, RNG_BIT_ENABLE, RNG_BIT_ENABLE) |
+        CHK_MB4(CONF, V2_ENTROPY_DATA_REG_ENABLE, ENTROPY_DATA_REG_ENABLE) |
+        CHK_MB4(CONF, V2_THRESHOLD_SCOPE, THRESHOLD_SCOPE) |
+        CHK_MB4(ENTROPY_CONTROL, ES_ROUTE, ES_ROUTE) |
+        CHK_MB4(ENTROPY_CONTROL, ES_TYPE, ES_TYPE) |
+        CHK_MB4(FW_OV_CONTROL, FW_OV_MODE, FW_OV_MODE) |
+        CHK_MB4(FW_OV_CONTROL, FW_OV_ENTROPY_INSERT, FW_OV_ENTROPY_INSERT) |
+        CHK_MB4(FW_OV_SHA3_START, FW_OV_INSERT_START, FW_OV_SHA3_START);
+#undef CHK_MB4
     if ((uint16_t)s->regs_hi[R_ALERT_THRESHOLD] !=
         (uint16_t)(~(s->regs_hi[R_ALERT_THRESHOLD] >> 16u))) {
         alerts |= R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK;
@@ -2259,88 +2208,22 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     }
 };
 
-static const uint8_t ENTROPY_SRC_LO_PERMIT[REGS_LO_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_ME_REGWEN] = 0x1u,
-    [R_SW_REGUPD] = 0x1u,
-    [R_REGWEN] = 0x1u,
-};
-
-static const uint8_t ENTROPY_SRC_REV_PERMIT[REGS_REV_COUNT] = {
-    [R_REV] = 0x7u,
-};
-
-static const uint8_t ENTROPY_SRC_HI_PERMIT[REGS_HI_COUNT] = {
-    [R_MODULE_ENABLE] = 0x1u,
-    [R_CONF] = 0xfu,
-    [R_ENTROPY_CONTROL] = 0x1u,
-    [R_ENTROPY_DATA] = 0xfu,
-    [R_HEALTH_TEST_WINDOWS] = 0xfu,
-    [R_REPCNT_THRESHOLDS] = 0xfu,
-    [R_REPCNTS_THRESHOLDS] = 0xfu,
-    [R_ADAPTP_HI_THRESHOLDS] = 0xfu,
-    [R_ADAPTP_LO_THRESHOLDS] = 0xfu,
-    [R_BUCKET_THRESHOLDS] = 0xfu,
-    [R_MARKOV_HI_THRESHOLDS] = 0xfu,
-    [R_MARKOV_LO_THRESHOLDS] = 0xfu,
-    [R_EXTHT_HI_THRESHOLDS] = 0xfu,
-    [R_EXTHT_LO_THRESHOLDS] = 0xfu,
-    [R_REPCNT_HI_WATERMARKS] = 0xfu,
-    [R_REPCNTS_HI_WATERMARKS] = 0xfu,
-    [R_ADAPTP_HI_WATERMARKS] = 0xfu,
-    [R_ADAPTP_LO_WATERMARKS] = 0xfu,
-    [R_EXTHT_HI_WATERMARKS] = 0xfu,
-    [R_EXTHT_LO_WATERMARKS] = 0xfu,
-    [R_BUCKET_HI_WATERMARKS] = 0xfu,
-    [R_MARKOV_HI_WATERMARKS] = 0xfu,
-    [R_MARKOV_LO_WATERMARKS] = 0xfu,
-    [R_REPCNT_TOTAL_FAILS] = 0xfu,
-    [R_REPCNTS_TOTAL_FAILS] = 0xfu,
-    [R_ADAPTP_HI_TOTAL_FAILS] = 0xfu,
-    [R_ADAPTP_LO_TOTAL_FAILS] = 0xfu,
-    [R_BUCKET_TOTAL_FAILS] = 0xfu,
-    [R_MARKOV_HI_TOTAL_FAILS] = 0xfu,
-    [R_MARKOV_LO_TOTAL_FAILS] = 0xfu,
-    [R_EXTHT_HI_TOTAL_FAILS] = 0xfu,
-    [R_EXTHT_LO_TOTAL_FAILS] = 0xfu,
-    [R_ALERT_THRESHOLD] = 0xfu,
-    [R_ALERT_SUMMARY_FAIL_COUNTS] = 0x3u,
-    [R_ALERT_FAIL_COUNTS] = 0xfu,
-    [R_EXTHT_FAIL_COUNTS] = 0x1u,
-    [R_FW_OV_CONTROL] = 0x1u,
-    [R_FW_OV_SHA3_START] = 0x1u,
-    [R_FW_OV_WR_FIFO_FULL] = 0x1u,
-    [R_FW_OV_RD_FIFO_OVERFLOW] = 0x1u,
-    [R_FW_OV_RD_DATA] = 0xfu,
-    [R_FW_OV_WR_DATA] = 0xfu,
-    [R_OBSERVE_FIFO_THRESH] = 0x1u,
-    [R_OBSERVE_FIFO_DEPTH] = 0x1u,
-    [R_DEBUG_STATUS] = 0x7u,
-    [R_RECOV_ALERT_STS] = 0xfu,
-    [R_ERR_CODE] = 0xfu,
-    [R_ERR_CODE_TEST] = 0x1u,
-    [R_MAIN_SM_STATE] = 0x3u,
-};
-
 static bool ot_entropy_src_lo_accepts(void *opaque, hwaddr addr, unsigned size,
                                       bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
+    (void)size;
     (void)attrs;
-    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    return !is_write || !(ENTROPY_SRC_LO_PERMIT[R32_OFF(addr)] & ~mask);
+    return !is_write || (addr & 3u) == 0u;
 }
 
 static bool ot_entropy_src_rev_accepts(void *opaque, hwaddr addr, unsigned size,
                                        bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
+    (void)addr;
     (void)attrs;
-    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    return !is_write || !(ENTROPY_SRC_REV_PERMIT[R32_OFF(addr)] & ~mask);
+    return !is_write || size == 4u;
 }
 
 static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -2348,8 +2231,33 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
+    if (!is_write) {
+        return true;
+    }
+    uint8_t permit;
+    switch (R32_OFF(addr)) {
+    case R_MODULE_ENABLE:
+    case R_ENTROPY_CONTROL:
+    case R_EXTHT_FAIL_COUNTS:
+    case R_FW_OV_CONTROL ... R_FW_OV_RD_FIFO_OVERFLOW:
+    case R_OBSERVE_FIFO_THRESH:
+    case R_OBSERVE_FIFO_DEPTH:
+    case R_ERR_CODE_TEST:
+        permit = 0x1u;
+        break;
+    case R_ALERT_SUMMARY_FAIL_COUNTS:
+    case R_MAIN_SM_STATE:
+        permit = 0x3u;
+        break;
+    case R_DEBUG_STATUS:
+        permit = 0x7u;
+        break;
+    default:
+        permit = 0xfu;
+        break;
+    }
     uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    return !is_write || !(ENTROPY_SRC_HI_PERMIT[R32_OFF(addr)] & ~mask);
+    return !(permit & ~mask);
 }
 
 static const MemoryRegionOps ot_entropy_src_lo_ops = {
