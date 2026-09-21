@@ -135,8 +135,6 @@ struct PulpRVDMState {
 
     MemoryRegion regs; /* MMIO */
     MemoryRegion mem; /* Container for the following: */
-    MemoryRegion mem_disabled; /* High-priority overlay when debug is disabled */
-    MemoryRegion mem_unmapped; /* Fallback unmapped error region */
     MemoryRegion unmapped_prog0; /* Unmapped 0x304..0x337 within prog */
     MemoryRegion unmapped_prog1; /* Unmapped 0x388..0x3ff within prog */
     MemoryRegion dmact; /* MMIO */
@@ -279,7 +277,7 @@ static void pulp_rv_dm_update_debug_en(PulpRVDMState *s)
     bool late_debug_en = (s->late_debug_enable == OT_MULTIBITBOOL32_TRUE);
     bool en = (otp_dis_late_debug || late_debug_en) ? s->lc_hw_debug_en :
                                                       s->lc_dft_en;
-    memory_region_set_enabled(&s->mem_disabled, !en);
+    memory_region_set_enabled(&s->mem, en);
 }
 
 static void pulp_rv_dm_load_rom(PulpRVDMState *s)
@@ -359,12 +357,6 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 
 #define RV_DM_REGS_COUNT 3u
 
-static const uint8_t RV_DM_REGS_PERMIT[RV_DM_REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,
-    [R_LATE_DEBUG_ENABLE_REGWEN] = 0x1u,
-    [R_LATE_DEBUG_ENABLE] = 0xfu,
-};
-
 static MemTxResult pulp_rv_dm_regs_read_with_attrs(
     void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
@@ -387,8 +379,9 @@ static MemTxResult pulp_rv_dm_regs_write_with_attrs(
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     if (reg < RV_DM_REGS_COUNT) {
+        uint8_t permit = (reg == R_LATE_DEBUG_ENABLE) ? 0xfu : 0x1u;
         uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-        if ((RV_DM_REGS_PERMIT[reg] & ~byte_mask) != 0u) {
+        if ((permit & ~byte_mask) != 0u) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: sub-word write error at 0x%" HWADDR_PRIx
                           " (size=%u, mask=0x%x)\n",
@@ -798,15 +791,6 @@ static void pulp_rv_dm_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
 
     /* Mem container content */
-    memory_region_init_io(&s->mem_disabled, obj, &pulp_rv_dm_disabled_ops, s,
-                          TYPE_PULP_RV_DM ".disabled", 0x1000);
-    memory_region_add_subregion_overlap(&s->mem, 0, &s->mem_disabled, 10);
-    memory_region_set_enabled(&s->mem_disabled, false);
-
-    memory_region_init_io(&s->mem_unmapped, obj, &pulp_rv_dm_disabled_ops, s,
-                          TYPE_PULP_RV_DM ".unmapped", 0x1000);
-    memory_region_add_subregion_overlap(&s->mem, 0, &s->mem_unmapped, -1);
-
     memory_region_init_io(&s->dmact, obj, &pulp_rv_dm_dmact_ops, s,
                           TYPE_PULP_RV_DM ".act", PULP_RV_DM_DMACT_SIZE);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_DMACT_BASE, &s->dmact);
