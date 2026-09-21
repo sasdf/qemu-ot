@@ -274,10 +274,6 @@ static void ot_i2c_host_proxy_timer(void *opaque)
             }
             ot_i2c_host_proxy_stall(s);
         } else if (s->pending_op == PROXY_PENDING_READ_BYTE) {
-            if (ot_i2c_bus_target_check_tx_stretch(s->bus)) {
-                ot_i2c_host_proxy_stall(s);
-                return;
-            }
             s->pending_op = PROXY_PENDING_NONE;
             ot_i2c_host_proxy_put_byte(s, i2c_recv(s->bus));
             ot_i2c_host_proxy_stall(s);
