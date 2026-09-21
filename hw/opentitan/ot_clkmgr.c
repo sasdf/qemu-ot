@@ -136,6 +136,7 @@ typedef struct {
     GList *outputs; /* wekrefs to OtClkMgrClockOutput */
     unsigned divider; /* divider applied on parent clock if any (0 if top) */
     unsigned ratio; /* ratio w/ reference clock (may be 0) */
+    unsigned frequency; /* actual clock frequency in Hz */
     bool ref; /* reference clock */
     bool loose; /* clock which is declared but not connected */
 } OtClkMgrClock;
@@ -329,7 +330,9 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
         }
     }
 
-    return target_clk->ratio > 0 ? (target_clk->ratio - 1u) : 0u;
+    uint32_t ratio = target_clk->frequency ? (target_clk->frequency / 250000u) :
+                                             target_clk->ratio;
+    return ratio > 0 ? (ratio - 1u) : 0u;
 }
 
 static unsigned ot_clkmgr_get_measure_width(const OtClkMgrClock *clk)
@@ -367,6 +370,8 @@ static void ot_clkmgr_update_clock_frequency(
 {
     unsigned frequency =
         clk->divider > 1 ? (input_freq / clk->divider) : input_freq;
+
+    clk->frequency = frequency;
 
     trace_ot_clkmgr_update_clock(s->ot_id, clk->name, frequency);
 
