@@ -231,10 +231,12 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
  */
 
 /* clang-format off */
-#define SBCS_RW_MASK    (R_SBCS_SBREADONDATA_MASK    | \
+#define SBCS_WRITE_MASK (R_SBCS_SBREADONDATA_MASK    | \
                          R_SBCS_SBAUTOINCREMENT_MASK | \
                          R_SBCS_SBACCESS_MASK        | \
-                         R_SBCS_SBREADONADDR_MASK)
+                         R_SBCS_SBREADONADDR_MASK    | \
+                         R_SBCS_SBERROR_MASK         | \
+                         R_SBCS_SBBUSYERROR_MASK)
 /* clang-format on */
 
 #define GPR_ZERO 0u /* zero = x0 */
@@ -338,7 +340,6 @@ struct RISCVDMState {
     uint64_t nonexistent_bm; /* Selected harts that are not existent */
     uint64_t unavailable_bm; /* Selected harts that are not available */
     uint64_t haltreq_bm; /* Selected harts that have a pending halt request */
-    uint64_t resethaltreq_bm; /* Selected harts with reset-halt request */
     uint64_t reset_bm; /* Selected harts that have an ongoing reset request */
     uint64_t to_go_bm; /* Harts that have been flagged for debug exec */
     uint32_t address; /* DM register addr: only bADDRESS_BITS..b0 are used */
@@ -1314,16 +1315,10 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
                     hart->have_reset = true;
                     trace_riscv_dm_hart_reset(dm->soc, cs->cpu_index,
                                               dm->hart->hartid, "exited");
-                    if ((dm->haltreq_bm | dm->resethaltreq_bm) & hbit) {
-                        if (!hart->halted) {
-                            riscv_dm_halt_hart(dm, hartsel);
-                        } else {
-                            dm->unavailable_bm &= ~hbit;
-                        }
-                    } else if (!(cs->interrupt_request & CPU_INTERRUPT_DEBUG)) {
-                        dm->unavailable_bm &= ~hbit;
-                        hart->halted = false;
+                    if (dm->haltreq_bm & hbit) {
+                        riscv_dm_halt_hart(dm, hartsel);
                     }
+                    dm->unavailable_bm &= ~hbit;
                 }
             }
         }
@@ -1339,12 +1334,6 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
 
     if (!hasel && (hartsel < dm->hart_count)) {
         uint64_t hartbit = 1u << hartsel;
-        if (value & R_DMCONTROL_SETRESETHALTREQ_MASK) {
-            dm->resethaltreq_bm |= hartbit;
-        }
-        if (value & R_DMCONTROL_CLRRESETHALTREQ_MASK) {
-            dm->resethaltreq_bm &= ~hartbit;
-        }
         if (value & R_DMCONTROL_HALTREQ_MASK) {
             dm->haltreq_bm |= hartbit;
         } else {
@@ -1374,11 +1363,7 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
     } else if (prev_ndmreset) {
         dm->in_ndmreset = true;
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
-        if (ibex_irq_is_connected(&dm->ndmreset)) {
-            ibex_irq_set(&dm->ndmreset, 0);
-        } else {
-            qemu_system_reset(SHUTDOWN_CAUSE_GUEST_RESET);
-        }
+        ibex_irq_set(&dm->ndmreset, 0);
         dm->in_ndmreset = false;
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = false;
         for (unsigned step = 0; step < 32u; step++) {
@@ -1404,12 +1389,9 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
             hart->halted = false;
             hart->resumed = false;
             hart->resuming = false;
-            if ((dm->haltreq_bm | dm->resethaltreq_bm) & hartbit) {
+            if (dm->haltreq_bm & hartbit) {
                 CPUState *cs = CPU(hart->cpu);
-                riscv_cpu_store_debug_cause(
-                    cs, (dm->resethaltreq_bm & hartbit) ?
-                            DCSR_CAUSE_RESETHALTREQ :
-                            DCSR_CAUSE_HALTREQ);
+                riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
                 cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
                 riscv_dm_set_cs(dm, true);
                 riscv_dm_ensure_running(dm);
@@ -1583,39 +1565,18 @@ static CmdErr riscv_dm_abstractauto_write(RISCVDMState *dm, uint32_t value)
 
 static void riscv_dm_sync_vcpu(RISCVDMState *dm)
 {
-    if (!bql_locked() || !runstate_is_running()) {
-        return;
-    }
     for (int i = 0; i < 1000; i++) {
         bool pending = dm->cmd_busy;
         for (unsigned hix = 0; hix < dm->hart_count; hix++) {
             RISCVDMHartState *hart = &dm->harts[hix];
-            CPUState *cs = hart->cpu ? CPU(hart->cpu) : NULL;
+            CPUState *cs = CPU(hart->cpu);
             uint64_t mask = 1ULL << hix;
-            if (!cs) {
+            if (cs->disabled) {
                 continue;
             }
-            if (cs->disabled) {
-                if (!dm->in_ndmreset &&
-                    (i < 20 ||
-                     ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) ||
-                     (cs->interrupt_request & CPU_INTERRUPT_DEBUG))) {
-                    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL_RT);
-                    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
-                    aio_bh_poll(qemu_get_aio_context());
-                    if (cs->disabled) {
-                        pending = true;
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
             if (dm->unavailable_bm & mask) {
-                if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
-                    if (!hart->halted) {
-                        riscv_dm_halt_hart(dm, hix);
-                    }
+                if ((dm->haltreq_bm & mask) && !hart->halted) {
+                    riscv_dm_halt_hart(dm, hix);
                 }
                 trace_riscv_dm_status(dm->soc, cs->cpu_index,
                                       "became available");
@@ -1624,12 +1585,9 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
             if (hart->resuming ||
                 (!hart->halted &&
                  ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
-                  ((dm->haltreq_bm | dm->resethaltreq_bm) & mask)))) {
-                if (cs->stopped && !cs->disabled) {
-                    cpu_resume(cs);
-                } else {
-                    qemu_cpu_kick(cs);
-                }
+                  (dm->haltreq_bm & mask)))) {
+                riscv_dm_ensure_running(dm);
+                qemu_cpu_kick(cs);
                 pending = true;
             }
         }
@@ -1693,21 +1651,19 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
             continue;
         }
         if (dm->unavailable_bm & mask) {
-            if ((dm->haltreq_bm | dm->resethaltreq_bm) & mask) {
-                if (!hart->halted) {
-                    riscv_dm_halt_hart(dm, hix);
-                }
-            }
-            if (!hart->halted &&
-                ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
-                 ((dm->haltreq_bm | dm->resethaltreq_bm) & mask))) {
-                unavail += 1;
-                trace_riscv_dm_status(dm->soc, cs->cpu_index, "unavailable");
-                continue;
-            }
             trace_riscv_dm_status(dm->soc, cs->cpu_index, "became available");
             /* clear the unavailability flag and resume w/ "regular" states */
             dm->unavailable_bm &= ~mask;
+            /*
+             * Unfortunately, some tests rely on this implementation-dependent
+             * fact that reasonable SW will usually send a haltreq and then
+             * repeatedly poll `dmstatus` to see the hart(s) halt. Hence, we
+             * latch haltreqs for unresponsive cores and halt any hart that is
+             * polled as newly available/responsive on a `dmstatus` read.
+             */
+            if (dm->haltreq_bm & mask) {
+                riscv_dm_halt_hart(dm, hix);
+            }
         }
         if (!cs->disabled && !hart->halted &&
             (cs->interrupt_request & CPU_INTERRUPT_DEBUG) &&
@@ -1800,16 +1756,14 @@ static CmdErr riscv_dm_dmstatus_read(RISCVDMState *dm, uint32_t *value)
 
 static CmdErr riscv_dm_sbcs_write(RISCVDMState *dm, uint32_t value)
 {
-    /* clear error bits if written with 1 (W1C) */
-    if (value & R_SBCS_SBBUSYERROR_MASK) {
-        dm->regs[A_SBCS] &= ~R_SBCS_SBBUSYERROR_MASK;
-    }
-    if (value & R_SBCS_SBERROR_MASK) {
-        dm->regs[A_SBCS] &= ~R_SBCS_SBERROR_MASK;
-    }
+    /* mask out the preset, R/O bits */
+    value &= SBCS_WRITE_MASK;
 
-    dm->regs[A_SBCS] =
-        (dm->regs[A_SBCS] & ~SBCS_RW_MASK) | (value & SBCS_RW_MASK);
+    /* clear error bits (if flagged as W1C) */
+    value &= ~(value & (R_SBCS_SBERROR_MASK | R_SBCS_SBBUSYERROR_MASK));
+
+    dm->regs[A_SBCS] &= ~SBCS_WRITE_MASK;
+    dm->regs[A_SBCS] |= value;
 
     if (trace_event_get_state(TRACE_RISCV_DM_SBCS_WRITE)) {
         bool err = (bool)(value & R_SBCS_SBERROR_MASK);
@@ -1988,7 +1942,6 @@ static CmdErr riscv_dm_sbdata0_read(RISCVDMState *dm, uint32_t *value)
     if (FIELD_EX32(dm->regs[A_SBCS], SBCS, SBERROR) ||
         FIELD_EX32(dm->regs[A_SBCS], SBCS, SBBUSYERROR)) {
         xtrace_riscv_dm_error(dm->soc, "sberror");
-        *value = dm->regs[A_SBDATA0] = (uint32_t)dm->sbdata;
         return CMD_ERR_NONE;
     }
 
@@ -2183,16 +2136,13 @@ static CmdErr riscv_dm_abstractcs_write(RISCVDMState *dm, uint32_t value)
 
 static CmdErr riscv_dm_haltsum0_read(RISCVDMState *dm, uint32_t *value)
 {
-    riscv_dm_sync_vcpu(dm);
-
     unsigned hix = 0;
     unsigned halted_bm = 0;
 
     while (hix < dm->hart_count) {
         if (dm->harts[hix].halted) {
-            halted_bm |= 1u << hix;
+            halted_bm = 1u << hix;
         }
-        hix++;
     }
 
     *value = dm->regs[A_HALTSUM0] = halted_bm;
@@ -2597,7 +2547,6 @@ static void riscv_dm_halt_hart(RISCVDMState *dm, unsigned hartsel)
     RISCVDMHartState *hart = &dm->harts[hartsel];
     RISCVCPU *cpu = hart->cpu;
     CPUState *cs = CPU(cpu);
-    uint64_t hartbit = 1ULL << hartsel;
 
     trace_riscv_dm_change_hart(dm->soc, "HALT", hartsel, cs->halted,
                                cs->running, cs->stopped, hart->resumed);
@@ -2609,10 +2558,7 @@ static void riscv_dm_halt_hart(RISCVDMState *dm, unsigned hartsel)
     hart->resuming = false;
     cpu->env.debug_cs = true;
     trace_riscv_dm_cs(dm->soc, true);
-    riscv_cpu_store_debug_cause(
-        cs, ((dm->unavailable_bm & hartbit) && (dm->resethaltreq_bm & hartbit)) ?
-                DCSR_CAUSE_RESETHALTREQ :
-                DCSR_CAUSE_HALTREQ);
+    riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
     cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
     /* vCPU should always be "running" - halt mode runs the park loop */
     riscv_dm_ensure_running(dm);
@@ -2776,7 +2722,6 @@ static void riscv_dm_reset_enter(Object *obj, ResetType type)
     dm->nonexistent_bm = 0;
     dm->unavailable_bm = 0;
     dm->haltreq_bm = 0;
-    dm->resethaltreq_bm = 0;
     dm->reset_bm = 0;
     dm->address = 0;
     dm->to_go_bm = 0;
@@ -2807,12 +2752,9 @@ static void riscv_dm_reset_exit(Object *obj, ResetType type)
             hart->resumed = false;
             hart->resuming = false;
             dm->unavailable_bm |= hartbit;
-            if ((dm->haltreq_bm | dm->resethaltreq_bm) & hartbit) {
+            if (dm->haltreq_bm & hartbit) {
                 CPUState *cs = CPU(hart->cpu);
-                riscv_cpu_store_debug_cause(
-                    cs, (dm->resethaltreq_bm & hartbit) ?
-                            DCSR_CAUSE_RESETHALTREQ :
-                            DCSR_CAUSE_HALTREQ);
+                riscv_cpu_store_debug_cause(cs, DCSR_CAUSE_HALTREQ);
                 cpu_interrupt(cs, CPU_INTERRUPT_DEBUG);
                 riscv_dm_set_cs(dm, true);
             }
