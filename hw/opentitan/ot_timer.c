@@ -380,11 +380,9 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
             uint64_t mtime = ot_timer_get_mtime(s, now);
             s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
             s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
-            s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
-            ot_timer_rearm(s, true);
-        } else {
-            s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
         }
+        s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
+        ot_timer_rearm(s, true);
         break;
     case R_TIMER_V_LOWER0:
         if (ot_timer_is_active(s)) {

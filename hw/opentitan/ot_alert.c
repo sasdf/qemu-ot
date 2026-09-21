@@ -490,8 +490,6 @@ static void ot_alert_set_dump_bits(uint32_t dump[9], unsigned start_bit,
         unsigned bit_idx = bit_pos % 32u;
         if (val & (1ULL << i)) {
             dump[word_idx] |= (1u << bit_idx);
-        } else {
-            dump[word_idx] &= ~(1u << bit_idx);
         }
     }
 }
@@ -1073,12 +1071,6 @@ static uint32_t ot_alert_reg_cause_read(OtAlertState *s, unsigned reg)
     return DVAL(s->regs.shadow[reg]);
 }
 
-static uint32_t ot_alert_reg_loc_cause_read(OtAlertState *s, unsigned reg)
-{
-    ot_alert_check_ping_timer(s);
-    return DVAL(s->regs.shadow[reg]);
-}
-
 static void ot_alert_reg_ping_write(OtAlertState *s, unsigned reg, uint32_t val)
 {
     ot_alert_reg_shadow_write(s, reg, val);
@@ -1172,7 +1164,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
     /* LOC_ALERT_CAUSE */
     for (unsigned ix = 0; ix < LOCAL_ALERT_COUNT; ix++) {
         table[offset + ix] =
-            R_ACC_M(loc_cause_read, direct_rw1c_write, LOC_ALERT_CAUSE_EN_MASK);
+            R_ACC_M(cause_read, direct_rw1c_write, LOC_ALERT_CAUSE_EN_MASK);
     }
     offset += LOCAL_ALERT_COUNT;
 
