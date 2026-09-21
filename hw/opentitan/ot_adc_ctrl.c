@@ -147,11 +147,6 @@ struct OtAdcCtrlState {
     bool trigger_q;
 };
 
-struct OtAdcCtrlClass {
-    SysBusDeviceClass parent_class;
-    ResettablePhases parent_phases;
-};
-
 static void ot_adc_ctrl_update_irqs(OtAdcCtrlState *s)
 {
     /*
@@ -359,36 +354,29 @@ static const uint8_t ADC_CTRL_PERMIT[REGS_COUNT] = {
     [R_ADC_FSM_STATE] = 0x1u,
 };
 
-static MemTxResult ot_adc_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                                    uint64_t *val64,
-                                                    unsigned size,
-                                                    MemTxAttrs attrs)
+static bool ot_adc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                     bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+
+    if (!is_write) {
+        return true;
+    }
+
+    hwaddr reg = R32_OFF(addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    return (ADC_CTRL_PERMIT[reg] & ~reg_be) == 0u;
+}
+
+static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtAdcCtrlState *s = opaque;
-    (void)attrs;
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
-    case R_INTR_STATE:
-    case R_INTR_ENABLE:
-    case R_ADC_EN_CTL:
-    case R_ADC_PD_CTL:
-    case R_ADC_LP_SAMPLE_CTL:
-    case R_ADC_SAMPLE_CTL:
-    case R_ADC_FSM_RST:
-    case R_ADC_CHN0_FILTER_CTL_0 ... R_ADC_CHN0_FILTER_CTL_7:
-    case R_ADC_CHN1_FILTER_CTL_0 ... R_ADC_CHN1_FILTER_CTL_7:
-    case R_ADC_CHN_VAL_0:
-    case R_ADC_CHN_VAL_1:
-    case R_ADC_WAKEUP_CTL:
-    case R_FILTER_STATUS:
-    case R_ADC_INTR_CTL:
-    case R_ADC_INTR_STATUS:
-    case R_ADC_FSM_STATE:
-        val32 = s->regs[reg];
-        break;
     case R_INTR_TEST:
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02x (%s)\n",
@@ -396,7 +384,8 @@ static MemTxResult ot_adc_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
         val32 = 0;
         break;
     default:
-        g_assert_not_reached();
+        val32 = s->regs[reg];
+        break;
     }
 
     uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
@@ -406,31 +395,20 @@ static MemTxResult ot_adc_ctrl_regs_read_with_attrs(void *opaque, hwaddr addr,
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    *val64 = (uint64_t)val32;
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
-static MemTxResult ot_adc_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                     uint64_t val64,
-                                                     unsigned size,
-                                                     MemTxAttrs attrs)
+static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
+                                   unsigned size)
 {
     OtAdcCtrlState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((ADC_CTRL_PERMIT[reg] & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02x (size=%u)\n",
-                      __func__, (uint32_t)addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
 
     val32 <<= (addr & 0x3u) * 8u;
 
@@ -506,37 +484,27 @@ static MemTxResult ot_adc_ctrl_regs_write_with_attrs(void *opaque, hwaddr addr,
         s->regs[R_ADC_INTR_STATUS] &= ~(val32 & ADC_INTR_MASK);
         ot_adc_ctrl_update_irqs(s);
         break;
-    case R_ADC_CHN_VAL_0:
-    case R_ADC_CHN_VAL_1:
-    case R_ADC_FSM_STATE:
+    default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
                       __func__, (uint32_t)addr, REG_NAME(reg));
         break;
-    default:
-        g_assert_not_reached();
     }
-
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_adc_ctrl_regs_ops = {
-    .read_with_attrs = &ot_adc_ctrl_regs_read_with_attrs,
-    .write_with_attrs = &ot_adc_ctrl_regs_write_with_attrs,
+    .read = &ot_adc_ctrl_regs_read,
+    .write = &ot_adc_ctrl_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_adc_ctrl_regs_accepts,
 };
 
 static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
 {
-    OtAdcCtrlClass *c = OT_ADC_CTRL_GET_CLASS(obj);
     OtAdcCtrlState *s = OT_ADC_CTRL(obj);
-
-    if (c->parent_phases.enter) {
-        c->parent_phases.enter(obj, type);
-    }
 
     ibex_irq_set(&s->irq, 0);
     ibex_irq_set(&s->alert, 0);
@@ -561,12 +529,8 @@ static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
 
 static void ot_adc_ctrl_reset_exit(Object *obj, ResetType type)
 {
-    OtAdcCtrlClass *c = OT_ADC_CTRL_GET_CLASS(obj);
     OtAdcCtrlState *s = OT_ADC_CTRL(obj);
-
-    if (c->parent_phases.exit) {
-        c->parent_phases.exit(obj, type);
-    }
+    (void)type;
 
     ot_adc_ctrl_update_irqs(s);
 }
@@ -595,10 +559,8 @@ static void ot_adc_ctrl_class_init(ObjectClass *klass, const void *data)
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 
     ResettableClass *rc = RESETTABLE_CLASS(klass);
-    OtAdcCtrlClass *ac = OT_ADC_CTRL_CLASS(klass);
-    resettable_class_set_parent_phases(rc, &ot_adc_ctrl_reset_enter, NULL,
-                                       &ot_adc_ctrl_reset_exit,
-                                       &ac->parent_phases);
+    rc->phases.enter = &ot_adc_ctrl_reset_enter;
+    rc->phases.exit = &ot_adc_ctrl_reset_exit;
 }
 
 static const TypeInfo ot_adc_ctrl_info = {
@@ -606,7 +568,6 @@ static const TypeInfo ot_adc_ctrl_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(OtAdcCtrlState),
     .instance_init = &ot_adc_ctrl_init,
-    .class_size = sizeof(OtAdcCtrlClass),
     .class_init = &ot_adc_ctrl_class_init,
 };
 

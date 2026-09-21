@@ -12,7 +12,7 @@
 #include "qom/object.h"
 
 #define TYPE_OT_ADC_CTRL "ot-adc-ctrl"
-OBJECT_DECLARE_TYPE(OtAdcCtrlState, OtAdcCtrlClass, OT_ADC_CTRL)
+OBJECT_DECLARE_SIMPLE_TYPE(OtAdcCtrlState, OT_ADC_CTRL)
 
 #define OT_ADC_CTRL_WKUP TYPE_OT_ADC_CTRL "-wkup"
 
