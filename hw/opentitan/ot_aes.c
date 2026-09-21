@@ -1470,27 +1470,21 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static MemTxResult ot_aes_write_with_attrs(void *opaque, hwaddr addr,
-                                           uint64_t val64, unsigned size,
-                                           MemTxAttrs attrs)
+static bool ot_aes_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
+    if (!is_write) {
+        return true;
+    }
     hwaddr reg = R32_OFF(addr);
-    uint32_t be =
-        (((size >= 4u) ? 0xfu : ((1u << size) - 1u)) << (addr & 3u)) & 0xfu;
+    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
     uint32_t permit =
         (reg == R_CTRL_SHADOWED) ?
             0x3u :
             ((reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) ? 0xfu : 0x1u);
-    if ((permit & ~be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t shift = (addr & 3u) * 8u;
-    uint32_t mask =
-        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
-    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
-    ot_aes_write(opaque, addr & ~3ull, val32, 4u);
-    return MEMTX_OK;
+    return (permit & ~be) == 0u;
 }
 
 static const Property ot_aes_properties[] = {
@@ -1510,12 +1504,13 @@ static const Property ot_aes_properties[] = {
 
 static const MemoryRegionOps ot_aes_regs_ops = {
     .read = &ot_aes_read,
-    .write_with_attrs = &ot_aes_write_with_attrs,
+    .write = &ot_aes_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_aes_regs_accepts,
 };
 
 static void ot_aes_reset_enter(Object *obj, ResetType type)
