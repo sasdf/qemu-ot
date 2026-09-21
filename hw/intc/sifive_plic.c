@@ -168,24 +168,23 @@ static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
                                 bool is_write, MemTxAttrs attrs)
 {
     SiFivePLICState *plic = opaque;
-    hwaddr word_addr = addr & ~3ULL;
     uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
     uint32_t permit = 0;
 
-    if (addr_between(word_addr, plic->priority_base, plic->num_sources << 2)) {
+    if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
         permit = 0x1u;
-    } else if (addr_between(word_addr, plic->pending_base,
+    } else if (addr_between(addr, plic->pending_base,
                             plic->bitfield_words << 2)) {
         permit = 0xfu;
-    } else if (addr_between(word_addr, plic->enable_base,
+    } else if (addr_between(addr, plic->enable_base,
                             plic->num_addrs * plic->enable_stride)) {
-        if (((word_addr & (plic->enable_stride - 1)) >> 2) <
+        if (((addr & (plic->enable_stride - 1)) >> 2) <
             plic->bitfield_words) {
             permit = 0xfu;
         }
-    } else if (addr_between(word_addr, plic->context_base,
+    } else if (addr_between(addr, plic->context_base,
                             plic->num_addrs * plic->context_stride)) {
-        uint32_t contextid = word_addr & (plic->context_stride - 1);
+        uint32_t contextid = addr & (plic->context_stride - 4);
         if (contextid == 0 || contextid == 4) {
             permit = 0x1u;
         }
