@@ -467,31 +467,19 @@ static void ot_i2c_update_irqs(OtI2CState *s)
 
 static void ot_i2c_irq_set_state(OtI2CState *s, OtI2CInterrupt irq, bool en)
 {
-    unsigned bit_mask = 1u << irq;
-
-    if (en) {
-        s->regs[R_INTR_STATE] |= bit_mask;
-    } else {
-        s->regs[R_INTR_STATE] &= ~bit_mask;
-    }
-
+    s->regs[R_INTR_STATE] = deposit32(s->regs[R_INTR_STATE], irq, 1, en);
     trace_ot_i2c_irq(s->ot_id, IRQ_NAMES[irq], en);
-
-    /*
-     * Update top-level interrupts unless this has been triggered
-     * while resetting, in which case it will be done later.
-     */
     ot_i2c_update_irqs(s);
 }
 
 static bool ot_i2c_host_enabled(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_CTRL], CTRL, ENABLEHOST);
+    return (bool)ARRAY_FIELD_EX32(s->regs, CTRL, ENABLEHOST);
 }
 
 static bool ot_i2c_target_enabled(const OtI2CState *s)
 {
-    return FIELD_EX32(s->regs[R_CTRL], CTRL, ENABLETARGET);
+    return (bool)ARRAY_FIELD_EX32(s->regs, CTRL, ENABLETARGET);
 }
 
 static uint32_t ot_i2c_get_fmt_threshold(const OtI2CState *s)
@@ -1415,52 +1403,36 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_TARGET_ACK_CTRL: {
         bool nack = FIELD_EX32(val32, TARGET_ACK_CTRL, NACK) != 0;
-        uint16_t nbytes = FIELD_EX32(val32, TARGET_ACK_CTRL, NBYTES);
+        uint16_t nbytes = nack ? 0 : FIELD_EX32(val32, TARGET_ACK_CTRL, NBYTES);
         if (nack) {
             s->nack_transaction = true;
-            ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, 0);
-            if (s->ack_ctrl_stretching) {
-                s->ack_ctrl_stretching = false;
-                ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
-                if (ot_i2c_host_enabled(s) && i2c_bus_busy(s->bus)) {
-                    uint32_t fval = 0;
-                    fval = FIELD_DP32(fval, FDATA, FBYTE,
-                                      s->acq_fifo_next_data);
-                    fval = FIELD_DP32(fval, FDATA, NAKOK,
-                                      s->host_pending_nakok);
-                    ot_fifo32_push(&s->host_tx_fifo, fval);
-                    ot_i2c_host_send(s);
-                } else {
-                    ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
-                                              SIGNAL_NACK);
-                    s->last_ack_result = -1;
-                }
-                if (s->host_pending_stop) {
-                    s->host_pending_stop = false;
-                    i2c_end_transfer(s->bus);
-                    ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
-                    i2c_schedule_pending_master(s->bus);
-                    ot_i2c_pump_async_bus(s);
-                }
-            }
-        } else {
-            if (s->ack_ctrl_stretching && nbytes > 0) {
-                ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
-                                          SIGNAL_NONE);
-                nbytes--;
-                s->ack_ctrl_stretching = false;
-                s->last_ack_result = 0;
-                ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
-                if (s->host_pending_stop) {
-                    s->host_pending_stop = false;
-                    i2c_end_transfer(s->bus);
-                    ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
-                    i2c_schedule_pending_master(s->bus);
-                    ot_i2c_pump_async_bus(s);
-                }
-            }
-            ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, nbytes);
         }
+        if (s->ack_ctrl_stretching && (nack || nbytes > 0)) {
+            s->ack_ctrl_stretching = false;
+            ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+            if (nack && ot_i2c_host_enabled(s) && i2c_bus_busy(s->bus)) {
+                uint32_t fval = FIELD_DP32(0, FDATA, FBYTE,
+                                           s->acq_fifo_next_data);
+                fval = FIELD_DP32(fval, FDATA, NAKOK, s->host_pending_nakok);
+                ot_fifo32_push(&s->host_tx_fifo, fval);
+                ot_i2c_host_send(s);
+            } else {
+                ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data,
+                                          nack ? SIGNAL_NACK : SIGNAL_NONE);
+                s->last_ack_result = nack ? -1 : 0;
+                if (!nack) {
+                    nbytes--;
+                }
+            }
+            if (s->host_pending_stop) {
+                s->host_pending_stop = false;
+                i2c_end_transfer(s->bus);
+                ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+                i2c_schedule_pending_master(s->bus);
+                ot_i2c_pump_async_bus(s);
+            }
+        }
+        ARRAY_FIELD_DP32(s->regs, TARGET_ACK_CTRL, NBYTES, nbytes);
         break;
     }
     case R_STATUS:
