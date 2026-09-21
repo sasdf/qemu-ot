@@ -700,7 +700,6 @@ static void tap_ctrl_rbb_init(Object *obj)
 {
     TapCtrlRbbState *tap = TAP_CTRL_RBB(obj);
 
-    tap->enabled = true;
     tap->tdhtable = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                           tap_ctrl_rbb_free_data_handler);
     qdev_init_gpio_in_named(DEVICE(obj), &tap_ctrl_rbb_enable_in,

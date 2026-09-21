@@ -55,7 +55,6 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
-#include "system/memory.h"
 #include "trace.h"
 
 
@@ -494,8 +493,7 @@ static bool pulp_rv_dm_prog_accepts(void *opaque, hwaddr addr, unsigned size,
                                     bool is_write, MemTxAttrs attrs)
 {
     (void)attrs;
-    return opaque != NULL && is_write && (addr & 3u) == 0u &&
-           size == sizeof(uint32_t);
+    return opaque != NULL && (!is_write || ((addr & 3u) == 0u && size == 4u));
 }
 
 static MemTxResult pulp_rv_dm_prog_write_with_attrs(
@@ -635,43 +633,29 @@ static const MemoryRegionOps pulp_rv_dm_prog_ops = {
     .valid.accepts = &pulp_rv_dm_prog_accepts,
 };
 
-static bool pulp_rv_dm_dmflag_accepts(void *opaque, hwaddr addr, unsigned size,
-                                      bool is_write, MemTxAttrs attrs)
-{
-    (void)opaque;
-    (void)attrs;
-    return !is_write || ((addr & 3u) == 0u && size == 4u);
-}
-
 static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
     .read_with_attrs = &pulp_rv_dm_dmflag_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmflag_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
-    .valid.accepts = &pulp_rv_dm_dmflag_accepts,
+    .valid.accepts = &pulp_rv_dm_prog_accepts,
 };
 
 static void pulp_rv_dm_lc_hw_debug_en_in(void *opaque, int n, int level)
 {
     PulpRVDMState *s = opaque;
     (void)n;
-    bool en = (bool)level;
-    if (s->lc_hw_debug_en != en) {
-        s->lc_hw_debug_en = en;
-        pulp_rv_dm_update_debug_en(s);
-    }
+    s->lc_hw_debug_en = (bool)level;
+    pulp_rv_dm_update_debug_en(s);
 }
 
 static void pulp_rv_dm_lc_dft_en_in(void *opaque, int n, int level)
 {
     PulpRVDMState *s = opaque;
     (void)n;
-    bool en = (bool)level;
-    if (s->lc_dft_en != en) {
-        s->lc_dft_en = en;
-        pulp_rv_dm_update_debug_en(s);
-    }
+    s->lc_dft_en = (bool)level;
+    pulp_rv_dm_update_debug_en(s);
 }
 
 static void pulp_rv_dm_reset(DeviceState *dev)
