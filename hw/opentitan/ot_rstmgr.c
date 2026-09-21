@@ -730,8 +730,6 @@ static const MemoryRegionOps ot_rstmgr_regs_ops = {
     .read = &ot_rstmgr_regs_read,
     .write = &ot_rstmgr_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .valid.accepts = &ot_rstmgr_regs_accepts,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
@@ -843,7 +841,6 @@ static void ot_rstmgr_init(Object *obj)
 
     memory_region_init_io(&s->mmio, obj, &ot_rstmgr_regs_ops, s, TYPE_OT_RSTMGR,
                           REGS_SIZE);
-
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regs = g_new0(uint32_t, REGS_COUNT);
