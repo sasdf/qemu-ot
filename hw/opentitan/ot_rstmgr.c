@@ -706,27 +706,18 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static MemTxResult ot_rstmgr_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static bool ot_rstmgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
 {
-    OtRstMgrState *s = opaque;
+    (void)opaque;
     (void)attrs;
+    if (!is_write) {
+        return true;
+    }
     hwaddr reg = R32_OFF(addr);
-
     uint8_t permit = (reg == R_ALERT_INFO || reg == R_CPU_INFO) ? 0xfu : 0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    if ((permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    uint32_t val32 = ((uint32_t)val64 & size_mask) << shift;
-    ot_rstmgr_regs_write(opaque, addr & ~0x3ULL, val32, 4u);
-    return MEMTX_OK;
+    return (permit & ~reg_be) == 0u;
 }
 
 static const Property ot_rstmgr_properties[] = {
@@ -737,14 +728,14 @@ static const Property ot_rstmgr_properties[] = {
 
 static const MemoryRegionOps ot_rstmgr_regs_ops = {
     .read = &ot_rstmgr_regs_read,
-    .write_with_attrs = &ot_rstmgr_regs_write_with_attrs,
+    .write = &ot_rstmgr_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_rstmgr_regs_accepts,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
 };
-
 
 static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
 {
