@@ -262,9 +262,7 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
     if (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK) {
         s->trigger_q = false;
         s->regs[R_ADC_FSM_STATE] = 0u;
-        if (s->fsm_timer) {
-            timer_del(s->fsm_timer);
-        }
+        timer_del(s->fsm_timer);
         return;
     }
 
@@ -276,16 +274,12 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
 
     if (!adc_en) {
         s->regs[R_ADC_FSM_STATE] = 0u;
-        if (s->fsm_timer) {
-            timer_del(s->fsm_timer);
-        }
+        timer_del(s->fsm_timer);
         return;
     }
 
     if (oneshot) {
-        if (s->fsm_timer) {
-            timer_del(s->fsm_timer);
-        }
+        timer_del(s->fsm_timer);
         if (trigger_l2h) {
             ot_adc_ctrl_update_chn_val(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL,
                                        true);
@@ -297,76 +291,24 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
         }
     } else {
         s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
-        uint64_t pwrup = (s->regs[R_ADC_PD_CTL] >> 4u) & 0xfu;
-        uint64_t wakeup = (s->regs[R_ADC_PD_CTL] >> 8u) & 0xffffffu;
-        bool lp_mode = (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) != 0u;
-        uint64_t lp_cnt = s->regs[R_ADC_LP_SAMPLE_CTL] & 0xffu;
-        if (lp_cnt == 0u) {
-            lp_cnt = 1u;
-        }
-        uint64_t np_cnt = s->regs[R_ADC_SAMPLE_CTL] & 0xffffu;
-        if (np_cnt == 0u) {
-            np_cnt = 1u;
-        }
-        uint64_t aon_cycles = (pwrup + 1ULL) + (np_cnt * 4ULL) + 1ULL;
-        if (lp_mode) {
-            aon_cycles += (lp_cnt * 4ULL) +
-                          ((lp_cnt - 1ULL) * (wakeup + pwrup + 2ULL));
-        }
         timer_mod_ns(s->fsm_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                         aon_cycles * 5000ULL);
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000);
     }
 }
-
-static const uint8_t ADC_CTRL_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_ADC_EN_CTL] = 0x1u,
-    [R_ADC_PD_CTL] = 0xfu,
-    [R_ADC_LP_SAMPLE_CTL] = 0x1u,
-    [R_ADC_SAMPLE_CTL] = 0x3u,
-    [R_ADC_FSM_RST] = 0x1u,
-    [R_ADC_CHN0_FILTER_CTL_0] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_1] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_2] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_3] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_4] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_5] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_6] = 0xfu,
-    [R_ADC_CHN0_FILTER_CTL_7] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_0] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_1] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_2] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_3] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_4] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_5] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_6] = 0xfu,
-    [R_ADC_CHN1_FILTER_CTL_7] = 0xfu,
-    [R_ADC_CHN_VAL_0] = 0xfu,
-    [R_ADC_CHN_VAL_1] = 0xfu,
-    [R_ADC_WAKEUP_CTL] = 0x3u,
-    [R_FILTER_STATUS] = 0x3u,
-    [R_ADC_INTR_CTL] = 0x3u,
-    [R_ADC_INTR_STATUS] = 0x3u,
-    [R_ADC_FSM_STATE] = 0x1u,
-};
 
 static bool ot_adc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                      bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
     (void)attrs;
-
-    if (!is_write) {
-        return true;
-    }
-
     hwaddr reg = R32_OFF(addr);
+    uint8_t permit =
+        (reg == R_ADC_PD_CTL ||
+         (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1)) ? 0xfu :
+        (reg == R_ADC_SAMPLE_CTL ||
+         (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS)) ? 0x3u : 0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    return (ADC_CTRL_PERMIT[reg] & ~reg_be) == 0u;
+    return !is_write || (permit & ~reg_be) == 0u;
 }
 
 static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)

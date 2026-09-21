@@ -196,48 +196,37 @@ static void ot_pattgen_timer_cb(void *opaque)
     }
 }
 
-static MemTxResult ot_pattgen_read_with_attrs(void *opaque, hwaddr addr,
-                                              uint64_t *val64, unsigned size,
-                                              MemTxAttrs attrs)
+static bool ot_pattgen_accepts(void *opaque, hwaddr addr, unsigned size,
+                               bool is_write, MemTxAttrs attrs)
 {
-    OtPattgenState *s = opaque;
+    (void)opaque;
     (void)attrs;
-    uint32_t val32 = 0;
-
-    hwaddr reg = R32_OFF(addr);
-    if (reg == R_INTR_TEST || reg == R_ALERT_TEST || reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
-    } else {
-        val32 = s->regs[reg];
-    }
-
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    *val64 = (uint64_t)((val32 >> shift) & size_mask);
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
-                                               uint64_t val64, unsigned size,
-                                               MemTxAttrs attrs)
-{
-    OtPattgenState *s = opaque;
-    (void)attrs;
-    uint32_t val32 = (uint32_t)val64;
-
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     uint8_t permit = (reg >= R_PREDIV_CH0) ? 0xfu : 0x1u;
-    if ((permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Sub-word write error at 0x%02" HWADDR_PRIx
-                      " (size=%u)\n",
-                      __func__, addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
+    return reg < REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
+}
 
-    val32 <<= (addr & 0x3u) * 8u;
+static uint64_t ot_pattgen_read(void *opaque, hwaddr addr, unsigned size)
+{
+    OtPattgenState *s = opaque;
+    (void)size;
+    hwaddr reg = R32_OFF(addr);
+    if (reg == R_INTR_TEST || reg == R_ALERT_TEST) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02" HWADDR_PRIx "\n",
+                      __func__, addr);
+        return 0;
+    }
+    return s->regs[reg];
+}
+
+static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
+                             unsigned size)
+{
+    OtPattgenState *s = opaque;
+    (void)size;
+    uint32_t val32 = (uint32_t)val64;
+    hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
     case R_INTR_STATE:
@@ -291,12 +280,7 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
                     (total_steps * ((uint64_t)s->chan[c].prediv + 1ULL) *
                      1000000000ULL) /
                     6000000ULL;
-                if (dur_ns < 1000ULL) {
-                    dur_ns = 1000ULL;
-                }
-                if (dur_ns > max_duration_ns) {
-                    max_duration_ns = dur_ns;
-                }
+                max_duration_ns = MAX(max_duration_ns, MAX(dur_ns, 1000ULL));
             }
         }
 
@@ -312,21 +296,20 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
         break;
     }
     }
-
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_pattgen_regs_ops = {
-    .read_with_attrs = &ot_pattgen_read_with_attrs,
-    .write_with_attrs = &ot_pattgen_write_with_attrs,
+    .read = &ot_pattgen_read,
+    .write = &ot_pattgen_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
     .valid = {
         .min_access_size = 1u,
         .max_access_size = 4u,
+        .accepts = &ot_pattgen_accepts,
     },
 };
 

@@ -365,13 +365,12 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             s->regs[R_ULP_STATUS] |= 1u;
             s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
         } else if (ac_high) {
-            if (!s->ulp_ac_latched && s->ulp_timer &&
-                !timer_pending(s->ulp_timer)) {
+            if (!s->ulp_ac_latched && !timer_pending(s->ulp_timer)) {
                 timer_mod_ns(s->ulp_timer,
                              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
                                  (int64_t)(debounce + 1u) * 5000LL);
             }
-        } else if (!s->ulp_ac_latched && s->ulp_timer) {
+        } else if (!s->ulp_ac_latched) {
             timer_del(s->ulp_timer);
         }
     }
@@ -411,9 +410,7 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             if (out_ctl & (R_COM_OUT_CTL_0_EC_RST_MASK |
                            R_COM_OUT_CTL_0_RST_REQ_MASK)) {
                 s->ec_rst_l_hw = false;
-                if (s->ec_rst_timer) {
-                    timer_del(s->ec_rst_timer);
-                }
+                timer_del(s->ec_rst_timer);
             }
             if (out_ctl & R_COM_OUT_CTL_0_RST_REQ_MASK) {
                 trigger_rst = true;
@@ -426,7 +423,7 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             if (out_ctl & (R_COM_OUT_CTL_0_EC_RST_MASK |
                            R_COM_OUT_CTL_0_RST_REQ_MASK)) {
                 uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
-                if (stretch == 0u || !s->ec_rst_timer) {
+                if (stretch == 0u) {
                     s->ec_rst_l_hw = true;
                 } else {
                     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -476,7 +473,7 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
      */
     if (irq == OT_SYSRST_CTRL_IN_EC_RST_L && prev_ec_raw && !curr_ec_raw) {
         uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
-        if (stretch > 0u && s->ec_rst_timer) {
+        if (stretch > 0u) {
             s->ec_rst_l_hw = false;
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
             timer_mod_ns(s->ec_rst_timer, now + (int64_t)stretch * 4000LL);
@@ -522,21 +519,32 @@ static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
     }
 }
 
-static MemTxResult ot_sysrst_ctrl_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static bool ot_sysrst_ctrl_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT || (addr & 3u) + size > 4u) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
+    uint8_t permit = (mask > 0x1ffffu) ? 0xfu :
+                     (mask > 0xffffu) ? 0x7u :
+                     (mask > 0xffu) ? 0x3u : 0x1u;
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return (permit & ~reg_be) == 0u;
+}
+
+static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtSysrstCtrlState *s = opaque;
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
+    (void)size;
+    hwaddr reg = R32_OFF(addr);
 
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint64_t word = 0;
     if (reg == R_PIN_IN_VALUE) {
         uint32_t val32 = ot_sysrst_ctrl_get_pin_in_value(s);
         if (val32 == s->last_read_pin_in) {
@@ -553,39 +561,18 @@ static MemTxResult ot_sysrst_ctrl_read_with_attrs(
             s->poll_count = 0;
             s->last_read_pin_in = val32;
         }
-        word = val32;
-    } else if (reg != R_INTR_TEST && reg != R_ALERT_TEST) {
-        word = s->regs[reg];
+        return val32;
     }
-
-    uint64_t mask =
-        (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (word >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
+    return (reg != R_INTR_TEST && reg != R_ALERT_TEST) ? s->regs[reg] : 0;
 }
 
-static MemTxResult ot_sysrst_ctrl_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
+                                 unsigned size)
 {
     OtSysrstCtrlState *s = opaque;
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%x\n", __func__,
-                      (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
-    uint8_t permit = (mask > 0x1ffffu) ? 0xfu :
-                     (mask > 0xffffu) ? 0x7u :
-                     (mask > 0xffu) ? 0x3u : 0x1u;
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u)) & mask;
+    (void)size;
+    hwaddr reg = R32_OFF(addr);
+    uint32_t val32 = (uint32_t)val64 & ot_sysrst_ctrl_reg_mask(reg);
     s->poll_count = 0;
 
     switch (reg) {
@@ -644,15 +631,17 @@ static MemTxResult ot_sysrst_ctrl_write_with_attrs(
         }
         break;
     }
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_sysrst_ctrl_ops = {
-    .read_with_attrs = &ot_sysrst_ctrl_read_with_attrs,
-    .write_with_attrs = &ot_sysrst_ctrl_write_with_attrs,
+    .read = &ot_sysrst_ctrl_read,
+    .write = &ot_sysrst_ctrl_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_sysrst_ctrl_accepts,
 };
 
 static const Property ot_sysrst_ctrl_properties[] = {

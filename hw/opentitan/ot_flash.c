@@ -753,8 +753,7 @@ enum {
     BIN_APP_COUNT,
 };
 
-#define OP_INIT_DURATION_NS     10000u  /* 10 us */
-#define OP_ERASE_DURATION_NS    400000u /* 400 us */
+#define OP_INIT_DURATION_NS     10000u /* 10 us */
 #define ELFNAME_SIZE            256u
 #define OT_FLASH_READ_FIFO_SIZE 16u
 #define OT_FLASH_PROG_FIFO_SIZE 16u
@@ -2020,7 +2019,7 @@ static void ot_flash_op_erase_page(OtFlashState *s, unsigned address)
     }
 
     timer_mod(s->op_delay,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_ERASE_DURATION_NS);
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_INIT_DURATION_NS);
 }
 
 static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
@@ -2117,7 +2116,7 @@ static void ot_flash_op_erase_bank(OtFlashState *s, unsigned address)
     }
 
     timer_mod(s->op_delay,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_ERASE_DURATION_NS);
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OP_INIT_DURATION_NS);
 }
 
 static void ot_flash_op_erase(OtFlashState *s)

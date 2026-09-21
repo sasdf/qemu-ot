@@ -640,18 +640,25 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
     ot_gpio_eg_update_backend(s, false);
 }
 
-static MemTxResult ot_gpio_eg_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
+                               bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
+    return reg < REGS_COUNT && (addr & 3u) + size <= 4u &&
+           (!is_write || (permit & ~reg_be) == 0u);
+}
+
+static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtGpioEgState *s = opaque;
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
+    (void)size;
     uint32_t val32;
-    hwaddr reg = R32_OFF(aligned_addr);
+
+    hwaddr reg = R32_OFF(addr);
 
     switch (reg) {
     case R_DATA_IN:
@@ -711,47 +718,35 @@ static MemTxResult ot_gpio_eg_read_with_attrs(
     case R_INTR_TEST:
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         val32 = 0;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)aligned_addr);
+                      s->ot_id, (uint32_t)addr);
         val32 = 0u;
         break;
     }
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_gpio_io_read_out(s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg),
-                              val32, pc);
+    trace_ot_gpio_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
+                              pc);
 
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = ((uint64_t)val32 >> (byte_off * 8u)) & mask;
-    return MEMTX_OK;
+    return (uint64_t)val32;
 }
 
-static MemTxResult ot_gpio_eg_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
+                             unsigned size)
 {
     OtGpioEgState *s = opaque;
-    (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned byte_off = (unsigned)(addr & 3u);
-    if (aligned_addr >= REGS_SIZE || byte_off + size > 4u) {
-        return MEMTX_DECODE_ERROR;
-    }
-    hwaddr reg = R32_OFF(aligned_addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
-    if ((permit & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t val32 = (uint32_t)(val64 << (byte_off * 8u));
+    (void)size;
+    uint32_t val32 = (uint32_t)val64;
     uint32_t mask;
 
+    hwaddr reg = R32_OFF(addr);
+
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_gpio_io_write(s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg),
-                           val32, pc);
+    trace_ot_gpio_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32, pc);
 
     switch (reg) {
     case R_INTR_STATE:
@@ -839,14 +834,13 @@ static MemTxResult ot_gpio_eg_write_with_attrs(
         break;
     case R_DATA_IN:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)aligned_addr, REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)aligned_addr);
+                      s->ot_id, (uint32_t)addr);
         break;
     }
-    return MEMTX_OK;
 }
 
 static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
@@ -1640,11 +1634,14 @@ static int ot_gpio_eg_chr_be_change(void *opaque)
 }
 
 static const MemoryRegionOps ot_gpio_eg_regs_ops = {
-    .read_with_attrs = &ot_gpio_eg_read_with_attrs,
-    .write_with_attrs = &ot_gpio_eg_write_with_attrs,
+    .read = &ot_gpio_eg_read,
+    .write = &ot_gpio_eg_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_gpio_eg_accepts,
 };
 
 static const Property ot_gpio_eg_properties[] = {

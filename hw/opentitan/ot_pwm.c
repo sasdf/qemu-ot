@@ -180,72 +180,51 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     return invert ? !active : active;
 }
 
-static MemTxResult ot_pwm_read_with_attrs(void *opaque, hwaddr addr,
-                                          uint64_t *val64, unsigned size,
-                                          MemTxAttrs attrs)
+static bool ot_pwm_accepts(void *opaque, hwaddr addr, unsigned size,
+                           bool is_write, MemTxAttrs attrs)
 {
-    OtPwmState *s = opaque;
+    (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        *val64 = 0;
-        return MEMTX_DECODE_ERROR;
-    }
-
-    uint32_t val32 = (reg == R_ALERT_TEST) ? 0u : s->regs[reg];
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    *val64 = (uint64_t)((val32 >> shift) & size_mask);
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
-                                           uint64_t val64, unsigned size,
-                                           MemTxAttrs attrs)
-{
-    OtPwmState *s = opaque;
-    (void)attrs;
-    uint32_t val32 = (uint32_t)val64;
-    hwaddr reg = R32_OFF(addr);
-
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
-                      s->ot_id, (uint32_t)addr);
-        return MEMTX_DECODE_ERROR;
-    }
-
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     uint8_t permit = (reg == R_CFG || reg >= R_PWM_PARAM_0) ? 0xfu : 0x1u;
-    if ((permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: Sub-word write error at 0x%02x (size=%u)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
+    return reg < REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
+}
 
-    val32 <<= (addr & 0x3u) * 8u;
+static uint64_t ot_pwm_read(void *opaque, hwaddr addr, unsigned size)
+{
+    OtPwmState *s = opaque;
+    (void)size;
+    hwaddr reg = R32_OFF(addr);
+    return (reg == R_ALERT_TEST) ? 0u : s->regs[reg];
+}
+
+static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
+                         unsigned size)
+{
+    OtPwmState *s = opaque;
+    (void)size;
+    uint32_t val32 = (uint32_t)val64;
+    hwaddr reg = R32_OFF(addr);
 
     if (reg == R_ALERT_TEST) {
         if (val32 & R_ALERT_TEST_FATAL_FAULT_MASK) {
             ibex_irq_set(&s->alert, 1);
             ibex_irq_set(&s->alert, 0);
         }
-        return MEMTX_OK;
+        return;
     }
 
     if (reg == R_REGWEN) {
         s->regs[R_REGWEN] &= (val32 & R_REGWEN_EN_MASK);
-        return MEMTX_OK;
+        return;
     }
 
     if (!s->regs[R_REGWEN]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: Write to locked register 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
-        return MEMTX_OK;
+        return;
     }
 
     switch (reg) {
@@ -276,17 +255,17 @@ static MemTxResult ot_pwm_write_with_attrs(void *opaque, hwaddr addr,
     }
 
     ot_gpio_eg_notify_sysrst_change();
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_pwm_regs_ops = {
-    .read_with_attrs = &ot_pwm_read_with_attrs,
-    .write_with_attrs = &ot_pwm_write_with_attrs,
+    .read = &ot_pwm_read,
+    .write = &ot_pwm_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
+    .valid.accepts = &ot_pwm_accepts,
 };
 
 static const Property ot_pwm_properties[] = {
