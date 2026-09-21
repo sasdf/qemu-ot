@@ -769,28 +769,8 @@ static inline size_t ot_kmac_get_keccak_rate_bytes(size_t kstrength)
 
 static uint32_t ot_kmac_state_mask_word(const OtKMACState *s, unsigned word_ix)
 {
-    uint32_t word32 = ldl_le_p(&s->keccak_state[word_ix * sizeof(uint32_t)]);
-    uint32_t h = ldl_le_p(&s->keccak_state[0]) ^ word32 ^
-                 (0x9e3779b9u * (word_ix + 1u));
-    h ^= h >> 16u;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13u;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16u;
-
-    uint32_t mask = 0;
-    for (unsigned b = 0; b < sizeof(uint32_t); b++) {
-        uint8_t mb = (uint8_t)(h >> (b * 8u));
-        uint8_t wb = (uint8_t)(word32 >> (b * 8u));
-        if (mb == 0u || mb == 0xffu || mb == wb || (mb ^ wb) == 0xffu) {
-            mb ^= 0x5au;
-            if (mb == 0u || mb == 0xffu || mb == wb || (mb ^ wb) == 0xffu) {
-                mb ^= 0x3cu;
-            }
-        }
-        mask |= (uint32_t)mb << (b * 8u);
-    }
-    return mask;
+    (void)s;
+    return (word_ix + 1u) * 0x9e3779b9u;
 }
 
 static void ot_kmac_reset_state(OtKMACState *s)
