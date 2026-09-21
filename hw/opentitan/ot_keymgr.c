@@ -996,27 +996,6 @@ static void ot_keymgr_sideload_clear(OtKeyMgrState *s)
     ot_keymgr_wipe_keys(s, false, false, sideload_clear_bm);
 }
 
-static bool ot_keymgr_is_sideload_slot_cleared(const OtKeyMgrState *s,
-                                               OtKeyMgrDestSel dest)
-{
-    int sideload_clear =
-        (int)FIELD_EX32(s->regs[R_SIDELOAD_CLEAR], SIDELOAD_CLEAR, VAL);
-
-    switch (sideload_clear) {
-    case KEYMGR_SIDELOAD_CLEAR_NONE:
-        return false;
-    case KEYMGR_SIDELOAD_CLEAR_AES:
-        return dest == KEYMGR_DEST_SEL_VALUE_AES;
-    case KEYMGR_SIDELOAD_CLEAR_KMAC:
-        return dest == KEYMGR_DEST_SEL_VALUE_KMAC;
-    case KEYMGR_SIDELOAD_CLEAR_OTBN:
-        return dest == KEYMGR_DEST_SEL_VALUE_OTBN;
-    default:
-        /* non-enumerated values continuously clear ALL sideload slots */
-        return true;
-    }
-}
-
 static void ot_keymgr_reset_kdf_buffer(OtKeyMgrState *s)
 {
     memset(s->kdf_buf.data, 0u, KEYMGR_KDF_BUFFER_BYTES);
@@ -1619,14 +1598,10 @@ static bool ot_keymgr_handle_kmac_resp_gen_output_hw(OtKeyMgrState *s,
     case KEYMGR_DEST_SEL_VALUE_AES:
     case KEYMGR_DEST_SEL_VALUE_KMAC:
     case KEYMGR_DEST_SEL_VALUE_OTBN: {
-        if (ot_keymgr_is_sideload_slot_cleared(s, dest)) {
-            ot_keymgr_sideload_clear(s);
-        } else {
-            OtKeyMgrKeySink key_sink =
-                (OtKeyMgrKeySink)(dest - KEY_SINK_OFFSET);
-            ot_keymgr_push_key(s, key_sink, rsp->digest_share0,
-                               rsp->digest_share1, true, true);
-        }
+        OtKeyMgrKeySink key_sink = (OtKeyMgrKeySink)(dest - KEY_SINK_OFFSET);
+        ot_keymgr_push_key(s, key_sink, rsp->digest_share0, rsp->digest_share1,
+                           true, true);
+        ot_keymgr_sideload_clear(s);
         break;
     }
     case KEYMGR_DEST_SEL_VALUE_NONE:
@@ -2151,7 +2126,7 @@ static uint64_t ot_keymgr_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_keymgr_io_read_out(s->ot_id, (unsigned)addr, REG_NAME(reg),
                                 (uint64_t)val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
 
 static void ot_keymgr_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -2475,72 +2450,52 @@ static const Property ot_keymgr_properties[] = {
                      disable_flash_seed_check, false),
 };
 
-static const uint8_t KEYMGR_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_CFG_REGWEN] = 0x1u,
-    [R_START] = 0x1u,
-    [R_CONTROL_SHADOWED] = 0x3u,
-    [R_SIDELOAD_CLEAR] = 0x1u,
-    [R_RESEED_INTERVAL_REGWEN] = 0x1u,
-    [R_RESEED_INTERVAL_SHADOWED] = 0x3u,
-    [R_SW_BINDING_REGWEN] = 0x1u,
-    [R_SEALING_SW_BINDING_0 ... R_SEALING_SW_BINDING_7] = 0xfu,
-    [R_ATTEST_SW_BINDING_0 ... R_ATTEST_SW_BINDING_7] = 0xfu,
-    [R_SALT_0 ... R_SALT_7] = 0xfu,
-    [R_KEY_VERSION] = 0xfu,
-    [R_MAX_CREATOR_KEY_VER_REGWEN] = 0x1u,
-    [R_MAX_CREATOR_KEY_VER_SHADOWED] = 0xfu,
-    [R_MAX_OWNER_INT_KEY_VER_REGWEN] = 0x1u,
-    [R_MAX_OWNER_INT_KEY_VER_SHADOWED] = 0xfu,
-    [R_MAX_OWNER_KEY_VER_REGWEN] = 0x1u,
-    [R_MAX_OWNER_KEY_VER_SHADOWED] = 0xfu,
-    [R_SW_SHARE0_OUTPUT_0 ... R_SW_SHARE0_OUTPUT_7] = 0xfu,
-    [R_SW_SHARE1_OUTPUT_0 ... R_SW_SHARE1_OUTPUT_7] = 0xfu,
-    [R_WORKING_STATE] = 0x1u,
-    [R_OP_STATUS] = 0x1u,
-    [R_ERR_CODE] = 0x1u,
-    [R_FAULT_STATUS] = 0x3u,
-    [R_DEBUG] = 0x1u,
-};
-
-static MemTxResult ot_keymgr_read_with_attrs(void *opaque, hwaddr addr,
-                                             uint64_t *val64, unsigned size,
-                                             MemTxAttrs attrs)
+static bool ot_keymgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
 {
+    (void)opaque;
     (void)attrs;
-    hwaddr aligned_addr = addr & ~3ULL;
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint64_t val32 = ot_keymgr_read(opaque, aligned_addr, 4u);
-    uint64_t mask = (size >= 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *val64 = (val32 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_keymgr_write_with_attrs(void *opaque, hwaddr addr,
-                                              uint64_t val64, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    (void)attrs;
-    uint32_t reg = (uint32_t)(addr >> 2u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    if ((KEYMGR_PERMIT[reg] & ~reg_be) != 0u) {
-        return MEMTX_ERROR;
+    hwaddr reg = R32_OFF(addr);
+    if (reg >= REGS_COUNT) {
+        return false;
     }
-    unsigned shift = (unsigned)((addr & 3ULL) * 8u);
-    uint32_t val32 = (uint32_t)((val64 << shift) & UINT32_MAX);
-    ot_keymgr_write(opaque, addr & ~3ULL, val32, 4u);
-    return MEMTX_OK;
+    if (!is_write) {
+        return true;
+    }
+    uint32_t permit;
+    switch (reg) {
+    case R_SEALING_SW_BINDING_0 ... R_SEALING_SW_BINDING_7:
+    case R_ATTEST_SW_BINDING_0 ... R_ATTEST_SW_BINDING_7:
+    case R_SALT_0 ... R_SALT_7:
+    case R_KEY_VERSION:
+    case R_MAX_CREATOR_KEY_VER_SHADOWED:
+    case R_MAX_OWNER_INT_KEY_VER_SHADOWED:
+    case R_MAX_OWNER_KEY_VER_SHADOWED:
+    case R_SW_SHARE0_OUTPUT_0 ... R_SW_SHARE1_OUTPUT_7:
+        permit = 0xfu;
+        break;
+    case R_CONTROL_SHADOWED:
+    case R_RESEED_INTERVAL_SHADOWED:
+    case R_FAULT_STATUS:
+        permit = 0x3u;
+        break;
+    default:
+        permit = 0x1u;
+        break;
+    }
+    uint32_t reg_be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    return (permit & ~reg_be) == 0u;
 }
 
 static const MemoryRegionOps ot_keymgr_regs_ops = {
-    .read_with_attrs = &ot_keymgr_read_with_attrs,
-    .write_with_attrs = &ot_keymgr_write_with_attrs,
+    .read = &ot_keymgr_read,
+    .write = &ot_keymgr_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_keymgr_regs_accepts,
 };
 
 static void ot_keymgr_reset_enter(Object *obj, ResetType type)
