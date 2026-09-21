@@ -2125,8 +2125,11 @@ static uint8_t ot_usbdev_reg_permit(hwaddr reg)
 static bool ot_usbdev_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                    bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtUsbdevState *s = opaque;
     (void)attrs;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     hwaddr reg = R32_OFF(addr);
     if (reg >= REGS_COUNT) {
         return false;
@@ -2143,11 +2146,6 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     OtUsbdevState *s = opaque;
     (void)size;
     uint32_t val32;
-
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return 0;
-    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -2234,11 +2232,6 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     OtUsbdevState *s = opaque;
     (void)size;
     uint32_t val32 = (uint32_t)val64;
-
-    if (!s->pclk) {
-        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
-        return;
-    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -2421,8 +2414,12 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
 static bool ot_usbdev_buffer_accepts(void *opaque, hwaddr addr, unsigned size,
                                      bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtUsbdevState *s = opaque;
     (void)attrs;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
+                                              USBDEV_BUFFER_OFFSET + addr);
+    }
     return !is_write || (size == 4u && (addr & 3u) == 0u);
 }
 
