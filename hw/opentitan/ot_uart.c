@@ -625,13 +625,7 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
         }
     }
 
-    if (ot_uart_is_sys_loopack_enabled(s)) {
-        ot_uart_step_rx(s);
-    } else if (!timer_pending(s->rx_timer)) {
-        uint64_t mult = fifo8_is_empty(&s->rx_fifo) ? OT_UART_TX_FIFO_SIZE : 1u;
-        timer_mod(s->rx_timer,
-                  s->last_rx_ns + mult * ot_uart_char_ns(s));
-    }
+    if (!timer_pending(s->rx_timer)) timer_mod(s->rx_timer, s->last_rx_ns + (ot_uart_is_sys_loopack_enabled(s) ? 0u : (fifo8_is_empty(&s->rx_fifo) ? 32u : 1u)) * ot_uart_char_ns(s));
 }
 
 static void ot_uart_event_handler(void *opaque, QEMUChrEvent event)
@@ -673,16 +667,9 @@ static uint8_t ot_uart_read_rx_fifo(OtUARTState *s)
      */
     ot_uart_update_irqs(s);
 
-    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s)) {
-        if (!fifo8_is_empty(&s->rx_staging_fifo)) {
-            if (!timer_pending(s->rx_timer)) {
-                timer_mod(s->rx_timer,
-                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                              ot_uart_char_ns(s));
-            }
-        } else {
-            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        }
+    if (ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s) &&
+        fifo8_is_empty(&s->rx_staging_fifo)) {
+        qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
 
     return val;
@@ -848,8 +835,7 @@ static void uart_write_tx_fifo(OtUARTState *s, uint8_t val)
         return;
     }
 
-    s->rx_poll_count = 0u;
-    fifo8_push(&s->tx_fifo, val);
+    s->rx_poll_count = 0u; fifo8_push(&s->tx_fifo, val);
 
     if (ot_uart_is_tx_enabled(s)) {
         ot_uart_tx_schedule(s);
@@ -900,8 +886,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     }
 
-    if (s->rx_poll_count >= 4u && fifo8_is_empty(&s->rx_fifo) &&
-        !fifo8_is_empty(&s->rx_staging_fifo)) {
+    if (s->rx_poll_count >= 4u && fifo8_is_empty(&s->rx_fifo)) {
         timer_del(s->rx_timer);
     }
     ot_uart_step_rx(s);
