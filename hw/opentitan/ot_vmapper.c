@@ -546,8 +546,8 @@ static GList *ot_vmapper_range_split_noexec(OtVMapperState *s, GList *rglist)
     noexec = g_list_sort_with_data(noexec, &ot_vmapper_compare, NULL);
 
     /*
-     * For each virtual range in rglist, check whether its destination address
-     * range [dst_start .. dst_end] overlaps one or more physical noexec ranges.
+     * for each translating range, check whether it translates into one or more
+     * noexec range.
      */
     GList *current = rglist;
     while (current) {
@@ -556,46 +556,136 @@ static GList *ot_vmapper_range_split_noexec(OtVMapperState *s, GList *rglist)
             dst_start + (VMAP_RANGE(current)->end - VMAP_RANGE(current)->start);
         GList *curnx = noexec;
         while (curnx) {
-            uint32_t nx_start = VMAP_RANGE(curnx)->start;
-            uint32_t nx_end = VMAP_RANGE(curnx)->end;
-
-            if (nx_start > dst_end) {
+            if (VMAP_RANGE(curnx)->start > dst_end) {
+                /*
+                 * ranges are sorted, no other noexec range may match, move to
+                 * next translation range
+                 *   +-----------------+
+                 *   |       dst       |
+                 *   +-----------------+  +---------+
+                 *                        |  curnx  |
+                 *                        +---------+
+                 */
                 break;
             }
-            if (nx_end < dst_start) {
+            if (VMAP_RANGE(curnx)->end < dst_start) {
+                /*
+                 * noexec range ends before translation range starts, skip
+                 * noexec and move to the next one
+                 *                 +-----------------+
+                 *                 |       dst       |
+                 *   +---------+   +-----------------+
+                 *   |  curnx  |
+                 *   +---------+
+                 */
                 curnx = curnx->next;
                 continue;
             }
 
-            if (nx_start > dst_start) {
-                uint32_t left_size = nx_start - dst_start;
+            if (VMAP_RANGE(curnx)->start > dst_start) {
+                /*
+                 * noexec range starts within translation range, two cases:
+                 *   +-----------------+        +-----------------+
+                 *   |       dst       |        |       dst       |
+                 *   +---+---------+---+        +---+-------------+-----+
+                 *       |  curnx  |     (a1)       |       curnx       | (a2)
+                 *       +---------+                +-------------------+
+                 */
+
+                uint32_t left_size;
+                OtRegionRange *right;
+
+                /*
+                 * create a left region that matches the left side of the
+                 * translation region which does not care about the noexec
+                 * region; then replace the current region with the remaining
+                 * right side of the translation region
+                 */
+                left_size = VMAP_RANGE(curnx)->start - dst_start;
+                right = g_new0(OtRegionRange, 1);
+                memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
+                right->start = VMAP_RANGE(current)->start + left_size;
+                right->dest = VMAP_RANGE(current)->dest + left_size;
+                VMAP_RANGE(current)->end =
+                    VMAP_RANGE(current)->start + left_size - 1u;
+                dst_start += left_size;
+                current = g_list_insert(current, right, 1u);
+                current = current->next; /* i.e. right */
+                /*
+                 * the a1/a2 cases are now simplified as:
+                 *   +-------------+        +-------------+
+                 *   |    dst'     |        |    dst'     |
+                 *   +---------+---+        +-------------+-----+
+                 *   |  curnx  |     (a1')  |       curnx       | (a2)
+                 *   +---------+            +-------------------+
+                 */
+
+                if (VMAP_RANGE(curnx)->end >= dst_end) {
+                    /*
+                     * case (a2'): curnx extends up to or beyond the current
+                     * translation range. Apply the execution state of the
+                     * noexec range to the current translation range, and move
+                     * to the next one
+                     */
+                    VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
+                    break;
+                }
+                /*
+                 * case (a1'): create a new region with the right side of the
+                 * translation region which does not care about the current
+                 * no exec region, and apply the execution state of the noexec
+                 * region to the left side of the translation region
+                 */
+                left_size =
+                    VMAP_RANGE(curnx)->end - VMAP_RANGE(curnx)->start + 1u;
+                right = g_new0(OtRegionRange, 1);
+                memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
+                right->start = VMAP_RANGE(current)->start + left_size;
+                right->dest = VMAP_RANGE(current)->dest + left_size;
+                VMAP_RANGE(current)->end =
+                    VMAP_RANGE(current)->start + left_size - 1u;
+                VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
+                dst_start += left_size;
+                current = g_list_insert(current, right, 1u);
+                current = current->next; /* i.e. right */
+            } else {
+                /*
+                 * noexec range starts before translation range, two cases:
+                 *          +------------+              +-----------+
+                 *          |     dst    |              |    dst    |
+                 *   +------+--+---------+        +-----+-----------------+
+                 *   |  curnx  |           (b1)   |          curnx        | (b2)
+                 *   +---------+                  +-----------------------+
+                 */
+                if (VMAP_RANGE(curnx)->end >= dst_end) {
+                    /*
+                     * case (b2): curnx overlaps the whole translation range
+                     * destination: apply the execution state of the noexec
+                     * range to the translation range, and move to the next
+                     * translation range.
+                     */
+                    VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
+                    break;
+                }
+
+                /*
+                 * case (b1): curnx partially overlaps the current translation
+                 * range. Split the latter into two ranges: apply the execution
+                 * state of the noexec range to the left translation range,
+                 * leave the right transalation range state unmodified.
+                 */
+                uint32_t left_size = VMAP_RANGE(curnx)->end - dst_start + 1u;
                 OtRegionRange *right = g_new0(OtRegionRange, 1);
                 memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
                 right->start = VMAP_RANGE(current)->start + left_size;
                 right->dest = VMAP_RANGE(current)->dest + left_size;
                 VMAP_RANGE(current)->end =
                     VMAP_RANGE(current)->start + left_size - 1u;
-                current = g_list_insert(current, right, 1u);
-                current = current->next;
-                dst_start = VMAP_RANGE(current)->dest;
-            }
-
-            if (nx_end >= dst_end) {
                 VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
-                break;
+                dst_start += left_size;
+                current = g_list_insert(current, right, 1u);
+                current = current->next; /* i.e. right */
             }
-
-            uint32_t overlap_size = nx_end - dst_start + 1u;
-            OtRegionRange *right = g_new0(OtRegionRange, 1);
-            memcpy(right, VMAP_RANGE(current), sizeof(OtRegionRange));
-            right->start = VMAP_RANGE(current)->start + overlap_size;
-            right->dest = VMAP_RANGE(current)->dest + overlap_size;
-            VMAP_RANGE(current)->end =
-                VMAP_RANGE(current)->start + overlap_size - 1u;
-            VMAP_RANGE(current)->execute = VMAP_RANGE(curnx)->execute;
-            current = g_list_insert(current, right, 1u);
-            current = current->next;
-            dst_start = VMAP_RANGE(current)->dest;
 
             curnx = curnx->next;
         }
@@ -803,6 +893,13 @@ static void ot_vmapper_update(OtVMapperState *s, bool insn)
     s->lranges[insn] = NULL;
 
     VMAP_SHOW_RANGE_TREE(s, insn);
+
+    if (qemu_cpu_is_self(s->cpu)) {
+        tlb_flush(s->cpu);
+        tb_flush__exclusive_or_serial();
+    } else {
+        queue_tb_flush(s->cpu);
+    }
 }
 
 static void ot_vmapper_translate(OtVMapperState *s, bool insn, unsigned slot,
@@ -866,13 +963,7 @@ static void ot_vmapper_translate(OtVMapperState *s, bool insn, unsigned slot,
     ot_vmapper_update(s, insn);
     s->show = false;
 
-    if (qemu_cpu_is_self(s->cpu)) {
-        tlb_flush(s->cpu);
-        tb_flush__exclusive_or_serial();
-    } else {
-        tlb_flush_all_cpus_synced(s->cpu);
-        queue_tb_flush(s->cpu);
-    }
+    tlb_flush_all_cpus_synced(s->cpu);
 }
 
 static unsigned
@@ -955,13 +1046,7 @@ static void ot_vmapper_disable_exec(OtVMapperState *s, const MemoryRegion *mr,
     ot_vmapper_update(s, true);
     s->show = false;
 
-    if (qemu_cpu_is_self(s->cpu)) {
-        tlb_flush(s->cpu);
-        tb_flush__exclusive_or_serial();
-    } else {
-        tlb_flush_all_cpus_synced(s->cpu);
-        queue_tb_flush(s->cpu);
-    }
+    tlb_flush_all_cpus_synced(s->cpu);
 }
 
 static CPUState *ot_vmapper_retrieve_cpu(OtVMapperState *s)
