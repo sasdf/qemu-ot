@@ -1132,7 +1132,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
     if (reg < R_MEASURE_REG_BASE) {
         trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                     val32, pc);
-        return (uint64_t)val32;
+        return (uint64_t)(val32 >> ((addr & 3u) * 8u));
     }
 
     if (reg < (R_MEASURE_REG_BASE + (s->measure_count * 2u))) {
@@ -1168,7 +1168,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
 
         trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, reg_name, val32,
                                     pc);
-        return (uint64_t)val32;
+        return (uint64_t)(val32 >> ((addr & 3u) * 8u));
     }
 
     /* remaining registers after the dynamic register range */
@@ -1189,7 +1189,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg_err),
                                 val32, pc);
 
-    return (uint64_t)val32;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 };
 
 static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -1403,46 +1403,28 @@ static uint32_t ot_clkmgr_get_permit(OtClkMgrState *s, hwaddr reg)
     return 0x1u;
 }
 
-static MemTxResult ot_clkmgr_read_with_attrs(void *opaque, hwaddr addr,
-                                             uint64_t *data, unsigned size,
-                                             MemTxAttrs attrs)
+static bool ot_clkmgr_accepts(void *opaque, hwaddr addr, unsigned size,
+                              bool is_write, MemTxAttrs attrs)
 {
     (void)attrs;
-    uint32_t val32 = (uint32_t)ot_clkmgr_read(opaque, addr & ~3ULL, 4u);
-    uint32_t shift = (uint32_t)((addr & 3ULL) * 8ULL);
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val32 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_clkmgr_write_with_attrs(void *opaque, hwaddr addr,
-                                              uint64_t val64, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    (void)attrs;
-    OtClkMgrState *s = opaque;
-    hwaddr reg = R32_OFF(addr);
-    uint32_t permit = ot_clkmgr_get_permit(s, reg);
-    uint32_t byte_offset = (uint32_t)(addr & 3ULL);
-    uint32_t reg_be = (((1u << size) - 1u) << byte_offset) & 0xfu;
-    if ((permit & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: sub-word write not permitted at 0x%02x (size %u)\n",
-                      __func__, s->ot_id, (uint32_t)addr, size);
-        return MEMTX_ERROR;
+    if (!is_write) {
+        return true;
     }
-    uint64_t mask = (size == 4u) ? 0xffffffffULL : ((1ULL << (size * 8u)) - 1ULL);
-    uint32_t wdata = (uint32_t)((val64 & mask) << (byte_offset * 8u));
-    ot_clkmgr_write(opaque, addr & ~3ULL, wdata, 4u);
-    return MEMTX_OK;
+    OtClkMgrState *s = opaque;
+    uint32_t permit = ot_clkmgr_get_permit(s, R32_OFF(addr));
+    uint32_t reg_be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    return (permit & ~reg_be) == 0u;
 }
 
 static const MemoryRegionOps ot_clkmgr_regs_ops = {
-    .read_with_attrs = &ot_clkmgr_read_with_attrs,
-    .write_with_attrs = &ot_clkmgr_write_with_attrs,
+    .read = &ot_clkmgr_read,
+    .write = &ot_clkmgr_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.min_access_size = 1u,
+    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_clkmgr_accepts,
 };
 
 static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
