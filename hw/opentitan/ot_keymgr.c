@@ -2126,7 +2126,7 @@ static uint64_t ot_keymgr_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_keymgr_io_read_out(s->ot_id, (unsigned)addr, REG_NAME(reg),
                                 (uint64_t)val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static void ot_keymgr_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -2491,7 +2491,7 @@ static const MemoryRegionOps ot_keymgr_regs_ops = {
     .read = &ot_keymgr_read,
     .write = &ot_keymgr_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,

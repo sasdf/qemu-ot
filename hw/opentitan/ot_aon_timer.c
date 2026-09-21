@@ -594,7 +594,7 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_aon_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                    val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
@@ -690,7 +690,7 @@ static const MemoryRegionOps ot_aon_timer_ops = {
     .read = &ot_aon_timer_read,
     .write = &ot_aon_timer_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_aon_timer_accepts,
 };

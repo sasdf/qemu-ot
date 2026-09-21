@@ -1422,7 +1422,7 @@ static uint64_t ot_edn_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_edn_io_read_out(s->rng.appid, (uint32_t)addr, REG_NAME(reg), val32,
                              pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -1430,7 +1430,7 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtEDNState *s = opaque;
     OtEDNCSRNG *c = &s->rng;
-    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
+    uint32_t val32 = (uint32_t)val64;
     (void)size;
 
     hwaddr reg = R32_OFF(addr);
@@ -1603,7 +1603,7 @@ static const MemoryRegionOps ot_edn_regs_ops = {
     .write = &ot_edn_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
     .valid = {

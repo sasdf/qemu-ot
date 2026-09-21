@@ -357,42 +357,15 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 
 #define RV_DM_REGS_COUNT 3u
 
-static MemTxResult pulp_rv_dm_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs)
+static bool pulp_rv_dm_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                    bool is_write, MemTxAttrs attrs)
 {
-    (void)attrs;
-    uint64_t val64 = pulp_rv_dm_regs_read(opaque, addr & ~3ULL, 4u);
-    if (R32_OFF(addr) >= RV_DM_REGS_COUNT) {
-        *data = 0u;
-        return MEMTX_DECODE_ERROR;
-    }
-
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    uint64_t mask = (size == 4u) ? UINT32_MAX : ((1ULL << (size * 8u)) - 1ULL);
-    *data = (val64 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult pulp_rv_dm_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
+    (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg < RV_DM_REGS_COUNT) {
-        uint8_t permit = (reg == R_LATE_DEBUG_ENABLE) ? 0xfu : 0x1u;
-        uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-        if ((permit & ~byte_mask) != 0u) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: sub-word write error at 0x%" HWADDR_PRIx
-                          " (size=%u, mask=0x%x)\n",
-                          __func__, addr, size, byte_mask);
-            return MEMTX_ERROR;
-        }
-    }
-
-    unsigned shift = (unsigned)((addr & 3u) * 8u);
-    pulp_rv_dm_regs_write(opaque, addr & ~3ULL, val64 << shift, 4u);
-    return (reg >= RV_DM_REGS_COUNT) ? MEMTX_DECODE_ERROR : MEMTX_OK;
+    uint8_t permit = (reg == R_LATE_DEBUG_ENABLE) ? 0xfu : 0x1u;
+    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return reg < RV_DM_REGS_COUNT && (!is_write || (permit & ~byte_mask) == 0u);
 }
 
 static MemTxResult pulp_rv_dm_dmact_read_with_attrs(
@@ -613,8 +586,7 @@ static MemTxResult pulp_rv_dm_dmflag_read_with_attrs(
     }
 
     if (MEMTX_OK == res) {
-        unsigned shift = (unsigned)((addr & 0x3u) * 8u);
-        *val64 = val32 >> shift;
+        *val64 = val32;
     }
 
     return res;
@@ -667,17 +639,12 @@ static MemTxResult pulp_rv_dm_dmflag_write_with_attrs(
 };
 
 static const MemoryRegionOps pulp_rv_dm_regs_ops = {
-    .read_with_attrs = &pulp_rv_dm_regs_read_with_attrs,
-    .write_with_attrs = &pulp_rv_dm_regs_write_with_attrs,
+    .read = &pulp_rv_dm_regs_read,
+    .write = &pulp_rv_dm_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.accepts = &pulp_rv_dm_regs_accepts,
 };
 
 static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
@@ -708,18 +675,22 @@ static const MemoryRegionOps pulp_rv_dm_prog_ops = {
     },
 };
 
+static bool pulp_rv_dm_dmflag_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)addr;
+    (void)attrs;
+    return !is_write || size == 4u;
+}
+
 static const MemoryRegionOps pulp_rv_dm_dmflag_ops = {
     .read_with_attrs = &pulp_rv_dm_dmflag_read_with_attrs,
     .write_with_attrs = &pulp_rv_dm_dmflag_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
-    .valid = {
-        .min_access_size = 1u,
-        .max_access_size = 4u,
-    },
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.accepts = &pulp_rv_dm_dmflag_accepts,
 };
 
 static const MemoryRegionOps pulp_rv_dm_disabled_ops = {

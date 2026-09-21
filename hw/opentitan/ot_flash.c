@@ -2649,7 +2649,7 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_flash_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static inline uint32_t ot_flash_byte_mask(hwaddr addr, unsigned size)
@@ -3138,7 +3138,7 @@ static uint64_t ot_flash_csrs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_flash_io_read_out(s->ot_id, (uint32_t)addr, CSR_NAME(csr), val32,
                                pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static void ot_flash_csrs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -3657,7 +3657,7 @@ static const MemoryRegionOps ot_flash_regs_ops = {
     .read = &ot_flash_regs_read,
     .write = &ot_flash_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
@@ -3668,7 +3668,7 @@ static const MemoryRegionOps ot_flash_csrs_ops = {
     .read = &ot_flash_csrs_read,
     .write = &ot_flash_csrs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,

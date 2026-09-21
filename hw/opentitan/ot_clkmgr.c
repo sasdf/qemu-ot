@@ -1110,7 +1110,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
     if (reg < R_MEASURE_REG_BASE) {
         trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                     val32, pc);
-        return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+        return (uint64_t)val32;
     }
 
     if (reg < (R_MEASURE_REG_BASE + (s->measure_count * 2u))) {
@@ -1146,7 +1146,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
 
         trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, reg_name, val32,
                                     pc);
-        return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+        return (uint64_t)val32;
     }
 
     /* remaining registers after the dynamic register range */
@@ -1167,7 +1167,7 @@ static uint64_t ot_clkmgr_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_clkmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg_err),
                                 val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -1398,7 +1398,7 @@ static const MemoryRegionOps ot_clkmgr_regs_ops = {
     .read = &ot_clkmgr_read,
     .write = &ot_clkmgr_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,

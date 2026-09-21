@@ -204,7 +204,7 @@ static uint64_t ot_otp_ot_be_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t pc = ibex_get_current_pc();
     trace_ot_otp_ot_be_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 #define CSR0_WMASK \
@@ -308,7 +308,7 @@ static const MemoryRegionOps ot_otp_ot_be_ops = {
     .read = &ot_otp_ot_be_read,
     .write = &ot_otp_ot_be_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_otp_ot_be_accepts,
 };

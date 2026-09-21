@@ -1046,7 +1046,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_uart_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -1208,7 +1208,7 @@ static const MemoryRegionOps ot_uart_ops = {
     .read = ot_uart_read,
     .write = ot_uart_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1,
+    .impl.min_access_size = 4,
     .impl.max_access_size = 4,
     .valid.accepts = &ot_uart_accepts,
 };

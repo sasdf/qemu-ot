@@ -561,7 +561,7 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_rstmgr_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                 pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 };
 
 static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -733,7 +733,7 @@ static const MemoryRegionOps ot_rstmgr_regs_ops = {
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
     .valid.accepts = &ot_rstmgr_regs_accepts,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
 };
 

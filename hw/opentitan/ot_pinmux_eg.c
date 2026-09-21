@@ -1023,52 +1023,24 @@ static uint8_t ot_pinmux_eg_permit(hwaddr reg)
     return 0x1u;
 }
 
-static MemTxResult ot_pinmux_eg_regs_read_with_attrs(
-    void *opaque, hwaddr addr, uint64_t *val64, unsigned size, MemTxAttrs attrs)
+static bool ot_pinmux_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                      bool is_write, MemTxAttrs attrs)
 {
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
-                      __func__, addr);
-        return MEMTX_ERROR;
-    }
-
-    uint32_t val32 =
-        (uint32_t)ot_pinmux_eg_regs_read(opaque, addr & ~0x3ull, 4u);
-    unsigned shift = (unsigned)((addr & 0x3ull) * 8u);
-    uint64_t mask =
-        (size == 4u) ? 0xffffffffull : ((1ull << (size * 8u)) - 1ull);
-    *val64 = (val32 >> shift) & mask;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_pinmux_eg_regs_write_with_attrs(
-    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
-{
+    (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = ((1u << size) - 1u) << (addr & 0x3u);
-
-    if (reg >= REGS_COUNT || (ot_pinmux_eg_permit(reg) & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Write error at offset 0x%" HWADDR_PRIx
-                      " size %u reg_be 0x%x\n",
-                      __func__, addr, size, reg_be);
-        return MEMTX_ERROR;
-    }
-
-    unsigned shift = (unsigned)((addr & 0x3ull) * 8u);
-    ot_pinmux_eg_regs_write(opaque, addr & ~0x3ull, val64 << shift, size);
-    return MEMTX_OK;
+    return reg < REGS_COUNT &&
+           (!is_write || (ot_pinmux_eg_permit(reg) & ~reg_be) == 0u);
 }
 
 static const MemoryRegionOps ot_pinmux_eg_regs_ops = {
-    .read_with_attrs = &ot_pinmux_eg_regs_read_with_attrs,
-    .write_with_attrs = &ot_pinmux_eg_regs_write_with_attrs,
+    .read = &ot_pinmux_eg_regs_read,
+    .write = &ot_pinmux_eg_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
+    .valid.accepts = &ot_pinmux_eg_regs_accepts,
 };
 
 static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)

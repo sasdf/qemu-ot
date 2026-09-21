@@ -388,9 +388,7 @@ static uint64_t ot_adc_ctrl_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     }
 
-    uint32_t shift = (uint32_t)((addr & 0x3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    val32 = (val32 >> shift) & size_mask;
+    (void)size;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
@@ -409,8 +407,6 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_adc_ctrl_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
-
-    val32 <<= (addr & 0x3u) * 8u;
 
     switch (reg) {
     case R_INTR_STATE:
@@ -495,7 +491,7 @@ static const MemoryRegionOps ot_adc_ctrl_regs_ops = {
     .read = &ot_adc_ctrl_regs_read,
     .write = &ot_adc_ctrl_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,

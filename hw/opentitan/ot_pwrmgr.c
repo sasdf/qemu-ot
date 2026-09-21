@@ -1235,49 +1235,14 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-static inline uint32_t ot_pwrmgr_byte_mask(hwaddr addr, unsigned size)
+static bool ot_pwrmgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
 {
-    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
-    return (mask << (addr & 3u)) & 0xfu;
-}
-
-static uint32_t ot_pwrmgr_reg_permit(hwaddr reg)
-{
-    return (reg == R_CONTROL) ? 0x3u : 0x1u;
-}
-
-static MemTxResult ot_pwrmgr_regs_read_with_attrs(void *opaque, hwaddr addr,
-                                                  uint64_t *data, unsigned size,
-                                                  MemTxAttrs attrs)
-{
+    (void)opaque;
     (void)attrs;
-    uint32_t val32 = (uint32_t)ot_pwrmgr_regs_read(opaque, addr & ~3ull, 4u);
-    val32 >>= (addr & 3u) * 8u;
-    if (size < 4u) {
-        val32 &= (1u << (size * 8u)) - 1u;
-    }
-    *data = (uint64_t)val32;
-    return MEMTX_OK;
-}
-
-static MemTxResult ot_pwrmgr_regs_write_with_attrs(void *opaque, hwaddr addr,
-                                                   uint64_t val64,
-                                                   unsigned size,
-                                                   MemTxAttrs attrs)
-{
-    (void)attrs;
-    hwaddr reg = R32_OFF(addr);
-    uint32_t be = ot_pwrmgr_byte_mask(addr, size);
-    uint32_t permit = ot_pwrmgr_reg_permit(reg);
-    if ((permit & ~be) != 0u) {
-        return MEMTX_ERROR;
-    }
-    uint32_t shift = (addr & 3u) * 8u;
-    uint32_t mask =
-        (size >= 4u) ? 0xffffffffu : (((1u << (size * 8u)) - 1u) << shift);
-    uint32_t val32 = ((uint32_t)val64 << shift) & mask;
-    ot_pwrmgr_regs_write(opaque, addr & ~3ull, val32, 4u);
-    return MEMTX_OK;
+    uint32_t permit = (R32_OFF(addr) == R_CONTROL) ? 0x3u : 0x1u;
+    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    return !is_write || (permit & ~be) == 0u;
 }
 
 static const Property ot_pwrmgr_properties[] = {
@@ -1292,13 +1257,12 @@ static const Property ot_pwrmgr_properties[] = {
 };
 
 static const MemoryRegionOps ot_pwrmgr_regs_ops = {
-    .read_with_attrs = &ot_pwrmgr_regs_read_with_attrs,
-    .write_with_attrs = &ot_pwrmgr_regs_write_with_attrs,
+    .read = &ot_pwrmgr_regs_read,
+    .write = &ot_pwrmgr_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
+    .valid.accepts = &ot_pwrmgr_regs_accepts,
 };
 
 static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)

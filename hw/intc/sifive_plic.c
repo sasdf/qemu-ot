@@ -196,25 +196,24 @@ static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
 static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
 {
     SiFivePLICState *plic = opaque;
-    uint32_t shift = (addr & 3u) * 8u;
     addr &= ~3ULL;
 
     if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
         uint32_t irq = (addr - plic->priority_base) >> 2;
 
-        return plic->source_priority[irq] >> shift;
+        return plic->source_priority[irq];
     } else if (addr_between(addr, plic->pending_base,
                             plic->bitfield_words << 2)) {
         uint32_t word = (addr - plic->pending_base) >> 2;
 
-        return plic->pending[word] >> shift;
+        return plic->pending[word];
     } else if (addr_between(addr, plic->enable_base,
                             plic->num_addrs * plic->enable_stride)) {
         uint32_t addrid = (addr - plic->enable_base) / plic->enable_stride;
         uint32_t wordid = (addr & (plic->enable_stride - 1)) >> 2;
 
         if (wordid < plic->bitfield_words) {
-            return plic->enable[addrid * plic->bitfield_words + wordid] >> shift;
+            return plic->enable[addrid * plic->bitfield_words + wordid];
         }
     } else if (addr_between(addr, plic->context_base,
                             plic->num_addrs * plic->context_stride)) {
@@ -222,7 +221,7 @@ static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
         uint32_t contextid = (addr & (plic->context_stride - 1));
 
         if (contextid == 0) {
-            return plic->target_priority[addrid] >> shift;
+            return plic->target_priority[addrid];
         } else if (contextid == 4) {
             uint32_t max_irq = sifive_plic_claimed(plic, addrid, true);
 
@@ -232,7 +231,7 @@ static uint64_t sifive_plic_read(void *opaque, hwaddr addr, unsigned size)
             }
 
             sifive_plic_update(plic);
-            return max_irq >> shift;
+            return max_irq;
         }
     }
 
@@ -322,6 +321,7 @@ static const MemoryRegionOps sifive_plic_ops = {
     .read = sifive_plic_read,
     .write = sifive_plic_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl.min_access_size = 4,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,

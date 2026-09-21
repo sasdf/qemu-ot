@@ -1938,8 +1938,6 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     }
 
-    val32 >>= (addr & 0x3u) * 8u;
-
     uint32_t pc = ibex_get_current_pc();
     trace_ot_csrng_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
@@ -2160,7 +2158,7 @@ static const MemoryRegionOps ot_csrng_regs_ops = {
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
     .valid.accepts = &ot_csrng_regs_accepts,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
 };
 

@@ -1310,7 +1310,7 @@ static uint64_t ot_ibex_wrapper_regs_read(void *opaque, hwaddr addr,
 
     if (reg < s->reg_count) {
         g_assert(s->access_table[reg].read);
-        val32 = (*s->access_table[reg].read)(s, reg) >> ((addr & 0x3u) * 8u);
+        val32 = (*s->access_table[reg].read)(s, reg);
     } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Invalid register 0x%03x\n",
                       __func__, s->ot_id, (uint32_t)addr);
@@ -1529,7 +1529,7 @@ static const MemoryRegionOps ot_ibex_wrapper_regs_ops = {
     .read = &ot_ibex_wrapper_regs_read,
     .write = &ot_ibex_wrapper_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_ibex_wrapper_regs_accepts,
 };

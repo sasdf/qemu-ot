@@ -606,7 +606,7 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_otp_io_reg_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                  pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
@@ -939,7 +939,7 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
                                    ot_otp_eg_swcfg_reg_name(word_addr), val32,
                                    pc);
 
-    *data = (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    *data = (uint64_t)val32;
 
     return MEMTX_OK;
 }
@@ -1159,7 +1159,7 @@ static const MemoryRegionOps ot_otp_eg_reg_ops = {
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
     .valid.accepts = &ot_otp_eg_reg_accepts,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
 };
 
@@ -1169,7 +1169,7 @@ static const MemoryRegionOps ot_otp_eg_swcfg_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
 };
 

@@ -349,7 +349,7 @@ static uint64_t ot_sensor_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t pc = ibex_get_current_pc();
     trace_ot_sensor_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_sensor_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -459,7 +459,7 @@ static const MemoryRegionOps ot_sensor_eg_regs_ops = {
     .read = &ot_sensor_eg_regs_read,
     .write = &ot_sensor_eg_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_sensor_eg_regs_accepts,
 };

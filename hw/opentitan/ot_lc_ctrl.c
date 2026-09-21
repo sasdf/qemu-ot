@@ -1863,7 +1863,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
         }
     }
 
-    return val32 >> ((addr & 3u) * 8u);
+    return val32;
 };
 
 static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
@@ -2328,7 +2328,7 @@ static const MemoryRegionOps ot_lc_ctrl_sw_regs_ops = {
     .read = &ot_lc_ctrl_sw_regs_read,
     .write = &ot_lc_ctrl_sw_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,
@@ -2339,7 +2339,7 @@ static const MemoryRegionOps ot_lc_ctrl_dmi_regs_ops = {
     .read = &ot_lc_ctrl_dmi_regs_read,
     .write = &ot_lc_ctrl_dmi_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.min_access_size = 1u,
     .valid.max_access_size = 4u,

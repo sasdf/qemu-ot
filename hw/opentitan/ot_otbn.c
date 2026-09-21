@@ -674,7 +674,7 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_otbn_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                               pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -840,8 +840,7 @@ static uint64_t ot_otbn_imem_read(void *opaque, hwaddr addr, unsigned size)
 {
     (void)size;
 
-    return (uint64_t)(ot_otbn_mem_read((OtOTBNState *)opaque, true, addr) >>
-                      ((addr & 3u) * 8u));
+    return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, true, addr);
 }
 
 static void ot_otbn_imem_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -856,8 +855,7 @@ static uint64_t ot_otbn_dmem_read(void *opaque, hwaddr addr, unsigned size)
 {
     (void)size;
 
-    return (uint64_t)(ot_otbn_mem_read((OtOTBNState *)opaque, false, addr) >>
-                      ((addr & 3u) * 8u));
+    return (uint64_t)ot_otbn_mem_read((OtOTBNState *)opaque, false, addr);
 }
 
 static void ot_otbn_dmem_write(void *opaque, hwaddr addr, uint64_t val64,
@@ -888,7 +886,7 @@ static const MemoryRegionOps ot_otbn_regs_ops = {
     .read = &ot_otbn_regs_read,
     .write = &ot_otbn_regs_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_otbn_regs_accepts,
 };
@@ -897,7 +895,7 @@ static const MemoryRegionOps ot_otbn_imem_ops = {
     .read = &ot_otbn_imem_read,
     .write = &ot_otbn_imem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_otbn_mem_accepts,
 };
@@ -906,7 +904,7 @@ static const MemoryRegionOps ot_otbn_dmem_ops = {
     .read = &ot_otbn_dmem_read,
     .write = &ot_otbn_dmem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl.min_access_size = 1u,
+    .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
     .valid.accepts = &ot_otbn_mem_accepts,
 };

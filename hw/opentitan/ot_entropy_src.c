@@ -1634,7 +1634,7 @@ ot_entropy_src_lo_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_entropy_src_io_read_out(s->ot_id, (uint32_t)addr, REG_LO_NAME(reg),
                                      val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static uint64_t
@@ -1663,7 +1663,7 @@ ot_entropy_src_rev_regs_read(void *opaque, hwaddr addr, unsigned size)
     trace_ot_entropy_src_io_read_out(s->ot_id, (uint32_t)addr + REGS_REV_BASE,
                                      REG_REV_NAME(reg), val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 static uint64_t
@@ -1800,7 +1800,7 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
                                      ot_entropy_src_hi_reg_addr(s, addr),
                                      REG_HI_NAME(reg), val32, pc);
 
-    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
+    return (uint64_t)val32;
 }
 
 #define CHECK_MULTIBOOT(_s_, _g_, _r_, _b_) \
@@ -1833,7 +1833,7 @@ static void ot_entropy_src_lo_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
+    uint32_t val32 = (uint32_t)val64;
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -1899,7 +1899,7 @@ static void ot_entropy_src_rev_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
+    uint32_t val32 = (uint32_t)val64;
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
@@ -1925,7 +1925,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
 {
     OtEntropySrcState *s = opaque;
     (void)size;
-    uint32_t val32 = (uint32_t)(val64 << ((addr & 3u) * 8u));
+    uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);
 
@@ -2270,7 +2270,7 @@ static const MemoryRegionOps ot_entropy_src_lo_ops = {
         .accepts = &ot_entropy_src_lo_accepts,
     },
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
 };
@@ -2285,7 +2285,7 @@ static const MemoryRegionOps ot_entropy_src_rev_ops = {
         .accepts = &ot_entropy_src_rev_accepts,
     },
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
 };
@@ -2300,7 +2300,7 @@ static const MemoryRegionOps ot_entropy_src_hi_ops = {
         .accepts = &ot_entropy_src_hi_accepts,
     },
     .impl = {
-        .min_access_size = 1u,
+        .min_access_size = 4u,
         .max_access_size = 4u,
     },
 };
