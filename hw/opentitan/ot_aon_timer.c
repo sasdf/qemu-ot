@@ -489,12 +489,23 @@ static const uint8_t AON_TIMER_PERMIT[REGS_COUNT] = {
     [R_WKUP_CAUSE] = 0x1u,
 };
 
-static MemTxResult ot_aon_timer_read_with_attrs(void *opaque, hwaddr addr,
-                                                uint64_t *val64, unsigned size,
-                                                MemTxAttrs attrs)
+static bool ot_aon_timer_accepts(void *opaque, hwaddr addr, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    if (!is_write) {
+        return true;
+    }
+    hwaddr reg = R32_OFF(addr);
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    return reg < REGS_COUNT && (AON_TIMER_PERMIT[reg] & ~reg_be) == 0u;
+}
+
+static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtAonTimerState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32;
 
     s->low_power_exit = false;
@@ -537,18 +548,14 @@ static MemTxResult ot_aon_timer_read_with_attrs(void *opaque, hwaddr addr,
     trace_ot_aon_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg),
                                    val32, pc);
 
-    uint32_t shift = (uint32_t)((addr & 3u) * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    *val64 = (val32 >> shift) & size_mask;
-    return MEMTX_OK;
+    return (uint64_t)(val32 >> ((addr & 3u) * 8u));
 }
 
-static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
-                                                 uint64_t value, unsigned size,
-                                                 MemTxAttrs attrs)
+static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
+                               unsigned size)
 {
     OtAonTimerState *s = opaque;
-    (void)attrs;
+    (void)size;
     uint32_t val32 = (uint32_t)value;
 
     s->low_power_exit = false;
@@ -558,18 +565,6 @@ static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
     ot_aon_timer_sync_wdog(s, now);
 
     hwaddr reg = R32_OFF(addr);
-    unsigned byte_off = (unsigned)(addr & 3u);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
-    if ((AON_TIMER_PERMIT[reg] & ~reg_be) != 0u) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: sub-word write wr_err at 0x%02x (%s, be=0x%x)\n",
-                      __func__, (uint32_t)addr, REG_NAME(reg), reg_be);
-        return MEMTX_ERROR;
-    }
-
-    uint32_t shift = (uint32_t)(byte_off * 8u);
-    uint32_t size_mask = size >= 4u ? UINT32_MAX : ((1u << (size * 8u)) - 1u);
-    val32 = (val32 & size_mask) << shift;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_aon_timer_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -641,18 +636,15 @@ static MemTxResult ot_aon_timer_write_with_attrs(void *opaque, hwaddr addr,
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%02x\n", __func__,
                       (uint32_t)addr);
     }
-
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_aon_timer_ops = {
-    .read_with_attrs = &ot_aon_timer_read_with_attrs,
-    .write_with_attrs = &ot_aon_timer_write_with_attrs,
+    .read = &ot_aon_timer_read,
+    .write = &ot_aon_timer_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 1u,
-    .valid.max_access_size = 4u,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.accepts = &ot_aon_timer_accepts,
 };
 
 static const Property ot_aon_timer_properties[] = {
