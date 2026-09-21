@@ -1746,12 +1746,11 @@ static void ot_eg_soc_ast_configure(DeviceState *dev, const IbexDeviceDef *def,
     if (!verilator_mode) {
         /* EarlGrey/CW310 */
         clock_cfg = "main:24000000,io:24000000,usb:48000000,aon:250000";
-        icount_set_freq_hz(24000000u);
     } else {
         clock_cfg = "main:500000,io:500000,usb:500000,aon:125000";
-        icount_set_freq_hz(500000u);
     }
 
+    icount_set_freq_hz(!verilator_mode ? 24000000u : 500000u);
     qdev_prop_set_string(dev, "topclocks", clock_cfg);
 }
 
