@@ -120,7 +120,6 @@ typedef struct DisasContext {
     bool fcfi_lp_expected;
     /* zicfiss extension, if shadow stack was enabled during TB gen */
     bool bcfi_enabled;
-    vaddr pmp_exec_end;
 } DisasContext;
 
 #define DISAS_SSTEP       DISAS_TARGET_0
@@ -1341,10 +1340,9 @@ static void riscv_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->virt_inst_excp = false;
     ctx->decoders = cpu->decoders;
 #ifndef CONFIG_USER_ONLY
-    ctx->pmp_exec_end = pmp_get_page_exec_end(env, ctx->base.pc_first);
-#else
-    ctx->pmp_exec_end = (ctx->base.pc_first & TARGET_PAGE_MASK) +
-                        TARGET_PAGE_SIZE - 1;
+    if (pmp_get_tlb_size(env, ctx->base.pc_first) == 1) {
+        ctx->base.max_insns = 1;
+    }
 #endif
 }
 
@@ -1396,9 +1394,7 @@ static void riscv_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     /* Only the first insn within a TB is allowed to cross a page boundary. */
     if (ctx->base.is_jmp == DISAS_NEXT) {
-        if (ctx->itrigger ||
-            !translator_is_same_page(&ctx->base, ctx->base.pc_next) ||
-            ctx->base.pc_next > ctx->pmp_exec_end) {
+        if (ctx->itrigger || !translator_is_same_page(&ctx->base, ctx->base.pc_next)) {
             ctx->base.is_jmp = DISAS_TOO_MANY;
         } else {
             unsigned page_ofs = ctx->base.pc_next & ~TARGET_PAGE_MASK;

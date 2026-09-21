@@ -765,41 +765,6 @@ target_ulong pmp_get_tlb_size(CPURISCVState *env, hwaddr addr)
 }
 
 /*
- * Return the last byte address (inclusive) within the same target page as
- * @addr that belongs to the same contiguous PMP region as @addr.
- */
-vaddr pmp_get_page_exec_end(CPURISCVState *env, vaddr addr)
-{
-    vaddr pmp_end = (addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE - 1;
-    uint8_t pmp_regions = riscv_cpu_cfg(env)->pmp_regions;
-    int i;
-
-    if (!riscv_cpu_cfg(env)->pmp || !pmp_get_num_rules(env)) {
-        return pmp_end;
-    }
-
-    for (i = 0; i < pmp_regions; i++) {
-        if (pmp_get_a_field(env->pmp_state.pmp[i].cfg_reg) == PMP_AMATCH_OFF) {
-            continue;
-        }
-
-        hwaddr pmp_sa = env->pmp_state.addr[i].sa;
-        hwaddr pmp_ea = env->pmp_state.addr[i].ea;
-
-        if (addr >= pmp_sa && addr <= pmp_ea) {
-            if (pmp_ea < pmp_end) {
-                pmp_end = pmp_ea;
-            }
-            break;
-        } else if (pmp_sa > addr && pmp_sa <= pmp_end) {
-            pmp_end = pmp_sa - 1;
-        }
-    }
-
-    return pmp_end;
-}
-
-/*
  * Convert PMP privilege to TLB page privilege.
  */
 int pmp_priv_to_page_prot(pmp_priv_t pmp_priv)
