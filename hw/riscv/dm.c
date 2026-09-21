@@ -231,11 +231,11 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
  */
 
 /* clang-format off */
-#define SBCS_WRITE_MASK (R_SBCS_SBREADONDATA_MASK    | \
+#define SBCS_WRITE_MASK (R_SBCS_SBERROR_MASK         | \
+                         R_SBCS_SBREADONDATA_MASK    | \
                          R_SBCS_SBAUTOINCREMENT_MASK | \
                          R_SBCS_SBACCESS_MASK        | \
                          R_SBCS_SBREADONADDR_MASK    | \
-                         R_SBCS_SBERROR_MASK         | \
                          R_SBCS_SBBUSYERROR_MASK)
 /* clang-format on */
 
