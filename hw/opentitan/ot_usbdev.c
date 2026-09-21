@@ -708,18 +708,18 @@ static void ot_usbdev_update_status_irqs(OtUsbdevState *s)
     if (s->regs[R_IN_SENT]) {
         set_mask |= USBDEV_INTR_PKT_SENT_MASK;
     }
-    if (ot_fifo32_is_full(&s->rx_fifo)) {
-        set_mask |= USBDEV_INTR_RX_FULL_MASK;
-    }
-    if (!ot_fifo32_is_empty(&s->rx_fifo)) {
-        set_mask |= USBDEV_INTR_PKT_RECEIVED_MASK;
-    }
     if (ot_usbdev_is_enabled(s)) {
         if (fifo8_is_empty(&s->av_setup_fifo)) {
             set_mask |= USBDEV_INTR_AV_SETUP_EMPTY_MASK;
         }
         if (fifo8_is_empty(&s->av_out_fifo)) {
             set_mask |= USBDEV_INTR_AV_OUT_EMPTY_MASK;
+        }
+        if (ot_fifo32_is_full(&s->rx_fifo)) {
+            set_mask |= USBDEV_INTR_RX_FULL_MASK;
+        }
+        if (!ot_fifo32_is_empty(&s->rx_fifo)) {
+            set_mask |= USBDEV_INTR_PKT_RECEIVED_MASK;
         }
     }
     /*
@@ -1387,12 +1387,11 @@ static void ot_usbdev_simulate_link_suspend(OtUsbdevState *s)
 {
     g_assert(!resettable_is_in_reset(OBJECT(s)));
     OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
-    if (link_state == OT_USBDEV_LINK_STATE_POWERED) {
-        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED_SUSP);
-    } else if (link_state == OT_USBDEV_LINK_STATE_ACTIVE ||
-               link_state == OT_USBDEV_LINK_STATE_ACTIVE_NOSOF ||
-               link_state == OT_USBDEV_LINK_STATE_RESUMING) {
-        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_SUSPENDED);
+    if (link_state != OT_USBDEV_LINK_STATE_DISCONNECTED) {
+        ot_usbdev_set_raw_link_state(s,
+                                     link_state == OT_USBDEV_LINK_STATE_POWERED
+                                         ? OT_USBDEV_LINK_STATE_POWERED_SUSP
+                                         : OT_USBDEV_LINK_STATE_SUSPENDED);
     }
     timer_del(&s->frame_timer);
     s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_SUSPEND_MASK;
@@ -1409,12 +1408,13 @@ static void ot_usbdev_simulate_link_resume(OtUsbdevState *s)
         ibex_irq_set(&s->wkup, 1);
     }
     OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
-    if (link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP) {
-        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
-        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
-    } else if (link_state == OT_USBDEV_LINK_STATE_SUSPENDED ||
-               link_state == OT_USBDEV_LINK_STATE_RESUMING) {
-        ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE);
+    if (link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP ||
+        link_state == OT_USBDEV_LINK_STATE_SUSPENDED ||
+        link_state == OT_USBDEV_LINK_STATE_RESUMING) {
+        ot_usbdev_set_raw_link_state(
+            s, link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP
+                   ? OT_USBDEV_LINK_STATE_POWERED
+                   : OT_USBDEV_LINK_STATE_ACTIVE);
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
         int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
         timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
@@ -1808,91 +1808,89 @@ static bool ot_usbdev_advance_transfer_out(OtUsbdevState *s, uint8_t epnum)
     OtUsbdevServerEpOutXfer *xfer = &server->ep[epnum].out;
     bool progressed = false;
 
-    while (xfer->pending) {
-        /*
-         * If the endpoint OUT is not enabled yet, or EP0 IN completion is
-         * still pending software acknowledgement, wait before delivering
-         * the OUT status stage.
-         */
-        if (!ot_usbdev_is_ep_out_enabled(s, epnum) ||
-            (epnum == 0u && (s->regs[R_IN_SENT] & 1u) != 0u)) {
-            return progressed;
-        }
-
-        /* Check for STALL */
-        if (ot_usbdev_is_ep_out_stalled(s, epnum)) {
-            ot_usbdev_complete_transfer_out(s, epnum,
-                                            OT_USBDEV_SERVER_STATUS_STALLED,
-                                            "stalled by device");
-            s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
-            ot_usbdev_update_irqs(s);
-            return progressed;
-        }
-
-        /*
-         * Only accept the DATA packet if the endpoint is enabled, and there is
-         * buffer available and there is space in the RX FIFO. The last entry of
-         * the FIFO is reserved for SETUP packets.
-         */
-        if (!ot_usbdev_is_ep_out_rxenabled(s, epnum) ||
-            fifo8_is_empty(&s->av_out_fifo) ||
-            ot_fifo32_num_free(&s->rx_fifo) <= 1u) {
-            /* Notify the software about the error */
-            s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
-            ot_usbdev_update_irqs(s);
-            /* "NAK" packet, OUT transfer will be retried */
-            return progressed;
-        }
-
-        /* Write data to buffer and update transfer status */
-        uint8_t buf_id = fifo8_pop(&s->av_out_fifo);
-        uint32_t size = MIN((uint32_t)xfer->max_packet_size, xfer->send_rem);
-        ot_usbdev_write_buffer(s, buf_id, xfer->send_buf, (size_t)size);
-        xfer->send_buf += size;
-        xfer->send_rem -= size;
-
-        /* Create and push an entry in the RX FIFO */
-        uint32_t rx_fifo_entry = 0u;
-        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, BUFFER, buf_id);
-        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SETUP, 0u);
-        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, EP, epnum);
-        rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SIZE, size);
-        ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
-
-        if (epnum == 0u || !(s->regs[R_OUT_ISO] & (1u << epnum))) {
-            s->regs[R_OUT_DATA_TOGGLE] ^=
-                FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
-        }
-
-        trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
-
-        /* Disable RX if auto-NAK on OUT is set. */
-        if (ot_usbdev_is_set_nak_out_enabled(s, epnum)) {
-            s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
-        }
-
-        ot_usbdev_pace_usb_chr(s, 500000LL);
-        ot_usbdev_update_fifos_status(s);
-        ot_usbdev_update_irqs(s);
-        progressed = true;
-
-        /* Handle completion */
-        if (xfer->send_rem == 0 && !xfer->send_zlp) {
-            ot_usbdev_complete_transfer_out(s, epnum,
-                                            OT_USBDEV_SERVER_STATUS_SUCCESS,
-                                            "success");
-            return true;
-        }
-        if (xfer->send_rem == 0 && xfer->send_zlp) {
-            /*
-             * If we have sent everything and a ZLP is requested, go for a last
-             * round
-             */
-            xfer->send_zlp = false;
-        }
+again:
+    /*
+     * If there is no pending transfer, or the endpoint OUT is not enabled yet,
+     * we cannot proceed yet.
+     */
+    if (!xfer->pending || !ot_usbdev_is_ep_out_enabled(s, epnum) ||
+        (epnum == 0u && (s->regs[R_IN_SENT] & 1u) != 0u)) {
+        return progressed;
     }
 
-    return progressed;
+    /* Check for STALL */
+    if (ot_usbdev_is_ep_out_stalled(s, epnum)) {
+        ot_usbdev_complete_transfer_out(s, epnum,
+                                        OT_USBDEV_SERVER_STATUS_STALLED,
+                                        "stalled by device");
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
+        ot_usbdev_update_irqs(s);
+        return progressed;
+    }
+
+    /*
+     * Only accept the DATA packet if the endpoint is enabled, and there is
+     * buffer available and there is space in the RX FIFO. The last entry of
+     * the FIFO is reserved for SETUP packets.
+     */
+    if (!ot_usbdev_is_ep_out_rxenabled(s, epnum) ||
+        fifo8_is_empty(&s->av_out_fifo) ||
+        ot_fifo32_num_free(&s->rx_fifo) <= 1u) {
+        /* Notify the software about the error */
+        s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_OUT_ERR_MASK;
+        ot_usbdev_update_irqs(s);
+        /* "NAK" packet, OUT transfer will be retried */
+        return progressed;
+    }
+
+    /* Write data to buffer and update transfer status */
+    uint8_t buf_id = fifo8_pop(&s->av_out_fifo);
+    uint32_t size = MIN((uint32_t)xfer->max_packet_size, xfer->send_rem);
+    ot_usbdev_write_buffer(s, buf_id, xfer->send_buf, (size_t)size);
+    xfer->send_buf += size;
+    xfer->send_rem -= size;
+
+    /* Create and push an entry in the RX FIFO */
+    uint32_t rx_fifo_entry = 0u;
+    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, BUFFER, buf_id);
+    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SETUP, 0u);
+    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, EP, epnum);
+    rx_fifo_entry = FIELD_DP32(rx_fifo_entry, RXFIFO, SIZE, size);
+    ot_fifo32_push(&s->rx_fifo, rx_fifo_entry);
+
+    if (epnum == 0u || !(s->regs[R_OUT_ISO] & (1u << epnum))) {
+        s->regs[R_OUT_DATA_TOGGLE] ^=
+            FIELD_DP32(0u, OUT_DATA_TOGGLE, STATUS, 1u << epnum);
+    }
+
+    trace_ot_usbdev_packet_received(s->ot_id, epnum, buf_id, size);
+
+    /* Disable RX if auto-NAK on OUT is set. */
+    if (ot_usbdev_is_set_nak_out_enabled(s, epnum)) {
+        s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
+    }
+
+    ot_usbdev_pace_usb_chr(s, 500000LL);
+    ot_usbdev_update_fifos_status(s);
+    ot_usbdev_update_irqs(s);
+    progressed = true;
+
+    /* Handle completion */
+    if (xfer->send_rem == 0 && !xfer->send_zlp) {
+        ot_usbdev_complete_transfer_out(s, epnum,
+                                        OT_USBDEV_SERVER_STATUS_SUCCESS,
+                                        "success");
+        return true;
+    }
+    if (xfer->send_rem == 0 && xfer->send_zlp) {
+        /*
+         * If we have sent everything and a ZLP is requested, go for a last
+         * round
+         */
+        xfer->send_zlp = false;
+    }
+
+    goto again;
 }
 
 /*
@@ -1969,10 +1967,6 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
         ot_usbdev_get_link_state(s) == OT_USBDEV_LINK_STATE_POWERED) {
         ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_ACTIVE_NOSOF);
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
-        if (s->usb_server.vbus_connected) {
-            int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
-            timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
-        }
     }
 
     ot_usbdev_update_fifos_status(s);
@@ -2235,13 +2229,12 @@ static MemTxResult ot_usbdev_read_with_attrs(
     case R_AVSETUPBUFFER:
     case R_WAKE_CONTROL:
     case R_FIFO_CTRL:
+    default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s Read to W/O register 0x%02x (%s)\n", __func__,
                       s->ot_id, (uint32_t)addr, REG_NAME(reg));
         val32 = 0u;
         break;
-    default:
-        g_assert_not_reached();
     }
 
     uint32_t pc = ibex_get_current_pc();
@@ -2448,7 +2441,8 @@ static MemTxResult ot_usbdev_write_with_attrs(
     case R_COUNT_OUT:
     case R_COUNT_IN:
     case R_COUNT_NODATA_IN:
-    case R_COUNT_ERRORS: {
+    case R_COUNT_ERRORS:
+    default: {
         uint32_t rw_mask = (reg == R_COUNT_OUT)       ? 0x0ffff000u :
                            (reg == R_COUNT_IN)        ? 0x0fffe000u :
                            (reg == R_COUNT_NODATA_IN) ? 0x0fff0000u :
@@ -2457,8 +2451,6 @@ static MemTxResult ot_usbdev_write_with_attrs(
         s->regs[reg] = (val32 & rw_mask) | count;
         break;
     }
-    default:
-        g_assert_not_reached();
     }
 
     return MEMTX_OK;
@@ -2493,7 +2485,7 @@ static MemTxResult ot_usbdev_buffer_write_with_attrs(
 {
     OtUsbdevState *s = opaque;
     (void)attrs;
-    uint32_t val32 = val64;
+    uint32_t val32 = (uint32_t)val64;
 
     if (!s->pclk) {
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
@@ -2737,10 +2729,6 @@ static void ot_usbdev_server_process_vbus_changed(OtUsbdevState *s, bool vbus)
 
     server->vbus_connected = vbus;
     ot_usbdev_update_vbus(s);
-    if (vbus && ot_usbdev_is_enabled(s) && ot_usbdev_has_vbus(s) &&
-        !server->device_connected) {
-        ot_usbdev_server_report_connected(s, true);
-    }
 }
 
 static void ot_usbdev_server_process_setup(OtUsbdevState *s)
@@ -2810,7 +2798,6 @@ static void ot_usbdev_server_process_transfer_in(
                                            OT_USBDEV_SERVER_STATUS_ERROR, 0u,
                                            NULL, 0u,
                                            "transfer already pending");
-        return;
     }
 
     /* @todo check for unknown flags */
@@ -2850,7 +2837,6 @@ static void ot_usbdev_server_process_transfer_out(
                                            OT_USBDEV_SERVER_STATUS_ERROR, 0u,
                                            NULL, 0u,
                                            "transfer already pending");
-        return;
     }
 
     /* @todo check for unknown flags */
