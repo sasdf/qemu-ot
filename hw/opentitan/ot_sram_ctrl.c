@@ -124,7 +124,6 @@ struct OtSramCtrlState {
 
     uint64_t *init_sram_bm; /* initialization bitmap */
     uint64_t *init_slot_bm; /* initialization bitmap shortcut */
-    uint64_t *scr_invalid_bm; /* cells scrambled under previous scr_key */
     OtPrngState *prng; /* simplified PRNG, does not match OT's */
     OtOTPKey *otp_key;
     uint32_t regs[REGS_COUNT];
@@ -257,7 +256,6 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
         size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
         memset(s->init_sram_bm, 0, cell_slot_count * sizeof(uint64_t));
         memset(s->init_slot_bm, 0, s->init_slot_count * sizeof(uint64_t));
-        memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
         s->scr_invalid = false;
 
         if (!s->noswitch && !(s->regs[R_STATUS] & R_STATUS_ESCALATED_MASK)) {
@@ -283,16 +281,7 @@ static bool ot_sram_ctrl_initialize(OtSramCtrlState *s, unsigned count,
 
 static inline uint32_t ot_sram_ctrl_scr_mask(uint32_t key, unsigned word_idx)
 {
-    if (!key) {
-        return 0u;
-    }
-    uint32_t h = key ^ (word_idx * 0x9e3779b9u);
-    h ^= h >> 16;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return h;
+    return key ? (key ^ (word_idx * 0x9e3779b9u)) : 0u;
 }
 
 static void ot_sram_ctrl_apply_scr_key(OtSramCtrlState *s, uint32_t new_key)
@@ -378,9 +367,9 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
         uint32_t new_key = (ot_prng_random_u32(s->prng) | 1u) ^
                            ((s->scr_key & 1u) ? 2u : 0u);
         ot_sram_ctrl_apply_scr_key(s, new_key);
-        if (!s->noinit && s->scr_invalid_bm) {
+        if (!s->noinit && s->init_sram_bm) {
             size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
-            memset(s->scr_invalid_bm, 0xff, cell_slot_count * sizeof(uint64_t));
+            memset(s->init_sram_bm, 0xff, cell_slot_count * sizeof(uint64_t));
             s->scr_invalid = true;
             ot_sram_ctrl_mem_switch_to_init(s);
         }
@@ -683,10 +672,10 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
     val32 >>= addr_offset << 3u;
     *val64 = (uint64_t)val32;
 
-    if (s->scr_invalid && s->scr_invalid_bm) {
+    if (s->scr_invalid && s->init_sram_bm) {
         unsigned slot = ot_sram_ctrl_get_u64_slot(cell);
         unsigned offset = ot_sram_ctrl_get_u64_offset(cell);
-        if (s->scr_invalid_bm[slot] & (1ull << offset)) {
+        if (s->init_sram_bm[slot] & (1ull << offset)) {
             if ((ot_sram_ctrl_scr_mask(s->scr_key, cell) & 0x7fu) != 0u) {
                 SysBusDevice *sbd = SYS_BUS_DEVICE(s);
                 hwaddr sram_off =
@@ -752,10 +741,6 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
     unsigned idx = addr / sizeof(uint32_t);
     unsigned slot = ot_sram_ctrl_get_u64_slot(idx);
     unsigned offset = ot_sram_ctrl_get_u64_offset(idx);
-
-    if (s->scr_invalid && s->scr_invalid_bm) {
-        s->scr_invalid_bm[slot] &= ~(1ull << offset);
-    }
 
     s->init_sram_bm[slot] &= ~(1ull << offset);
 
@@ -855,10 +840,6 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
     s->init_slot_pos = 0;
 
     ot_sram_ctrl_apply_scr_key(s, 0u);
-    if (s->scr_invalid_bm) {
-        size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
-        memset(s->scr_invalid_bm, 0, cell_slot_count * sizeof(uint64_t));
-    }
     s->scr_invalid = false;
     memory_region_set_enabled(&s->mem->alias, true);
 
@@ -960,7 +941,6 @@ static void ot_sram_ctrl_realize(DeviceState *dev, Error **errp)
     size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
     s->init_sram_bm = g_new0(uint64_t, cell_slot_count);
     memset(s->init_sram_bm, 0xff, cell_slot_count * sizeof(uint64_t));
-    s->scr_invalid_bm = g_new0(uint64_t, cell_slot_count);
 
     s->init_slot_count = ot_sram_ctrl_get_u64_slot(cell_slot_count + 64u - 1u);
     s->init_slot_bm = g_new0(uint64_t, s->init_slot_count);
