@@ -254,7 +254,8 @@ int64_t icount_round(int64_t count)
 {
     uint64_t freq = qatomic_read(&icount_freq_hz);
     if (freq) {
-        return (int64_t)((MAX(count, 0) * freq + NANOSECONDS_PER_SECOND - 1) /
+        return (int64_t)(((__int128_t)MAX(count, 0) * freq +
+                          NANOSECONDS_PER_SECOND - 1) /
                          NANOSECONDS_PER_SECOND);
     }
     int shift = qatomic_read(&timers_state.icount_time_shift);
