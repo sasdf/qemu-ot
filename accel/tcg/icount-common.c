@@ -186,6 +186,18 @@ int64_t icount_get_cycles(void)
     return raw + (bias_ns >> qatomic_read(&timers_state.icount_time_shift));
 }
 
+void icount_advance_bias_ns(int64_t delta_ns)
+{
+    if (delta_ns > 0 && icount_enabled()) {
+        seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                           &timers_state.vm_clock_lock);
+        qatomic_set_i64(&timers_state.qemu_icount_bias,
+                        timers_state.qemu_icount_bias + delta_ns);
+        seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                             &timers_state.vm_clock_lock);
+    }
+}
+
 /*
  * Correlation between real and virtual time is always going to be
  * fairly approximate, so ignore small variation.

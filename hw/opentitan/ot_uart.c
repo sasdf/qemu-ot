@@ -37,6 +37,7 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "exec/icount.h"
 #include "chardev/char-fe.h"
 #include "io/channel-file.h"
 #include "hw/opentitan/ot_alert.h"
@@ -878,12 +879,21 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2u) {
         int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        int64_t t0_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
         bool recent = s->last_rx_ns > 0 &&
                       (now_ns - s->last_rx_ns) < 1500000000LL;
         s->rx_poll_count = 1u;
         g_usleep(recent ? 200u : 100u);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
-        timer_mod(s->rx_pace_timer, now_ns + (recent ? 150000LL : 2000000LL));
+        if (fifo8_is_empty(&s->rx_fifo) &&
+            fifo8_is_empty(&s->rx_staging_fifo)) {
+            int64_t slept_ns =
+                CLAMP(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0_ns,
+                      0LL, 2000000LL);
+            icount_advance_bias_ns(slept_ns);
+            now_ns += slept_ns;
+        }
+        timer_mod(s->rx_pace_timer, now_ns + (recent ? 150000LL : 500000LL));
     } else {
         s->rx_poll_count = 0u;
     }
@@ -919,7 +929,7 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
             bool recent = s->last_rx_ns > 0 &&
                           (now_ns - s->last_rx_ns) < 1500000000LL;
             timer_mod(s->rx_pace_timer,
-                      now_ns + (recent ? 150000LL : 2000000LL));
+                      now_ns + (recent ? 150000LL : 500000LL));
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
