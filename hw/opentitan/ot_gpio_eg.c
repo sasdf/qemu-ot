@@ -921,21 +921,12 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         if (outsel == 1u) {
             return true;
         }
-        if (outsel >= 49u && outsel <= 52u && s->pattgen) {
-            return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
-        }
         if (outsel >= 65u && outsel < 71u && s->pwm) {
             return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
         }
         if ((outsel == 41u || outsel == 53u || outsel == 54u) &&
             s->spi_host1) {
             return ot_spi_host_get_pin_level(s->spi_host1, outsel, sample_ns);
-        }
-        if (outsel >= 3u && outsel < 35u) {
-            unsigned g = outsel - 3u;
-            if ((s->data_oe >> g) & 1u) {
-                return (bool)(((s->data_out ^ s->invert) >> g) & 1u);
-            }
         }
     }
     if (pad < PARAM_NUM_IO && !((s->data_bi >> pad) & 1u)) {
@@ -1006,19 +997,10 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             }
             bool sda_out =
                 ot_i2c_bitbang_target_step(target_i2c, scl_in, sda_in);
-            int64_t sample_ns = s->bb_start_ns +
-                                (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
             uint8_t sample_byte = 0;
             for (unsigned bit = 0; bit < s->bb_npins; bit++) {
                 unsigned pad = s->bb_pins[bit];
-                bool level;
-                if (pad == 7u) {
-                    level = sda_out;
-                } else if (pad == 8u) {
-                    level = scl_in;
-                } else {
-                    level = ot_gpio_eg_sample_pad(s, pad, sample_ns);
-                }
+                bool level = (pad == 7u) ? sda_out : scl_in;
                 if (level) {
                     sample_byte |= (uint8_t)(1u << bit);
                 }
@@ -1140,13 +1122,6 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
         return;
     }
 
-    if (uses_pwm && ot_pwm_is_active(s->pwm) && s->bb_wait_pwm_ticks > 0) {
-        s->bb_wait_pwm_ticks--;
-        int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
-        timer_mod_ns(s->bb_timer, next_ns);
-        return;
-    }
-
     if (s->bb_tail_ticks > 0) {
         s->bb_tail_ticks--;
         int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
@@ -1195,20 +1170,14 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
 static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
 {
     gchar **parts = g_strsplit(args, ":", 4);
-    if (!parts || !parts[0] || !parts[1] || !parts[2] || !parts[3]) {
-        g_strfreev(parts);
-        return;
-    }
+    g_assert(parts && parts[0] && parts[1] && parts[2] && parts[3]);
 
     uint64_t period_ns = g_ascii_strtoull(parts[0], NULL, 10);
     uint32_t num_samples = (uint32_t)g_ascii_strtoull(parts[1], NULL, 10);
     const char *pins_str = parts[2];
     const char *rle_str = parts[3];
 
-    if (period_ns == 0 || num_samples == 0 || num_samples > 10000000u) {
-        g_strfreev(parts);
-        return;
-    }
+    g_assert(period_ns > 0 && num_samples > 0 && num_samples <= 10000000u);
 
     gchar **pin_tokens = g_strsplit(pins_str, ".", 32);
     s->bb_npins = 0;
@@ -1236,9 +1205,7 @@ static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
     uint32_t widx = 0;
     for (unsigned i = 0; runs && runs[i]; i++) {
         char *star = strchr(runs[i], '*');
-        if (!star) {
-            continue;
-        }
+        g_assert(star != NULL);
         *star = '\0';
         uint32_t count = (uint32_t)g_ascii_strtoull(runs[i], NULL, 10);
         uint8_t val = (uint8_t)g_ascii_strtoull(star + 1, NULL, 16);
@@ -1279,61 +1246,33 @@ uint64_t ot_gpio_eg_get_total_us(OtGpioEgState *s)
     return s->last_total_us;
 }
 
-void ot_gpio_eg_set_total_us(OtGpioEgState *s, uint64_t total_us)
+void ot_gpio_eg_set_pattgen_batch(OtGpioEgState *s, bool active)
 {
     if (!s) {
         return;
     }
-    if (total_us < s->last_total_us) {
-        total_us = s->last_total_us;
-    }
-    s->last_total_us = total_us;
-    s->explicit_time = true;
-}
-
-void ot_gpio_eg_clear_explicit_time(OtGpioEgState *s)
-{
-    if (!s) {
-        return;
-    }
-    uint64_t rt_us =
-        (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
-    s->time_offset_us = s->last_total_us - rt_us;
-    s->explicit_time = false;
-}
-
-void ot_gpio_eg_begin_batch(OtGpioEgState *s)
-{
-    if (s) {
-        s->batch_mode = true;
-    }
-}
-
-void ot_gpio_eg_end_batch(OtGpioEgState *s)
-{
-    if (!s) {
-        return;
-    }
-    s->batch_mode = false;
-    if (s->batch_buf && s->batch_buf->len > 0) {
-        const uint8_t *ptr = (const uint8_t *)s->batch_buf->str;
-        size_t remaining = s->batch_buf->len;
-        while (remaining > 0) {
-            int chunk = (int)MIN(remaining, 4096u);
-            qemu_chr_fe_write(&s->chr, ptr, chunk);
-            ptr += chunk;
-            remaining -= (size_t)chunk;
+    s->batch_mode = active;
+    if (!active) {
+        if (s->batch_buf && s->batch_buf->len > 0) {
+            const uint8_t *ptr = (const uint8_t *)s->batch_buf->str;
+            size_t remaining = s->batch_buf->len;
+            while (remaining > 0) {
+                int chunk = (int)MIN(remaining, 4096u);
+                qemu_chr_fe_write(&s->chr, ptr, chunk);
+                ptr += chunk;
+                remaining -= (size_t)chunk;
+            }
+            g_string_set_size(s->batch_buf, 0);
         }
-        g_string_set_size(s->batch_buf, 0);
+        uint64_t rt_us =
+            (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+        s->time_offset_us = s->last_total_us - rt_us;
+        s->explicit_time = false;
     }
 }
 
 static void ot_gpio_eg_send_input_ack(OtGpioEgState *s)
 {
-    if (!qemu_chr_fe_backend_connected(&s->chr)) {
-        return;
-    }
-
     uint32_t now_us = (uint32_t)ot_gpio_eg_get_total_us(s);
     char buf[32u];
     int len = snprintf(buf, sizeof(buf), "T:%08x\r\nY:%08x\r\n", now_us,
@@ -1376,11 +1315,6 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
 
         if (line[0] == 'B' && line[1] == ':') {
             ot_gpio_eg_handle_bitbang_cmd(s, line + 2);
-            g_free(line);
-            continue;
-        }
-
-        if (eolpos < 10u) {
             g_free(line);
             continue;
         }
@@ -1497,8 +1431,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
             unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
                               (unsigned)g_pull :
                               p;
-            if (g_pull >= 0 || (outsel >= 3u && outsel < 35u) ||
-                ((s->force_en >> gp) & 1u)) {
+            if (g_pull >= 0 || (outsel >= 3u && outsel < 35u)) {
                 if ((periph_pull_en >> gp) & 1u) {
                     pull_en |= (1u << p);
                 }
@@ -1617,9 +1550,13 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     }
 }
 
-void ot_gpio_eg_notify_pattgen_change(OtGpioEgState *s)
+void ot_gpio_eg_notify_pattgen_change(OtGpioEgState *s, uint64_t step_us)
 {
     if (s) {
+        if (step_us > 0) {
+            s->last_total_us = MAX(s->last_total_us, step_us);
+            s->explicit_time = true;
+        }
         ot_gpio_eg_update_data_in(s);
         ot_gpio_eg_update_backend(s, false);
     }

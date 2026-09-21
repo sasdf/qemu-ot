@@ -178,7 +178,7 @@ static void ot_pattgen_timer_cb(void *opaque)
     uint32_t done_mask = 0;
 
     if (s->gpio) {
-        ot_gpio_eg_begin_batch(s->gpio);
+        ot_gpio_eg_set_pattgen_batch(s->gpio, true);
     }
 
     while ((run_ch[0] && k[0] <= total_steps[0]) ||
@@ -215,14 +215,12 @@ static void ot_pattgen_timer_cb(void *opaque)
         }
 
         if (s->gpio) {
-            ot_gpio_eg_set_total_us(s->gpio, next_us);
-            ot_gpio_eg_notify_pattgen_change(s->gpio);
+            ot_gpio_eg_notify_pattgen_change(s->gpio, next_us);
         }
     }
 
     if (s->gpio) {
-        ot_gpio_eg_end_batch(s->gpio);
-        ot_gpio_eg_clear_explicit_time(s->gpio);
+        ot_gpio_eg_set_pattgen_batch(s->gpio, false);
     }
 
     if (done_mask) {
@@ -372,7 +370,7 @@ static MemTxResult ot_pattgen_write_with_attrs(void *opaque, hwaddr addr,
         }
 
         if (s->gpio) {
-            ot_gpio_eg_notify_pattgen_change(s->gpio);
+            ot_gpio_eg_notify_pattgen_change(s->gpio, 0);
         }
 
         if (schedule_timer) {
