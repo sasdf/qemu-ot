@@ -43,7 +43,6 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
-#include "system/replay.h"
 #include "trace.h"
 
 #define PARAM_N_MIO_PERIPH_IN  57u
@@ -960,13 +959,6 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case CASE_RANGE(WKUP_DETECTOR, PARAM_N_WKUP_DETECT):
         if (OT_PINMUX_EG_IS_REGWEN(reg, wkup_detector, WKUP_DETECTOR)) {
             val32 &= R_WKUP_DETECTOR_EN_MASK;
-            if (val32 && bql_locked()) {
-                replay_mutex_unlock();
-                bql_unlock();
-                g_usleep(20000);
-                replay_mutex_lock();
-                bql_lock();
-            }
             regs->wkup_detector[reg - R_WKUP_DETECTOR] = val32;
             ot_pinmux_eg_eval_wkup_detectors(s);
         } else {

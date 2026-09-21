@@ -45,7 +45,6 @@
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
 #include "hw/sysbus.h"
-#include "system/replay.h"
 #include "system/runstate.h"
 #include "trace.h"
 
@@ -1213,13 +1212,6 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_WAKE_INFO:
-        if (!s->in_low_power && bql_locked()) {
-            replay_mutex_unlock();
-            bql_unlock();
-            g_usleep(5000);
-            replay_mutex_lock();
-            bql_lock();
-        }
         val32 &= WAKE_INFO_MASK(s);
         s->regs[reg] &= ~val32; /* RW1C */
         if (s->wake_info_recording &&
