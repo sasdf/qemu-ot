@@ -1619,11 +1619,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_S2D(1, PWRMGR, OT_PWRMGR_LC_HW_DEBUG_EN, 0),
             OT_EG_SOC_S2D(2, TAP_CTRL, TAP_CTRL_RBB_ENABLE, 0),
             OT_EG_SOC_S2D(3, RV_DM, PULP_RV_DM_LC_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(4, CLKMGR, OT_CLKMGR_LC_HW_DEBUG_EN, 0),
-            OT_EG_SOC_S2D(5, PINMUX, OT_PINMUX_LC_HW_DEBUG_EN, 0)
+            OT_EG_SOC_S2D(4, CLKMGR, OT_CLKMGR_LC_HW_DEBUG_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 6u)
+            IBEX_DEV_UINT_PROP("num-lines", 5u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_DFT] = {
@@ -1649,11 +1648,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_S2D(4, SRAM_MAIN_CTRL, OT_SRAM_CTRL_LC_ESCALATE_EN, 0),
             OT_EG_SOC_S2D(5, AES, OT_AES_LC_ESCALATE_EN, 0),
             OT_EG_SOC_S2D(6, KMAC, OT_KMAC_LC_ESCALATE_EN, 0),
-            OT_EG_SOC_S2D(7, OTBN, OT_OTBN_LC_ESCALATE_EN, 0),
-            OT_EG_SOC_S2D(8, PINMUX, OT_PINMUX_LC_ESCALATE_EN, 0)
+            OT_EG_SOC_S2D(7, OTBN, OT_OTBN_LC_ESCALATE_EN, 0)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("num-lines", 9u)
+            IBEX_DEV_UINT_PROP("num-lines", 8u)
         )
     },
     [OT_EG_SOC_SPLITTER_LC_SEED_HW_RD] = {

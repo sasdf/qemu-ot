@@ -213,9 +213,6 @@ struct OtPinmuxEgState {
     uint8_t mio_latched_sleep_mode[PARAM_N_MIO_PADS];
     uint8_t dio_latched_sleep_mode[PARAM_N_DIO_PADS];
     uint8_t wkup_prev_level[PARAM_N_WKUP_DETECT];
-    bool low_power_exit;
-    bool lc_hw_debug_en;
-    bool lc_escalate_en;
 
     OtPinmuxEgStateRegs *regs;
 };
@@ -392,7 +389,6 @@ static void ot_pinmux_eg_sleep_en(void *opaque, int irq, int level)
     (void)irq;
 
     if (level) {
-        s->low_power_exit = true;
         for (unsigned k = 0; k < PARAM_N_MIO_PADS; k++) {
             if (regs->mio_pad_sleep[k] & R_MIO_PAD_SLEEP_EN_MASK) {
                 regs->mio_pad_sleep_status[k / 32u] |= (1u << (k % 32u));
@@ -1087,7 +1083,6 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
     OtPinmuxEgStateRegs *regs = s->regs;
     bool is_por = (type == RESET_TYPE_COLD) || ot_rstmgr_is_por_reset();
     if (!is_por && ot_rstmgr_is_low_power_exit()) {
-        s->low_power_exit = false;
         ot_uart_update_pinmux(regs->mio_outsel, regs->mio_periph_insel);
         ot_pinmux_eg_update_sysrst_inputs(s);
         ot_pinmux_eg_update_gpio_inputs(s);
@@ -1097,7 +1092,6 @@ static void ot_pinmux_eg_reset_enter(Object *obj, ResetType type)
         ibex_irq_set(&s->alert, 0);
         return;
     }
-    s->low_power_exit = false;
 
     uint32_t wkup_cause = regs->wkup_cause;
     uint32_t mio_sleep_st[MIO_SLEEP_STATUS_COUNT];
@@ -1151,24 +1145,6 @@ static void ot_pinmux_eg_reset_exit(Object *obj, ResetType type)
     ot_pinmux_eg_update_pads(s);
 }
 
-static void ot_pinmux_eg_lc_hw_debug_en(void *opaque, int irq, int level)
-{
-    OtPinmuxEgState *s = opaque;
-
-    g_assert(irq == 0);
-
-    s->lc_hw_debug_en = (bool)level;
-}
-
-static void ot_pinmux_eg_lc_escalate_en(void *opaque, int irq, int level)
-{
-    OtPinmuxEgState *s = opaque;
-
-    g_assert(irq == 0);
-
-    s->lc_escalate_en = (bool)level;
-}
-
 static void ot_pinmux_eg_init(Object *obj)
 {
     OtPinmuxEgState *s = OT_PINMUX_EG(obj);
@@ -1200,10 +1176,6 @@ static void ot_pinmux_eg_init(Object *obj)
                             PARAM_N_MIO_PADS);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_sleep_en,
                             OT_PINMUX_SLEEP_EN, 1u);
-    qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_lc_hw_debug_en,
-                            OT_PINMUX_LC_HW_DEBUG_EN, 1u);
-    qdev_init_gpio_in_named(DEVICE(obj), &ot_pinmux_eg_lc_escalate_en,
-                            OT_PINMUX_LC_ESCALATE_EN, 1u);
     ot_pinmux_eg_instance = s;
 }
 
