@@ -440,11 +440,11 @@ void ot_common_ignore_chr_status_lines(CharFrontend *chr)
 #endif
 }
 
-G_NORETURN extern void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs,
-                                                         uint64_t phys_addr);
+G_NORETURN extern void
+riscv_cpu_stall_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr);
 
-G_NORETURN void ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev,
-                                                      hwaddr offset)
+G_NORETURN void
+ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     hwaddr base = sbd->mmio[0].addr;

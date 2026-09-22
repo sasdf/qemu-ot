@@ -31,8 +31,8 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitmap.h"
-#include "qemu/guest-random.h"
 #include "qemu/bswap.h"
+#include "qemu/guest-random.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
@@ -117,12 +117,12 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define MEM_OFF(_r_) ((_r_) - R_WHERETO)
 
-#define PULP_RV_DM_DMACT_BASE  (A_HALTED)
-#define PULP_RV_DM_DMACT_SIZE  (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
-#define PULP_RV_DM_PROG_BASE   (A_WHERETO)
-#define PULP_RV_DM_PROG_SIZE   0x100u
-#define PULP_RV_DM_DMFLAG_BASE (A_FLAGS)
-#define PULP_RV_DM_DMFLAG_SIZE (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
+#define PULP_RV_DM_DMACT_BASE         (A_HALTED)
+#define PULP_RV_DM_DMACT_SIZE         (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
+#define PULP_RV_DM_PROG_BASE          (A_WHERETO)
+#define PULP_RV_DM_PROG_SIZE          0x100u
+#define PULP_RV_DM_DMFLAG_BASE        (A_FLAGS)
+#define PULP_RV_DM_DMFLAG_SIZE        (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
 #define PULP_RV_DM_DMFLAG_REGION_SIZE 0x400u
 
 /*
@@ -343,8 +343,8 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             s->late_debug_enable = val32;
             pulp_rv_dm_update_debug_en(s);
         } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: LATE_DEBUG_ENABLE is locked\n", __func__);
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: LATE_DEBUG_ENABLE is locked\n",
+                          __func__);
         }
         break;
     default:
@@ -510,9 +510,9 @@ static MemTxResult pulp_rv_dm_prog_write_with_attrs(
     bool in_debug = (s->in_debug_bm != 0u);
 
     /*
-     * In dm_csrs.sv:627-647, data_q is held at '0 whenever !dmcontrol_q.dmactive.
-     * Thus CPU writes to DATA0/DATA1 only latch into data_q when the DM is active
-     * (e.g., during Debug Mode execution).
+     * In dm_csrs.sv:627-647, data_q is held at '0 whenever
+     * !dmcontrol_q.dmactive. Thus CPU writes to DATA0/DATA1 only latch into
+     * data_q when the DM is active (e.g., during Debug Mode execution).
      */
     if (is_dm || (is_data && in_debug)) {
         uint8_t *ram = memory_region_get_ram_ptr(&s->prog);
@@ -701,9 +701,9 @@ static void pulp_rv_dm_init(Object *obj)
                           TYPE_PULP_RV_DM ".act", PULP_RV_DM_DMACT_SIZE);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_DMACT_BASE, &s->dmact);
 
-    memory_region_init_rom_device_nomigrate(
-        &s->prog, obj, &pulp_rv_dm_prog_ops, s, TYPE_PULP_RV_DM ".prog",
-        PULP_RV_DM_PROG_SIZE, &error_fatal);
+    memory_region_init_rom_device_nomigrate(&s->prog, obj, &pulp_rv_dm_prog_ops,
+                                            s, TYPE_PULP_RV_DM ".prog",
+                                            PULP_RV_DM_PROG_SIZE, &error_fatal);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_PROG_BASE, &s->prog);
 
     memory_region_init_io(&s->unmapped_prog0, obj, &pulp_rv_dm_prog_ops, NULL,
@@ -720,9 +720,9 @@ static void pulp_rv_dm_init(Object *obj)
     memory_region_add_subregion(&s->mem, PULP_RV_DM_DMFLAG_BASE, &s->dmflag);
     s->dmflag.disable_reentrancy_guard = true;
 
-    memory_region_init_rom_device_nomigrate(
-        &s->rom, obj, &pulp_rv_dm_prog_ops, NULL, TYPE_PULP_RV_DM ".rom",
-        PULP_RV_DM_ROM_SIZE, &error_abort);
+    memory_region_init_rom_device_nomigrate(&s->rom, obj, &pulp_rv_dm_prog_ops,
+                                            NULL, TYPE_PULP_RV_DM ".rom",
+                                            PULP_RV_DM_ROM_SIZE, &error_abort);
     memory_region_add_subregion(&s->mem, PULP_RV_DM_ROM_BASE, &s->rom);
 
     s->ack_out = g_new0(qemu_irq, ACK_COUNT);

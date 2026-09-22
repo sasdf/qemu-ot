@@ -129,11 +129,11 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #define CHN_VAL_INTR_VALUE_SHIFT 18u
 #define CHN_VAL_MASK             0x3ffu
 
-#define FILTER_STATUS_TRANS_BIT  8u
-#define ADC_INTR_ONESHOT_BIT     9u
-#define WAKEUP_CTL_MASK          0x1ffu
-#define FILTER_STATUS_MASK       0x1ffu
-#define ADC_INTR_MASK            0x3ffu
+#define FILTER_STATUS_TRANS_BIT 8u
+#define ADC_INTR_ONESHOT_BIT    9u
+#define WAKEUP_CTL_MASK         0x1ffu
+#define FILTER_STATUS_MASK      0x1ffu
+#define ADC_INTR_MASK           0x3ffu
 
 struct OtAdcCtrlState {
     SysBusDevice parent_obj;
@@ -168,8 +168,8 @@ static void ot_adc_ctrl_update_irqs(OtAdcCtrlState *s)
      * wkup_req_o = |(filter_status.match & adc_wakeup_ctl.match_en) ||
      *              (filter_status.trans & adc_wakeup_ctl.trans_en)
      */
-    bool wkup_level =
-        (s->regs[R_FILTER_STATUS] & s->regs[R_ADC_WAKEUP_CTL] & WAKEUP_CTL_MASK) != 0u;
+    bool wkup_level = (s->regs[R_FILTER_STATUS] & s->regs[R_ADC_WAKEUP_CTL] &
+                       WAKEUP_CTL_MASK) != 0u;
     ibex_irq_set(&s->wkup, wkup_level);
 }
 
@@ -200,8 +200,10 @@ static void ot_adc_ctrl_update_chn_val(OtAdcCtrlState *s, uint32_t chn0_val,
     chn0_val &= CHN_VAL_MASK;
     chn1_val &= CHN_VAL_MASK;
 
-    uint32_t intr0 = s->regs[R_ADC_CHN_VAL_0] & (CHN_VAL_MASK << CHN_VAL_INTR_VALUE_SHIFT);
-    uint32_t intr1 = s->regs[R_ADC_CHN_VAL_1] & (CHN_VAL_MASK << CHN_VAL_INTR_VALUE_SHIFT);
+    uint32_t intr0 =
+        s->regs[R_ADC_CHN_VAL_0] & (CHN_VAL_MASK << CHN_VAL_INTR_VALUE_SHIFT);
+    uint32_t intr1 =
+        s->regs[R_ADC_CHN_VAL_1] & (CHN_VAL_MASK << CHN_VAL_INTR_VALUE_SHIFT);
     if (intr_we) {
         intr0 = chn0_val << CHN_VAL_INTR_VALUE_SHIFT;
         intr1 = chn1_val << CHN_VAL_INTR_VALUE_SHIFT;
@@ -305,9 +307,12 @@ static bool ot_adc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     hwaddr reg = R32_OFF(addr);
     uint8_t permit =
         (reg == R_ADC_PD_CTL ||
-         (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1)) ? 0xfu :
+         (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1)) ?
+            0xfu :
         (reg == R_ADC_SAMPLE_CTL ||
-         (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS)) ? 0x3u : 0x1u;
+         (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS)) ?
+            0x3u :
+            0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     return !is_write || (permit & ~reg_be) == 0u;
 }
@@ -448,8 +453,9 @@ static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
 
     if (type != RESET_TYPE_COLD && ot_rstmgr_is_low_power_exit()) {
         /*
-         * ADC_CTRL_AON resides in DomainAonSel. Low-power wakeup from deep sleep
-         * only resets Domain0Sel, preserving AON registers and pending status.
+         * ADC_CTRL_AON resides in DomainAonSel. Low-power wakeup from deep
+         * sleep only resets Domain0Sel, preserving AON registers and pending
+         * status.
          */
         return;
     }

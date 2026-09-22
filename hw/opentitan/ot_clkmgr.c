@@ -302,13 +302,12 @@ static void ot_clkmgr_update_alerts(OtClkMgrState *s)
 
 static OtClkMgrClock *ot_clkmgr_find_clock(GList *clock_list, const char *name);
 
-static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
-                                          const OtClkMgrClock *clk)
+static uint32_t
+ot_clkmgr_get_clock_count(OtClkMgrState *s, const OtClkMgrClock *clk)
 {
     const OtClkMgrClock *target_clk = clk;
-    if (s->lc_hw_debug_en &&
-        FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL) ==
-            OT_MULTIBITBOOL4_TRUE) {
+    if (s->lc_hw_debug_en && FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
+                                        SEL) == OT_MULTIBITBOOL4_TRUE) {
         bool hi_speed = (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
                                     HI_SPEED_SEL) == OT_MULTIBITBOOL4_TRUE);
         if (!hi_speed) {
@@ -321,8 +320,7 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
             }
         } else {
             if (!strcmp(clk->name, "main")) {
-                const OtClkMgrClock *io =
-                    ot_clkmgr_find_clock(s->clocks, "io");
+                const OtClkMgrClock *io = ot_clkmgr_find_clock(s->clocks, "io");
                 if (io) {
                     target_clk = io;
                 }
@@ -332,8 +330,8 @@ static uint32_t ot_clkmgr_get_clock_count(OtClkMgrState *s,
 
     const OtClkMgrClock *ref = ot_clkmgr_find_clock(s->clocks, s->cfg_refclock);
     uint32_t ratio = (ref && ref->frequency && target_clk->frequency) ?
-                     (target_clk->frequency / ref->frequency) :
-                     target_clk->ratio;
+                         (target_clk->frequency / ref->frequency) :
+                         target_clk->ratio;
     return ratio > 0 ? (ratio - 1u) : 0u;
 }
 
@@ -963,7 +961,8 @@ static gint ot_clkmgr_compare_swcg_by_name(gconstpointer a, gconstpointer b)
 {
     const OtClkMgrSwCgClock *sa = a;
     const OtClkMgrSwCgClock *sb = b;
-    int diff = (int)sb->output->clock->divider - (int)sa->output->clock->divider;
+    int diff =
+        (int)sb->output->clock->divider - (int)sa->output->clock->divider;
 
     return diff ? diff : strcmp(sa->name, sb->name);
 }

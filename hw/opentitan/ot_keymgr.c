@@ -1090,10 +1090,9 @@ static size_t ot_keymgr_kdf_append_dev_id(OtKeyMgrState *s)
     return OT_OTP_HWCFG_DEVICE_ID_BYTES;
 }
 
-static void ot_keymgr_check_flash_seed(OtKeyMgrState *s,
-                                       OtFlashKeyMgrSecretType type,
-                                       const char *seed_name,
-                                       uint32_t debug_mask)
+static void
+ot_keymgr_check_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
+                           const char *seed_name, uint32_t debug_mask)
 {
     OtFlashKeyMgrSecret seed = { 0u };
 
@@ -1128,9 +1127,8 @@ static void ot_keymgr_check_flash_seed(OtKeyMgrState *s,
     }
 }
 
-static size_t
-ot_keymgr_kdf_append_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
-                                const char *seed_name)
+static size_t ot_keymgr_kdf_append_flash_seed(
+    OtKeyMgrState *s, OtFlashKeyMgrSecretType type, const char *seed_name)
 {
     OtFlashKeyMgrSecret seed = { 0u };
 
@@ -1500,7 +1498,8 @@ static void ot_keymgr_start_operation(OtKeyMgrState *s)
         break;
     case KEYMGR_OP_DISABLE:
     default:
-        /* All values not enumerated behave the same as disable (keymgr_ctrl.sv:154) */
+        /* All values not enumerated behave the same as disable
+         * (keymgr_ctrl.sv:154) */
         ot_keymgr_operation_disable(s);
         break;
     }
@@ -1554,7 +1553,8 @@ ot_keymgr_handle_kmac_resp_advance(OtKeyMgrState *s, const OtKMACAppRsp *rsp)
         return true;
     }
 
-    /* SW can lock the `SW_BINDING` regs, and HW unlocks after a valid advance */
+    /* SW can lock the `SW_BINDING` regs, and HW unlocks after a valid advance
+     */
     s->regs[R_SW_BINDING_REGWEN] |= R_SW_BINDING_REGWEN_EN_MASK;
 
     switch (s->op_state.stage) {
@@ -1585,10 +1585,11 @@ static bool ot_keymgr_handle_kmac_resp_gen_output_hw(OtKeyMgrState *s,
 
     /*
      * In RTL (keymgr_ctrl.sv:259, keymgr_sideload_key_ctrl.sv:153,168,182),
-     * data_valid_o = op_done_o & (id_en_o | gen_en_o) & ~op_err & ~op_fault_err.
-     * When valid_inputs is false (op_err), set_i is 0 so existing sideload
-     * keys are not overwritten or invalidated. When SIDELOAD_CLEAR is active
-     * for the target slot, clr_i has priority over set_i and keeps it cleared.
+     * data_valid_o = op_done_o & (id_en_o | gen_en_o) & ~op_err &
+     * ~op_fault_err. When valid_inputs is false (op_err), set_i is 0 so
+     * existing sideload keys are not overwritten or invalidated. When
+     * SIDELOAD_CLEAR is active for the target slot, clr_i has priority over
+     * set_i and keeps it cleared.
      */
     if (!s->op_state.valid_inputs) {
         return true;
@@ -1763,7 +1764,8 @@ static void ot_keymgr_fsm_key_stage(OtKeyMgrState *s, bool supports_generation,
         break;
     case KEYMGR_OP_DISABLE:
     default:
-        /* All values not enumerated behave the same as disable (keymgr_ctrl.sv:154) */
+        /* All values not enumerated behave the same as disable
+         * (keymgr_ctrl.sv:154) */
         s->op_state.stage = KEYMGR_STAGE_DISABLE;
         break;
     }
@@ -1976,23 +1978,23 @@ static bool ot_keymgr_is_cfg_regwen_enabled(const OtKeyMgrState *s)
     return s->enabled && (bool)(s->regs[R_CFG_REGWEN] & R_CFG_REGWEN_EN_MASK);
 }
 
-static bool
-ot_keymgr_check_reg_write(const OtKeyMgrState *s, hwaddr reg, hwaddr regwen)
+static bool ot_keymgr_check_reg_write(const OtKeyMgrState *s, hwaddr reg,
+                                      hwaddr regwen)
 {
     bool en;
     if (regwen == R_CFG_REGWEN) {
         en = ot_keymgr_is_cfg_regwen_enabled(s);
     } else if (regwen == R_SW_BINDING_REGWEN) {
-        /* In RTL (keymgr.sv:370), sw_binding_regwen.d = sw_binding_regwen & cfg_regwen */
+        /* In RTL (keymgr.sv:370), sw_binding_regwen.d = sw_binding_regwen &
+         * cfg_regwen */
         en = ot_keymgr_is_cfg_regwen_enabled(s) &&
              (bool)(s->regs[R_SW_BINDING_REGWEN] & R_SW_BINDING_REGWEN_EN_MASK);
     } else {
         en = (bool)(s->regs[regwen] & 1u);
     }
     if (!en) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: write to %s blocked by %s=0\n", __func__,
-                      s->ot_id, REG_NAME(reg), REG_NAME(regwen));
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: write to %s blocked by %s=0\n",
+                      __func__, s->ot_id, REG_NAME(reg), REG_NAME(regwen));
     }
     return en;
 }
@@ -2025,7 +2027,8 @@ static uint64_t ot_keymgr_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->regs[reg];
         break;
     case R_SW_BINDING_REGWEN:
-        /* In RTL (keymgr.sv:370), sw_binding_regwen.d = sw_binding_regwen & cfg_regwen */
+        /* In RTL (keymgr.sv:370), sw_binding_regwen.d = sw_binding_regwen &
+         * cfg_regwen */
         val32 = ot_keymgr_is_cfg_regwen_enabled(s) ?
                     s->regs[R_SW_BINDING_REGWEN] :
                     0u;

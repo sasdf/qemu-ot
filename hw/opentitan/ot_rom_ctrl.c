@@ -437,7 +437,8 @@ static void ot_rom_ctrl_unscramble(OtRomCtrlState *s, const uint64_t *src,
         g_assert(phy_addr < dword_count);
         uint64_t scrdata = src[phy_addr];
         s->regs[R_EXP_DIGEST_0 + wix] = (uint32_t)scrdata;
-        dst[log_addr] = (uint32_t)ot_rom_ctrl_unscramble_word(s, log_addr, scrdata);
+        dst[log_addr] =
+            (uint32_t)ot_rom_ctrl_unscramble_word(s, log_addr, scrdata);
         /* note: ECC is not used for DIGEST words */
     }
 }
@@ -468,12 +469,13 @@ static void ot_rom_ctrl_compare_and_notify(OtRomCtrlState *s)
     for (unsigned ix = 0u; ix < ROM_DIGEST_WORDS; ix++) {
         if (s->regs[R_EXP_DIGEST_0 + ix] != s->regs[R_DIGEST_0 + ix]) {
             rom_good = false;
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "ot_rom_ctrl: %s: Digest mismatch (expected 0x%08x got "
-                          "0x%08x) @ %u, errors: %u single-bit, %u double-bit\n",
-                          s->ot_id, s->regs[R_EXP_DIGEST_0 + ix],
-                          s->regs[R_DIGEST_0 + ix], ix, s->recovered_error_count,
-                          s->unrecoverable_error_count);
+            qemu_log_mask(
+                LOG_GUEST_ERROR,
+                "ot_rom_ctrl: %s: Digest mismatch (expected 0x%08x got "
+                "0x%08x) @ %u, errors: %u single-bit, %u double-bit\n",
+                s->ot_id, s->regs[R_EXP_DIGEST_0 + ix],
+                s->regs[R_DIGEST_0 + ix], ix, s->recovered_error_count,
+                s->unrecoverable_error_count);
         }
     }
 
@@ -1149,12 +1151,13 @@ static const Property ot_rom_ctrl_properties[] = {
     DEFINE_PROP_STRING("key", OtRomCtrlState, key_xstr),
 };
 
-static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,
-                                            unsigned size)
+static uint64_t
+ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtRomCtrlState *s = opaque;
     hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
-    const uint8_t *rom_ptr = (const uint8_t *)memory_region_get_ram_ptr(&s->mem);
+    const uint8_t *rom_ptr =
+        (const uint8_t *)memory_region_get_ram_ptr(&s->mem);
     if (!s->first_reset) {
         SysBusDevice *sbd = SYS_BUS_DEVICE(s);
         hwaddr mem_off = (sbd->mmio[1].addr - sbd->mmio[0].addr) + rom_offset;
@@ -1163,9 +1166,8 @@ static uint64_t ot_rom_ctrl_digest_mem_read(void *opaque, hwaddr addr,
     return (uint64_t)ldn_le_p(&rom_ptr[rom_offset], (int)size);
 }
 
-static bool ot_rom_ctrl_digest_mem_accepts(void *opaque, hwaddr addr,
-                                           unsigned size, bool is_write,
-                                           MemTxAttrs attrs)
+static bool ot_rom_ctrl_digest_mem_accepts(
+    void *opaque, hwaddr addr, unsigned size, bool is_write, MemTxAttrs attrs)
 {
     OtRomCtrlState *s = opaque;
     hwaddr rom_offset = (hwaddr)(s->size - OT_ROM_DIGEST_BYTES) + addr;
@@ -1278,8 +1280,8 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->digest_io, OBJECT(dev),
                           &ot_rom_ctrl_digest_mem_ops, s,
                           TYPE_OT_ROM_CTRL ".digest_io", OT_ROM_DIGEST_BYTES);
-    memory_region_add_subregion_overlap(
-        &s->mem, s->size - OT_ROM_DIGEST_BYTES, &s->digest_io, 1);
+    memory_region_add_subregion_overlap(&s->mem, s->size - OT_ROM_DIGEST_BYTES,
+                                        &s->digest_io, 1);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mem);
 
     /*

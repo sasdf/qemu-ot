@@ -334,14 +334,16 @@ static void ot_rstmgr_reset_bus(void *opaque)
 {
     OtRstMgrState *s = opaque;
 
+    g_assert(s->cpu);
+
     if (!s->cpu->stopped) {
         /* request the vCPU to stop */
         s->cpu->stop = true;
 
         /*
-         * Drop replay_mutex so the vCPU thread can acquire it in rr_cpu_thread_fn
-         * and reach rr_wait_io_event() to set cpu->stopped = true.
-         * Lock ordering: replay_mutex must always be acquired before bql.
+         * Drop replay_mutex so the vCPU thread can acquire it in
+         * rr_cpu_thread_fn and reach rr_wait_io_event() to set cpu->stopped =
+         * true. Lock ordering: replay_mutex must always be acquired before bql.
          */
         replay_mutex_unlock();
         bql_unlock();
@@ -357,7 +359,7 @@ static void ot_rstmgr_reset_bus(void *opaque)
         s->cpu->stop = false;
     }
 
-    if (s->cpu && (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK)) {
+    if (s->regs[R_CPU_INFO_CTRL] & R_CPU_INFO_CTRL_EN_MASK) {
         riscv_cpu_get_crash_dump(s->cpu, s->cpu_info_dump);
     }
 
@@ -583,22 +585,21 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         if (val32 == OT_MULTIBITBOOL4_TRUE) {
             /*
-              * "Upon completion of reset, this bit is automatically cleared by
-              * hardware."
-              * Schedule software reset request with a short delay (1 us) to model
-              * pwrmgr synchronization latency, allowing software to execute
-              * trailing instructions (e.g. wfi) before reset assertion.
-              * Do not re-arm if already pending, as tight shutdown loops (e.g.
-              * ROM shutdown_hang) repeatedly write R_RESET_REQ in < 1 us and
-              * would otherwise postpone the reset timer indefinitely.
-              */
+             * "Upon completion of reset, this bit is automatically cleared by
+             * hardware."
+             * Schedule software reset request with a short delay (1 us) to
+             * model pwrmgr synchronization latency, allowing software to
+             * execute trailing instructions (e.g. wfi) before reset assertion.
+             * Do not re-arm if already pending, as tight shutdown loops (e.g.
+             * ROM shutdown_hang) repeatedly write R_RESET_REQ in < 1 us and
+             * would otherwise postpone the reset timer indefinitely.
+             */
             if (!timer_pending(s->sw_reset_timer)) {
                 timer_mod(s->sw_reset_timer,
                           qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
             }
-            OtPwrMgrState *pwrmgr =
-                (OtPwrMgrState *)object_resolve_path_type(
-                    "", TYPE_OT_PWRMGR, NULL);
+            OtPwrMgrState *pwrmgr = (OtPwrMgrState *)
+                object_resolve_path_type("", TYPE_OT_PWRMGR, NULL);
             if (pwrmgr) {
                 ot_pwrmgr_cancel_check(pwrmgr);
             }
@@ -642,9 +643,8 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             s->regs[reg] = val32;
             if ((val32 & R_CPU_INFO_CTRL_EN_MASK) && s->cpu &&
                 !s->cpu->halted) {
-                OtPwrMgrState *pwrmgr =
-                    (OtPwrMgrState *)object_resolve_path_type(
-                        "", TYPE_OT_PWRMGR, NULL);
+                OtPwrMgrState *pwrmgr = (OtPwrMgrState *)
+                    object_resolve_path_type("", TYPE_OT_PWRMGR, NULL);
                 if (pwrmgr) {
                     ot_pwrmgr_trigger_check(pwrmgr);
                 }
@@ -758,8 +758,8 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
     if (s->por || ot_rstmgr_is_por_reset()) {
         memset(s->cpu_info_dump, 0, sizeof(s->cpu_info_dump));
         memset(s->alert_info_dump, 0, sizeof(s->alert_info_dump));
-        s->regs[R_RESET_INFO] =
-            R_RESET_INFO_POR_MASK | (reset_info & R_RESET_INFO_LOW_POWER_EXIT_MASK);
+        s->regs[R_RESET_INFO] = R_RESET_INFO_POR_MASK |
+                                (reset_info & R_RESET_INFO_LOW_POWER_EXIT_MASK);
         s->por = false;
         ot_rstmgr_last_reset_low_power = false;
         ot_rstmgr_last_reset_ndm = false;
@@ -853,8 +853,8 @@ static void ot_rstmgr_init(Object *obj)
                             OT_RSTMGR_RST_REQ, 1);
 
     s->bus_reset_bh = qemu_bh_new(&ot_rstmgr_reset_bus, s);
-    s->sw_reset_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
-                                     &ot_rstmgr_sw_reset_timer_cb, s);
+    s->sw_reset_timer =
+        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_rstmgr_sw_reset_timer_cb, s);
 }
 
 static void ot_rstmgr_class_init(ObjectClass *klass, const void *data)

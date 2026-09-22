@@ -208,7 +208,8 @@ typedef struct {
     ot_ibex_wrapper_reg_read_fn read;
     ot_ibex_wrapper_reg_write_fn write;
     uint32_t mask; /* the mask to apply to the written value */
-    uint8_t permit; /* RV_CORE_IBEX_CFG_PERMIT byte-enable mask (0 = unmapped) */
+    uint8_t
+        permit; /* RV_CORE_IBEX_CFG_PERMIT byte-enable mask (0 = unmapped) */
 } OtIbexWrapperAccess;
 
 struct OtIbexWrapperState {
@@ -300,9 +301,9 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
     if (s->regs.sw_recov_err != OT_MULTIBITBOOL4_FALSE) {
         level |= ALERT_RECOV_SW_MASK;
     }
-    if (s->regs.err_status & (ERR_STATUS_REG_INTG_MASK |
-                              ERR_STATUS_FATAL_INTG_MASK |
-                              ERR_STATUS_FATAL_CORE_MASK)) {
+    if (s->regs.err_status &
+        (ERR_STATUS_REG_INTG_MASK | ERR_STATUS_FATAL_INTG_MASK |
+         ERR_STATUS_FATAL_CORE_MASK)) {
         level |= ALERT_FATAL_HW_MASK;
     }
 
@@ -1008,8 +1009,8 @@ static bool ot_ibex_wrapper_rnd_is_fetching(OtIbexWrapperState *s)
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
         ot_ibex_wrapper_request_entropy(s);
         if (bql_locked()) {
-            for (int i = 0;
-                 i < 4 && !(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK);
+            for (int i = 0; i < 4 && !(s->regs.rnd_status &
+                                       RND_STATUS_RND_DATA_VALID_MASK);
                  i++) {
                 qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
                 aio_bh_poll(qemu_get_aio_context());
@@ -1272,9 +1273,8 @@ static void ot_ibex_wrapper_write_dv_sim_log(OtIbexWrapperState *s,
     }
 }
 
-static bool ot_ibex_wrapper_regs_accepts(void *opaque, hwaddr addr,
-                                         unsigned size, bool is_write,
-                                         MemTxAttrs attrs)
+static bool ot_ibex_wrapper_regs_accepts(
+    void *opaque, hwaddr addr, unsigned size, bool is_write, MemTxAttrs attrs)
 {
     OtIbexWrapperState *s = opaque;
     (void)attrs;

@@ -619,7 +619,8 @@ struct OtUsbdevState {
     bool vbus_gate;
     /* PINMUX MioInUsbdevSense (56): 0=ConstantZero, 1=ConstantOne, -1=pad */
     int pinmux_vbus_sense;
-    /* AON wake latched pullup and event states (u_usbdev_aon_wake / u_wake_events_cdc) */
+    /* AON wake latched pullup and event states (u_usbdev_aon_wake /
+     * u_wake_events_cdc) */
     bool aon_dppullup_en;
     bool aon_dnpullup_en;
     uint32_t aon_wake_events;
@@ -844,21 +845,22 @@ static uint32_t ot_usbdev_read_phy_pins_sense(const OtUsbdevState *s)
         (bool)(s->regs[R_PHY_PINS_DRIVE] & R_PHY_PINS_DRIVE_EN_MASK);
     bool link_suspend = (FIELD_EX32(s->regs[R_USBSTAT], USBSTAT, LINK_STATE) ==
                          OT_USBDEV_LINK_STATE_SUSPENDED);
-    bool usb_rx_enable = drive_en ?
-        (bool)FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE,
-                         RX_ENABLE_O) :
-        (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, USE_DIFF_RCVR) &&
-         !link_suspend);
+    bool usb_rx_enable =
+        drive_en ?
+            (bool)FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE,
+                             RX_ENABLE_O) :
+            (FIELD_EX32(s->regs[R_PHY_CONFIG], PHY_CONFIG, USE_DIFF_RCVR) &&
+             !link_suspend);
 
-    uint32_t usb_tx_dp_o = drive_en ?
-        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DP_O) :
-        tx_dp_i;
-    uint32_t usb_tx_dn_o = drive_en ?
-        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O) :
-        tx_dn_i;
-    uint32_t usb_tx_oe_o = drive_en ?
-        FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, OE_O) :
-        tx_oe_i;
+    uint32_t usb_tx_dp_o =
+        drive_en ? FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DP_O) :
+                   tx_dp_i;
+    uint32_t usb_tx_dn_o =
+        drive_en ? FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, DN_O) :
+                   tx_dn_i;
+    uint32_t usb_tx_oe_o =
+        drive_en ? FIELD_EX32(s->regs[R_PHY_PINS_DRIVE], PHY_PINS_DRIVE, OE_O) :
+                   tx_oe_i;
 
     uint32_t rx_dp;
     uint32_t rx_dn;
@@ -897,8 +899,8 @@ static void ot_usbdev_update_aon_wake(OtUsbdevState *s)
     bool usb_dn_i = (bool)FIELD_EX32(pins_sense, PHY_PINS_SENSE, RX_DN_I);
     bool usb_sense_i = (bool)FIELD_EX32(pins_sense, PHY_PINS_SENSE, PWR_SENSE);
 
-    bool not_idle = (usb_dp_i != s->aon_dppullup_en) ||
-                    (usb_dn_i != s->aon_dnpullup_en);
+    bool not_idle =
+        (usb_dp_i != s->aon_dppullup_en) || (usb_dn_i != s->aon_dnpullup_en);
     bool se0 = !usb_dp_i && !usb_dn_i;
     bool sense_lost = !usb_sense_i;
 
@@ -1388,10 +1390,10 @@ static void ot_usbdev_simulate_link_suspend(OtUsbdevState *s)
     g_assert(!resettable_is_in_reset(OBJECT(s)));
     OtUsbdevLinkState link_state = ot_usbdev_get_link_state(s);
     if (link_state != OT_USBDEV_LINK_STATE_DISCONNECTED) {
-        ot_usbdev_set_raw_link_state(s,
-                                     link_state == OT_USBDEV_LINK_STATE_POWERED
-                                         ? OT_USBDEV_LINK_STATE_POWERED_SUSP
-                                         : OT_USBDEV_LINK_STATE_SUSPENDED);
+        ot_usbdev_set_raw_link_state(s, link_state ==
+                                                OT_USBDEV_LINK_STATE_POWERED ?
+                                            OT_USBDEV_LINK_STATE_POWERED_SUSP :
+                                            OT_USBDEV_LINK_STATE_SUSPENDED);
     }
     timer_del(&s->frame_timer);
     s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_SUSPEND_MASK;
@@ -1411,10 +1413,11 @@ static void ot_usbdev_simulate_link_resume(OtUsbdevState *s)
     if (link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP ||
         link_state == OT_USBDEV_LINK_STATE_SUSPENDED ||
         link_state == OT_USBDEV_LINK_STATE_RESUMING) {
-        ot_usbdev_set_raw_link_state(
-            s, link_state == OT_USBDEV_LINK_STATE_POWERED_SUSP
-                   ? OT_USBDEV_LINK_STATE_POWERED
-                   : OT_USBDEV_LINK_STATE_ACTIVE);
+        ot_usbdev_set_raw_link_state(s,
+                                     link_state ==
+                                             OT_USBDEV_LINK_STATE_POWERED_SUSP ?
+                                         OT_USBDEV_LINK_STATE_POWERED :
+                                         OT_USBDEV_LINK_STATE_ACTIVE);
         s->regs[R_USBDEV_INTR_STATE] |= USBDEV_INTR_LINK_RESUME_MASK;
         int64_t now = qemu_clock_get_us(OT_VIRTUAL_CLOCK);
         timer_mod(&s->frame_timer, now + OT_USBDEV_FRAME_TIME_US);
@@ -1924,8 +1927,8 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
 
     if (s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK) {
         if (enable && ot_usbdev_has_vbus(s) &&
-            !(s->regs[R_WAKE_EVENTS] &
-              (R_WAKE_EVENTS_BUS_RESET_MASK | R_WAKE_EVENTS_DISCONNECTED_MASK)) &&
+            !(s->regs[R_WAKE_EVENTS] & (R_WAKE_EVENTS_BUS_RESET_MASK |
+                                        R_WAKE_EVENTS_DISCONNECTED_MASK)) &&
             ot_usbdev_get_link_state(s) == OT_USBDEV_LINK_STATE_DISCONNECTED) {
             ot_usbdev_set_raw_link_state(s, OT_USBDEV_LINK_STATE_POWERED);
         }
@@ -2428,10 +2431,11 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_COUNT_NODATA_IN:
     case R_COUNT_ERRORS:
     default: {
-        uint32_t rw_mask = (reg == R_COUNT_OUT)       ? 0x0ffff000u :
-                           (reg == R_COUNT_IN)        ? 0x0fffe000u :
-                           (reg == R_COUNT_NODATA_IN) ? 0x0fff0000u :
-                                                        0x78000000u;
+        uint32_t rw_mask =
+            (reg == R_COUNT_OUT)       ? 0x0ffff000u :
+            (reg == R_COUNT_IN)        ? 0x0fffe000u :
+            (reg == R_COUNT_NODATA_IN) ? 0x0fff0000u :
+                                         0x78000000u;
         uint32_t count = (val32 & (1u << 31)) ? 0u : (s->regs[reg] & 0xffu);
         s->regs[reg] = (val32 & rw_mask) | count;
         break;
@@ -3211,8 +3215,8 @@ static void ot_usbdev_reset_enter(Object *obj, ResetType type)
     bool is_sw_usb_rst =
         (type == RESET_TYPE_WAKEUP) && !ot_rstmgr_is_internal_reset();
     bool is_por = !is_sw_usb_rst && ot_rstmgr_is_por_reset();
-    bool keep_aon = !is_por &&
-                    (s->aon_wake_events & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
+    bool keep_aon =
+        !is_por && (s->aon_wake_events & R_WAKE_EVENTS_MODULE_ACTIVE_MASK);
     uint32_t saved_wake_events = s->aon_wake_events;
     uint32_t saved_cdc_dst_qs = s->aon_cdc_dst_qs;
     bool saved_dppullup = s->aon_dppullup_en;

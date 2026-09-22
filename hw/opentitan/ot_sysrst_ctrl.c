@@ -101,10 +101,14 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     uint32_t raw = s->pin_in_raw;
     uint32_t inv = s->regs[R_KEY_INVERT_CTL];
 
-    uint32_t pwrb_int = ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) ^ ((inv >> 6u) & 1u);
-    uint32_t key0_int = ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) ^ ((inv >> 0u) & 1u);
-    uint32_t key1_int = ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) ^ ((inv >> 2u) & 1u);
-    uint32_t key2_int = ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) ^ ((inv >> 4u) & 1u);
+    uint32_t pwrb_int =
+        ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) ^ ((inv >> 6u) & 1u);
+    uint32_t key0_int =
+        ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) ^ ((inv >> 0u) & 1u);
+    uint32_t key1_int =
+        ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) ^ ((inv >> 2u) & 1u);
+    uint32_t key2_int =
+        ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) ^ ((inv >> 4u) & 1u);
 
     bool ab_en = (s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] >> 16u) & 1u;
     bool ab_cond = ab_en && (pwrb_int == 0u);
@@ -114,9 +118,12 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     hw_in[0] = s->bat_disable_hw ? 1u : 0u;
     hw_in[1] = s->ec_rst_l_hw ? 1u : 0u;
     hw_in[2] = pwrb_int;
-    hw_in[3] = (ab_cond && ((ab_ctl >> 0u) & 1u)) ? ((ab_ctl >> 4u) & 1u) : key0_int;
-    hw_in[4] = (ab_cond && ((ab_ctl >> 1u) & 1u)) ? ((ab_ctl >> 5u) & 1u) : key1_int;
-    hw_in[5] = (ab_cond && ((ab_ctl >> 2u) & 1u)) ? ((ab_ctl >> 6u) & 1u) : key2_int;
+    hw_in[3] =
+        (ab_cond && ((ab_ctl >> 0u) & 1u)) ? ((ab_ctl >> 4u) & 1u) : key0_int;
+    hw_in[4] =
+        (ab_cond && ((ab_ctl >> 1u) & 1u)) ? ((ab_ctl >> 5u) & 1u) : key1_int;
+    hw_in[5] =
+        (ab_cond && ((ab_ctl >> 2u) & 1u)) ? ((ab_ctl >> 6u) & 1u) : key2_int;
     hw_in[6] = s->z3_wakeup_hw ? 1u : 0u;
     hw_in[7] = 0u; /* flash_wp_l has no passthrough input */
 
@@ -131,16 +138,17 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
         bool allow0 = (allow_ctl >> b) & 1u;
         bool allow1 = (allow_ctl >> (b + 8u)) & 1u;
         uint32_t bit_out = (en && allow0 && !val) ? 0u :
-                           (en && allow1 && val) ? 1u : hw_in[b];
+                           (en && allow1 && val)  ? 1u :
+                                                    hw_in[b];
         out |= (bit_out << b);
     }
 
     /* Apply output inversion per sysrst_ctrl.sv lines 303-311 */
-    out ^= ((inv >> 9u) & 1u) << 0u;  /* bat_disable */
-    out ^= ((inv >> 7u) & 1u) << 2u;  /* pwrb_out */
-    out ^= ((inv >> 1u) & 1u) << 3u;  /* key0_out */
-    out ^= ((inv >> 3u) & 1u) << 4u;  /* key1_out */
-    out ^= ((inv >> 5u) & 1u) << 5u;  /* key2_out */
+    out ^= ((inv >> 9u) & 1u) << 0u; /* bat_disable */
+    out ^= ((inv >> 7u) & 1u) << 2u; /* pwrb_out */
+    out ^= ((inv >> 1u) & 1u) << 3u; /* key0_out */
+    out ^= ((inv >> 3u) & 1u) << 4u; /* key1_out */
+    out ^= ((inv >> 5u) & 1u) << 5u; /* key2_out */
     out ^= ((inv >> 11u) & 1u) << 6u; /* z3_wakeup */
 
     return out;
@@ -187,10 +195,9 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     val |= ((raw >> OT_SYSRST_CTRL_IN_LID_OPEN) & 1u) << 4u;
     val |= ((raw >> OT_SYSRST_CTRL_IN_AC_PRESENT) & 1u) << 5u;
 
-    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & 1u) &
-                       ((out >> 1u) & 1u);
-    uint32_t wp_wire = ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & 1u) &
-                       ((out >> 7u) & 1u);
+    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & (out >> 1u)) & 1u;
+    uint32_t wp_wire =
+        ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & (out >> 7u)) & 1u;
 
     uint32_t ec_attr = ot_pinmux_eg_get_dio_pad_attr(10u);
     uint32_t wp_attr = ot_pinmux_eg_get_dio_pad_attr(11u);
@@ -208,8 +215,7 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     return val;
 }
 
-static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val,
-                                        uint32_t inv,
+static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val, uint32_t inv,
                                         uint32_t *combo_in,
                                         uint32_t *key_intr_in)
 {
@@ -217,18 +223,18 @@ static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val,
     uint32_t key0 = ((pin_in_val >> 1u) & 1u) ^ ((inv >> 0u) & 1u);
     uint32_t key1 = ((pin_in_val >> 2u) & 1u) ^ ((inv >> 2u) & 1u);
     uint32_t key2 = ((pin_in_val >> 3u) & 1u) ^ ((inv >> 4u) & 1u);
-    uint32_t ac   = ((pin_in_val >> 5u) & 1u) ^ ((inv >> 8u) & 1u);
-    uint32_t ec_rst_l   = (pin_in_val >> 6u) & 1u;
+    uint32_t ac = ((pin_in_val >> 5u) & 1u) ^ ((inv >> 8u) & 1u);
+    uint32_t ec_rst_l = (pin_in_val >> 6u) & 1u;
     uint32_t flash_wp_l = (pin_in_val >> 7u) & 1u;
 
     if (combo_in) {
-        *combo_in = (key0 << 0u) | (key1 << 1u) | (key2 << 2u) |
-                    (pwrb << 3u) | (ac << 4u);
+        *combo_in = (key0 << 0u) | (key1 << 1u) | (key2 << 2u) | (pwrb << 3u) |
+                    (ac << 4u);
     }
     if (key_intr_in) {
-        *key_intr_in = (pwrb << 0u) | (key0 << 1u) | (key1 << 2u) |
-                       (key2 << 3u) | (ac << 4u) | (ec_rst_l << 5u) |
-                       (flash_wp_l << 6u);
+        *key_intr_in =
+            (pwrb << 0u) | (key0 << 1u) | (key1 << 2u) | (key2 << 3u) |
+            (ac << 4u) | (ec_rst_l << 5u) | (flash_wp_l << 6u);
     }
 }
 
@@ -240,9 +246,9 @@ static void ot_sysrst_ctrl_combo_rst_timer_cb(void *opaque)
 
 static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
 {
-    bool intr_event_status = (s->regs[R_ULP_STATUS] |
-                              s->regs[R_COMBO_INTR_STATUS] |
-                              s->regs[R_KEY_INTR_STATUS]) != 0;
+    bool intr_event_status =
+        (s->regs[R_ULP_STATUS] | s->regs[R_COMBO_INTR_STATUS] |
+         s->regs[R_KEY_INTR_STATUS]) != 0;
     bool test_q = (s->regs[R_INTR_TEST] & 1u) != 0;
     if (intr_event_status || test_q) {
         s->regs[R_INTR_STATE] |= R_INTR_STATE_EVENT_DETECTED_MASK;
@@ -253,7 +259,8 @@ static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
     bool irq_level = (s->regs[R_INTR_STATE] & s->regs[R_INTR_ENABLE]) != 0;
     ibex_irq_set(&s->irq, (int)irq_level);
 
-    bool wkup_level = (s->regs[R_WKUP_STATUS] & R_WKUP_STATUS_WAKEUP_STS_MASK) != 0;
+    bool wkup_level =
+        (s->regs[R_WKUP_STATUS] & R_WKUP_STATUS_WAKEUP_STS_MASK) != 0;
     ibex_irq_set(&s->wkup_req, (int)wkup_level);
 
     ot_gpio_eg_notify_sysrst_change();
@@ -299,11 +306,16 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
                                 &curr_key_in);
 
     if (s->regs[R_ULP_CTL] & 1u) {
-        uint32_t prev_pwrb = ((prev_pin_val >> 0u) & 1u) ^ ((prev_inv >> 6u) & 1u);
-        uint32_t curr_pwrb = ((curr_pin_val >> 0u) & 1u) ^ ((curr_inv >> 6u) & 1u);
-        uint32_t prev_lid = ((prev_pin_val >> 4u) & 1u) ^ ((prev_inv >> 10u) & 1u);
-        uint32_t curr_lid = ((curr_pin_val >> 4u) & 1u) ^ ((curr_inv >> 10u) & 1u);
-        uint32_t curr_ac = ((curr_pin_val >> 5u) & 1u) ^ ((curr_inv >> 8u) & 1u);
+        uint32_t prev_pwrb =
+            ((prev_pin_val >> 0u) & 1u) ^ ((prev_inv >> 6u) & 1u);
+        uint32_t curr_pwrb =
+            ((curr_pin_val >> 0u) & 1u) ^ ((curr_inv >> 6u) & 1u);
+        uint32_t prev_lid =
+            ((prev_pin_val >> 4u) & 1u) ^ ((prev_inv >> 10u) & 1u);
+        uint32_t curr_lid =
+            ((curr_pin_val >> 4u) & 1u) ^ ((curr_inv >> 10u) & 1u);
+        uint32_t curr_ac =
+            ((curr_pin_val >> 5u) & 1u) ^ ((curr_inv >> 8u) & 1u);
 
         bool pwrb_h2l = (prev_pwrb == 1u && curr_pwrb == 0u);
         bool lid_l2h = (prev_lid == 0u && curr_lid == 1u);
@@ -360,8 +372,8 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             if (out_ctl & R_COM_OUT_CTL_0_BAT_DISABLE_MASK) {
                 s->bat_disable_hw = true;
             }
-            if (out_ctl & (R_COM_OUT_CTL_0_EC_RST_MASK |
-                           R_COM_OUT_CTL_0_RST_REQ_MASK)) {
+            if (out_ctl &
+                (R_COM_OUT_CTL_0_EC_RST_MASK | R_COM_OUT_CTL_0_RST_REQ_MASK)) {
                 s->ec_rst_l_hw = false;
                 timer_del(s->ec_rst_timer);
             }
@@ -377,8 +389,8 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             if (out_ctl & R_COM_OUT_CTL_0_RST_REQ_MASK) {
                 timer_del(s->combo_rst_timer);
             }
-            if (out_ctl & (R_COM_OUT_CTL_0_EC_RST_MASK |
-                           R_COM_OUT_CTL_0_RST_REQ_MASK)) {
+            if (out_ctl &
+                (R_COM_OUT_CTL_0_EC_RST_MASK | R_COM_OUT_CTL_0_RST_REQ_MASK)) {
                 uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
                 if (stretch == 0u) {
                     s->ec_rst_l_hw = true;
@@ -450,8 +462,8 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
 static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
 {
     switch (reg) {
-    case R_COM_PRE_DET_CTL_0 ... (R_COM_PRE_DET_CTL_0 + 3u):
-    case R_COM_DET_CTL_0 ... (R_COM_DET_CTL_0 + 3u):
+    case R_COM_PRE_DET_CTL_0 ...(R_COM_PRE_DET_CTL_0 + 3u):
+    case R_COM_DET_CTL_0 ...(R_COM_DET_CTL_0 + 3u):
         return 0xffffffffu;
     case R_AUTO_BLOCK_DEBOUNCE_CTL:
         return 0x0001ffffu;
@@ -472,10 +484,10 @@ static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
         return 0x000000ffu;
     case R_AUTO_BLOCK_OUT_CTL:
         return 0x00000077u;
-    case R_COM_PRE_SEL_CTL_0 ... (R_COM_PRE_SEL_CTL_0 + 3u):
-    case R_COM_SEL_CTL_0 ... (R_COM_SEL_CTL_0 + 3u):
+    case R_COM_PRE_SEL_CTL_0 ...(R_COM_PRE_SEL_CTL_0 + 3u):
+    case R_COM_SEL_CTL_0 ...(R_COM_SEL_CTL_0 + 3u):
         return 0x0000001fu;
-    case R_COM_OUT_CTL_0 ... (R_COM_OUT_CTL_0 + 3u):
+    case R_COM_OUT_CTL_0 ...(R_COM_OUT_CTL_0 + 3u):
     case R_COMBO_INTR_STATUS:
         return 0x0000000fu;
     default:
@@ -497,8 +509,9 @@ static bool ot_sysrst_ctrl_accepts(void *opaque, hwaddr addr, unsigned size,
     }
     uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
     uint8_t permit = (mask > 0x1ffffu) ? 0xfu :
-                     (mask > 0xffffu) ? 0x7u :
-                     (mask > 0xffu) ? 0x3u : 0x1u;
+                     (mask > 0xffffu)  ? 0x7u :
+                     (mask > 0xffu)    ? 0x3u :
+                                         0x1u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     return (permit & ~reg_be) == 0u;
 }
@@ -674,12 +687,12 @@ static void ot_sysrst_ctrl_init(Object *obj)
     s->pin_in_raw = (1u << OT_SYSRST_CTRL_IN_EC_RST_L) |
                     (1u << OT_SYSRST_CTRL_IN_FLASH_WP_L);
     s->ec_rst_l_hw = true;
-    s->ec_rst_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
-                                   &ot_sysrst_ctrl_ec_rst_timer_cb, s);
+    s->ec_rst_timer =
+        timer_new_ns(QEMU_CLOCK_REALTIME, &ot_sysrst_ctrl_ec_rst_timer_cb, s);
     s->combo_rst_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
                                       &ot_sysrst_ctrl_combo_rst_timer_cb, s);
-    s->ulp_timer = timer_new_ns(OT_VIRTUAL_CLOCK,
-                                &ot_sysrst_ctrl_ulp_timer_cb, s);
+    s->ulp_timer =
+        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_sysrst_ctrl_ulp_timer_cb, s);
 
     qdev_init_gpio_in_named(DEVICE(obj), &ot_sysrst_ctrl_input_change,
                             OT_SYSRST_CTRL_INPUT, OT_SYSRST_CTRL_IN_COUNT);

@@ -498,7 +498,8 @@ static void tap_ctrl_rbb_chr_receive(void *opaque, const uint8_t *buf, int size)
 
     for (unsigned ix = 0; ix < size; ix++) {
         if (tap_ctrl_rbb_read_byte(tap, buf[ix])) {
-            uint8_t outbuf[1] = { '0' + (unsigned)(tap->enabled ? tap->tdo : true) };
+            uint8_t outbuf[1] = { '0' +
+                                  (unsigned)(tap->enabled ? tap->tdo : true) };
             qemu_chr_fe_write_all(&tap->chr, outbuf, (int)sizeof(outbuf));
         }
     }

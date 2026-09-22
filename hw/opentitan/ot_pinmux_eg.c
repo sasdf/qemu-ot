@@ -33,11 +33,11 @@
 #include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_gpio_eg.h"
-#include "hw/opentitan/ot_usbdev.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sysrst_ctrl.h"
 #include "hw/opentitan/ot_uart.h"
+#include "hw/opentitan/ot_usbdev.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
@@ -345,8 +345,8 @@ static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
                 force_mode = OT_PINMUX_PAD_FORCE_IGNORE;
                 break;
             }
-            cfg |= SHARED_FIELD_DP32(0, OT_PINMUX_PAD_ATTR_FORCE_MODE,
-                                     force_mode);
+            cfg |=
+                SHARED_FIELD_DP32(0, OT_PINMUX_PAD_ATTR_FORCE_MODE, force_mode);
         }
         ibex_irq_set(&s->mios[pad], (int)cfg);
         uint32_t outsel = regs->mio_outsel[pad];
@@ -370,7 +370,8 @@ static void ot_pinmux_eg_update_pads(OtPinmuxEgState *s)
             int host_pin = ot_pinmux_eg_mio_to_host_pin(pad);
             if (host_pin >= 0 && host_pin < 32) {
                 int prio = ot_pinmux_eg_pad_priority(s, pad);
-                if (prio >= gpio_cfg_prio[host_pin] || !gpio_cfg_set[host_pin]) {
+                if (prio >= gpio_cfg_prio[host_pin] ||
+                    !gpio_cfg_set[host_pin]) {
                     gpio_cfg[host_pin] = cfg;
                     gpio_cfg_prio[host_pin] = prio;
                     gpio_cfg_set[host_pin] = true;
@@ -438,9 +439,8 @@ uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
     if (!s || !s->regs) {
         return 0;
     }
-    uint32_t outsel = (gpio_pin < PARAM_N_MIO_PADS) ?
-                          s->regs->mio_outsel[gpio_pin] :
-                          0;
+    uint32_t outsel =
+        (gpio_pin < PARAM_N_MIO_PADS) ? s->regs->mio_outsel[gpio_pin] : 0;
     int best_prio = -1;
     for (unsigned pad = 0; pad < PARAM_N_MIO_PADS; pad++) {
         if (ot_pinmux_eg_mio_to_host_pin(pad) == (int)gpio_pin) {
@@ -540,8 +540,9 @@ void ot_pinmux_eg_update_sysrst_inputs(OtPinmuxEgState *s)
 {
     for (unsigned i = 0; i < 6u; i++) {
         ibex_irq_set(&s->sysrst_inputs[i],
-                     ot_pinmux_eg_eval_mio_sel(
-                         s, s->regs->mio_periph_insel[50u + i]));
+                     ot_pinmux_eg_eval_mio_sel(s,
+                                               s->regs->mio_periph_insel[50u +
+                                                                         i]));
     }
     ibex_irq_set(&s->sysrst_inputs[OT_SYSRST_CTRL_IN_EC_RST_L],
                  (int)((s->pad_in_level >> 14u) & 1u));
@@ -635,8 +636,8 @@ void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level)
     ot_pinmux_eg_eval_wkup_detectors(s);
 }
 
-static void ot_pinmux_eg_set_mio_pad_in(OtPinmuxEgState *s, unsigned pad,
-                                        int level)
+static void
+ot_pinmux_eg_set_mio_pad_in(OtPinmuxEgState *s, unsigned pad, int level)
 {
     uint64_t bit = 1ULL << pad;
     if (level) {

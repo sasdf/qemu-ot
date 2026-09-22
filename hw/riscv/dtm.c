@@ -301,8 +301,7 @@ static void riscv_dtm_tap_dmi_capture(TapDataHandler *tdh)
      * update] operation, updating op if the current op isn’t sticky.
      */
     tdh->value = (((uint64_t)s->address) << (32u + 2u)) |
-                 (((uint64_t)s->data) << 2u) |
-                 ((uint64_t)(s->dmistat & 0b11));
+                 (((uint64_t)s->data) << 2u) | ((uint64_t)(s->dmistat & 0b11));
 }
 
 static void riscv_dtm_tap_dmi_update(TapDataHandler *tdh)

@@ -706,10 +706,9 @@ static bool ot_hmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
-    uint32_t permit =
-        (reg <= R_ALERT_TEST || reg == R_CMD) ?
-            0x1u :
-            ((reg == R_CFG || reg == R_STATUS) ? 0x3u : 0xfu);
+    uint32_t permit = (reg <= R_ALERT_TEST || reg == R_CMD) ?
+                          0x1u :
+                          ((reg == R_CFG || reg == R_STATUS) ? 0x3u : 0xfu);
     return (permit & ~reg_be) == 0u;
 }
 
@@ -863,7 +862,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs->intr_state &= ~(val32 & (INTR_HMAC_DONE_MASK | INTR_HMAC_ERR_MASK));
+        s->regs->intr_state &=
+            ~(val32 & (INTR_HMAC_DONE_MASK | INTR_HMAC_ERR_MASK));
         ot_hmac_update_irqs(s);
         break;
     case R_INTR_ENABLE:

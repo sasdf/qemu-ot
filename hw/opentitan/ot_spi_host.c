@@ -547,8 +547,7 @@ static bool ot_spi_host_is_tx(uint32_t command)
 static bool ot_spi_host_is_stalled_in_idle(const OtSPIHostState *s)
 {
     return s->active.state == CMD_ONGOING && s->active.size == 0u &&
-           s->fsm.tx_stall &&
-           !FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CPHA);
+           s->fsm.tx_stall && !FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CPHA);
 }
 
 static bool ot_spi_host_is_ready(const OtSPIHostState *s)
@@ -686,15 +685,16 @@ static uint32_t ot_spi_host_get_status(OtSPIHostState *s)
 
     /* CMD */
     bool stalled_in_idle = ot_spi_host_is_stalled_in_idle(s);
-    uint32_t cmdqd = cmdfifo_num_used(s->cmd_fifo) + (stalled_in_idle ? 1u : 0u);
+    uint32_t cmdqd =
+        cmdfifo_num_used(s->cmd_fifo) + (stalled_in_idle ? 1u : 0u);
     status = FIELD_DP32(status, STATUS, CMDQD, cmdqd);
 
     /* State */
     status =
         FIELD_DP32(status, STATUS, READY, (uint32_t)ot_spi_host_is_ready(s));
-    status = FIELD_DP32(status, STATUS, ACTIVE,
-                        (uint32_t)(s->active.state != CMD_NONE &&
-                                   !stalled_in_idle));
+    status =
+        FIELD_DP32(status, STATUS, ACTIVE,
+                   (uint32_t)(s->active.state != CMD_NONE && !stalled_in_idle));
 
     return status;
 }
@@ -856,9 +856,8 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
             last_sd0 = d0;
             if (s->bb_len + 2u <= ARRAY_SIZE(s->bb_half_clks)) {
                 if (cpha == 0u) {
-                    s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-                        .csb = 0u, .sck = cpol, .sd0 = d0
-                    };
+                    s->bb_half_clks[s->bb_len++] =
+                        (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = d0 };
                     s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
                         .csb = 0u, .sck = !cpol, .sd0 = d0
                     };
@@ -866,23 +865,20 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
                     s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
                         .csb = 0u, .sck = !cpol, .sd0 = d0
                     };
-                    s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-                        .csb = 0u, .sck = cpol, .sd0 = d0
-                    };
+                    s->bb_half_clks[s->bb_len++] =
+                        (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = d0 };
                 }
             }
         }
     }
     if (s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
-        s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-            .csb = 0u, .sck = cpol, .sd0 = last_sd0
-        };
+        s->bb_half_clks[s->bb_len++] =
+            (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = last_sd0 };
     }
     for (unsigned idle = 0; idle < 4u; idle++) {
         if (s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
-            s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-                .csb = 1u, .sck = cpol, .sd0 = 1u
-            };
+            s->bb_half_clks[s->bb_len++] =
+                (OtSPIHostHalfClk){ .csb = 1u, .sck = cpol, .sd0 = 1u };
         }
     }
     s->bb_cur_tx_len = 0;

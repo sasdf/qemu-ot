@@ -749,7 +749,8 @@ static void ot_lc_ctrl_update_alerts(OtLcCtrlState *s)
     }
 
     if (s->regs[R_ALERT_TEST]) {
-        /* In RTL (lc_ctrl.sv:573-606), alert_test is a transient 1-cycle pulse */
+        /* In RTL (lc_ctrl.sv:573-606), alert_test is a transient 1-cycle pulse
+         */
         s->regs[R_ALERT_TEST] = 0u;
         for (unsigned ix = 0; ix < NUM_ALERTS; ix++) {
             ibex_irq_set(&s->alerts[ix], (int)((fatal_level >> ix) & 0x1u));
@@ -840,15 +841,15 @@ static void ot_lc_ctrl_update_broadcast(OtLcCtrlState *s)
             break;
         case LC_STATE_RMA:
             /* note: RMA signal not available on EG 1.0.0 */
-            sigbm = LC_BCAST_BIT(RAW_TEST_RMA) | LC_BCAST_BIT(DFT_EN) |
-                    LC_BCAST_BIT(NVM_DEBUG_EN) | LC_BCAST_BIT(HW_DEBUG_EN) |
-                    LC_BCAST_BIT(CPU_EN) | LC_BCAST_BIT(KEYMGR_EN) |
-                    LC_BCAST_BIT(CHECK_BYP_EN) |
-                    LC_BCAST_BIT(CREATOR_SEED_SW_RW_EN) |
-                    LC_BCAST_BIT(OWNER_SEED_SW_RW_EN) |
-                    LC_BCAST_BIT(ISO_PART_SW_RD_EN) |
-                    LC_BCAST_BIT(ISO_PART_SW_WR_EN) |
-                    LC_BCAST_BIT(SEED_HW_RD_EN);
+            sigbm =
+                LC_BCAST_BIT(RAW_TEST_RMA) | LC_BCAST_BIT(DFT_EN) |
+                LC_BCAST_BIT(NVM_DEBUG_EN) | LC_BCAST_BIT(HW_DEBUG_EN) |
+                LC_BCAST_BIT(CPU_EN) | LC_BCAST_BIT(KEYMGR_EN) |
+                LC_BCAST_BIT(CHECK_BYP_EN) |
+                LC_BCAST_BIT(CREATOR_SEED_SW_RW_EN) |
+                LC_BCAST_BIT(OWNER_SEED_SW_RW_EN) |
+                LC_BCAST_BIT(ISO_PART_SW_RD_EN) |
+                LC_BCAST_BIT(ISO_PART_SW_WR_EN) | LC_BCAST_BIT(SEED_HW_RD_EN);
             div_type = LC_DIV_RMA;
             break;
         case LC_STATE_SCRAP:
@@ -1714,10 +1715,9 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
 
     hwaddr reg = R32_OFF(addr);
     unsigned if_ix = (ifreq == LC_IF_DMI) ? 1u : 0u;
-    bool is_terminal_fsm =
-        (s->state == ST_RESET || s->state == ST_ESCALATE ||
-         s->state == ST_POST_TRANS || s->state == ST_INVALID ||
-         s->state == ST_SCRAP);
+    bool is_terminal_fsm = (s->state == ST_RESET || s->state == ST_ESCALATE ||
+                            s->state == ST_POST_TRANS ||
+                            s->state == ST_INVALID || s->state == ST_SCRAP);
 
     switch (reg) {
     case R_LC_TRANSITION_CNT:
@@ -1920,8 +1920,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
         if (val32 & R_TRANSITION_CTRL_EXT_CLOCK_EN_MASK) {
             s->ext_clock_en = true; /* rw1s */
             if (s->state == ST_IDLE &&
-                ot_lc_ctrl_is_vendor_test_state(
-                    LC_ENCODE_STATE(s->lc_state))) {
+                ot_lc_ctrl_is_vendor_test_state(LC_ENCODE_STATE(s->lc_state))) {
                 s->regs[R_STATUS] |= R_STATUS_EXT_CLOCK_SWITCHED_MASK;
             }
         }
@@ -2013,10 +2012,11 @@ static bool ot_lc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t permit = (R32_OFF(addr) <= R_TRANSITION_CTRL ||
-                       R32_OFF(addr) == R_LC_TRANSITION_CNT) ?
-                          (R32_OFF(addr) == R_STATUS ? 0x3u : 0x1u) :
-                          0xfu;
+    uint32_t permit =
+        (R32_OFF(addr) <= R_TRANSITION_CTRL ||
+         R32_OFF(addr) == R_LC_TRANSITION_CNT) ?
+            (R32_OFF(addr) == R_STATUS ? 0x3u : 0x1u) :
+            0xfu;
     uint32_t be = ((1u << size) - 1u) << (addr & 3u);
     return (permit & ~be) == 0u;
 }

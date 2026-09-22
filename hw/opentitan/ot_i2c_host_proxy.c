@@ -285,8 +285,7 @@ static void ot_i2c_host_proxy_timer(void *opaque)
 static int ot_i2c_host_proxy_can_receive(void *opaque)
 {
     OtI2CHostProxyState *s = OT_I2C_HOST_PROXY(opaque);
-    if (s->parser_state == CMD_I2C_ERR ||
-        s->pending_op != PROXY_PENDING_NONE) {
+    if (s->parser_state == CMD_I2C_ERR || s->pending_op != PROXY_PENDING_NONE) {
         return 0;
     }
     return timer_pending(s->stall_timer) ? 0 : 1;

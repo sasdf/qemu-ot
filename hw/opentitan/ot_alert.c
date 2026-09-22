@@ -191,7 +191,8 @@ typedef struct {
     QEMUTimer timer;
     QEMUBH *esc_releaser;
     OtAlertState *parent;
-    uint32_t esc_tx_release_mask; /* Escalate signals to release on next cycle */
+    uint32_t
+        esc_tx_release_mask; /* Escalate signals to release on next cycle */
     unsigned nclass;
 } OtAlertScheduler;
 
@@ -336,10 +337,9 @@ static bool ot_alert_is_class_enabled(const OtAlertState *s, unsigned nclass)
 {
     const OtAlertAClass *aclass = &s->regs.classes[nclass];
     uint32_t ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
-    uint32_t esc_en_mask = CLASS_CTRL_SHADOWED_EN_E0_MASK |
-                           CLASS_CTRL_SHADOWED_EN_E1_MASK |
-                           CLASS_CTRL_SHADOWED_EN_E2_MASK |
-                           CLASS_CTRL_SHADOWED_EN_E3_MASK;
+    uint32_t esc_en_mask =
+        CLASS_CTRL_SHADOWED_EN_E0_MASK | CLASS_CTRL_SHADOWED_EN_E1_MASK |
+        CLASS_CTRL_SHADOWED_EN_E2_MASK | CLASS_CTRL_SHADOWED_EN_E3_MASK;
     return (ctrl & CLASS_CTRL_SHADOWED_EN_MASK) && (ctrl & esc_en_mask);
 }
 
@@ -362,7 +362,8 @@ static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
     if (state >= STATE_PHASE0 && state <= STATE_PHASE3) {
         unsigned phase = state - STATE_PHASE0;
         uint32_t trig_phase =
-            ot_shadow_reg_peek(&s->regs.classes[nclass].crashdump_trigger_shadowed) &
+            ot_shadow_reg_peek(
+                &s->regs.classes[nclass].crashdump_trigger_shadowed) &
             CLASS_CRASHDUMP_TRIGGER_SHADOWED_MASK;
         if (phase == trig_phase) {
             if (s->crashdump_latched == 0) {
@@ -520,7 +521,7 @@ static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
 
     /* loc_alert_cause[6:0]: 7 bits at bit 204..210 */
     uint32_t loc_cause = 0;
-    for (unsigned i = 0; i < LOCAL_ALERT_COUNT && i < 7u; i++) {
+    for (unsigned i = 0; i < LOCAL_ALERT_COUNT; i++) {
         if (DVAL(s->regs.loc_alerts.cause[i]) & LOC_ALERT_CAUSE_EN_MASK) {
             loc_cause |= (1u << i);
         }
@@ -529,9 +530,8 @@ static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
 
     /* alert_cause[0..64]: 65 bits at bit 211..275 */
     for (unsigned i = 0; i < s->n_alerts && i < 65u; i++) {
-        uint32_t cause = (DVAL(s->regs.alerts.cause[i]) & ALERT_CAUSE_EN_MASK) ?
-                             1u :
-                             0u;
+        uint32_t cause =
+            (DVAL(s->regs.alerts.cause[i]) & ALERT_CAUSE_EN_MASK) ? 1u : 0u;
         ot_alert_set_dump_bits(dump, 211u + i, 1u, cause);
     }
 }
@@ -672,9 +672,8 @@ static void ot_alert_set_class_timer(OtAlertState *s, unsigned nclass,
     timer_mod_ns(&atimer->timer, ns);
 }
 
-static uint32_t
-ot_alert_get_phase_signals_mask(const OtAlertState *s, unsigned nclass,
-                                unsigned phase)
+static uint32_t ot_alert_get_phase_signals_mask(const OtAlertState *s,
+                                                unsigned nclass, unsigned phase)
 {
     const OtAlertAClass *aclass = &s->regs.classes[nclass];
     uint32_t ctrl = ot_shadow_reg_peek(&aclass->ctrl_shadowed);
@@ -805,9 +804,9 @@ static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
     OtAlertAClass *aclass = &s->regs.classes[nclass];
     OtAlertAClassState state = DVAL(aclass->state);
 
-    bool accu_trig = class_trig &&
-                     (DVAL(aclass->accum_cnt) >
-                      ot_shadow_reg_peek(&aclass->accum_thresh_shadowed));
+    bool accu_trig =
+        class_trig && (DVAL(aclass->accum_cnt) >
+                       ot_shadow_reg_peek(&aclass->accum_thresh_shadowed));
 
     trace_ot_alert_fsm_update(s->ot_id, ACLASS(nclass), ST_NAME(state),
                               from_timer, accu_trig);
@@ -821,7 +820,8 @@ static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
                 ((DVAL(s->regs.intr->state) & DVAL(s->regs.intr->enable)) >>
                  nclass) &
                 0x1u;
-            uint32_t timeout = ot_shadow_reg_peek(&aclass->timeout_cyc_shadowed);
+            uint32_t timeout =
+                ot_shadow_reg_peek(&aclass->timeout_cyc_shadowed);
             if (timeout_en && timeout && ot_alert_is_class_enabled(s, nclass)) {
                 ot_alert_set_class_state(s, nclass, STATE_TIMEOUT);
                 ot_alert_set_class_timer(s, nclass, timeout);
@@ -1037,7 +1037,8 @@ static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
 
     DVAL(loc_alerts->cause[loc_alert]) |= ALERT_CAUSE_EN_MASK;
 
-    unsigned nclass = ot_shadow_reg_peek(&loc_alerts->class_shadowed[loc_alert]);
+    unsigned nclass =
+        ot_shadow_reg_peek(&loc_alerts->class_shadowed[loc_alert]);
     OtAlertAClass *aclass = &s->regs.classes[nclass];
     bool class_en = ot_alert_is_class_enabled(s, nclass);
 
@@ -1197,9 +1198,8 @@ static void ot_alert_fill_access_table(OtAlertState *s)
             R_ACC_MP(shadow_read, shadow_write, UINT16_MAX, regwen);
 
         /* CLASS_TIMEOUT_CYC_SHADOWED */
-        table[offset++] =
-            R_ACC_MPA(shadow_read, shadow_write, UINT32_MAX, regwen,
-                      BIT(PWA_UPDATE_IRQ));
+        table[offset++] = R_ACC_MPA(shadow_read, shadow_write, UINT32_MAX,
+                                    regwen, BIT(PWA_UPDATE_IRQ));
 
         /* CLASS_CRASHDUMP_TRIGGER_SHADOWED */
         table[offset++] =
@@ -1262,8 +1262,8 @@ static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
     s->entropy_requested = false;
     /*
      * In RTL (alert_handler_ping_timer.sv), reseed_timer_d is reloaded with
-     * {wait_cyc_mask_i, {ReseedLfsrExtraBits{1'b1}}} = 19'h7ffff (524,287 cycles)
-     * at the 24 MHz I/O Div4 clock (~21.845 ms).
+     * {wait_cyc_mask_i, {ReseedLfsrExtraBits{1'b1}}} = 19'h7ffff (524,287
+     * cycles) at the 24 MHz I/O Div4 clock (~21.845 ms).
      */
     uint32_t pclk = MAX(s->pclks[OT_ALERT_CLOCK_SRC_IO], 1u);
     uint64_t reseed_ns = muldiv64(0x7ffffULL, NANOSECONDS_PER_SECOND, pclk);
@@ -1303,8 +1303,7 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
 
     timer_del(&s->reseed_timer);
     s->entropy_requested = false;
-    timer_mod(&s->reseed_timer,
-              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 100000ULL);
+    timer_mod(&s->reseed_timer, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 100000LL);
 
     for (unsigned ix = 0; ix < s->n_classes; ix++) {
         qemu_bh_cancel(s->schedulers[ix].esc_releaser);

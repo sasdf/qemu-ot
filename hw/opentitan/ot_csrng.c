@@ -1105,7 +1105,8 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
             }
         }
 
-        /* csrng_state_db.sv:163, 172: !state_db_enable_i resets ptr & dump_id */
+        /* csrng_state_db.sv:163, 172: !state_db_enable_i resets ptr & dump_id
+         */
         s->state_db_ix = 0xfu;
         s->state_db_dump_id = 0u;
 
@@ -1214,9 +1215,11 @@ ot_csrng_handle_instantiate(OtCSRNGState *s, unsigned slot)
 
     uint32_t command = ot_fifo32_peek(&inst->cmd_fifo);
     uint32_t clen = FIELD_EX32(command, OT_CSNRG_CMD, CLEN);
-    bool flag0 = ot_csrng_check_multibitboot(
-        s, (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, FLAG0),
-        ALERT_STATUS_BIT(ACMD_FLAG0));
+    bool flag0 =
+        ot_csrng_check_multibitboot(s,
+                                    (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD,
+                                                        FLAG0),
+                                    ALERT_STATUS_BIT(ACMD_FLAG0));
 
     uint32_t num;
     const uint32_t *buffer =
@@ -1341,9 +1344,11 @@ static OtCSRNDCmdResult ot_csrng_handle_reseed(OtCSRNGState *s, unsigned slot)
     OtCSRNGInstance *inst = &s->instances[slot];
 
     uint32_t command = ot_fifo32_peek(&inst->cmd_fifo);
-    bool flag0 = ot_csrng_check_multibitboot(
-        s, (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD, FLAG0),
-        ALERT_STATUS_BIT(ACMD_FLAG0));
+    bool flag0 =
+        ot_csrng_check_multibitboot(s,
+                                    (uint8_t)FIELD_EX32(command, OT_CSNRG_CMD,
+                                                        FLAG0),
+                                    ALERT_STATUS_BIT(ACMD_FLAG0));
 
     xtrace_ot_csrng_info("reseed", flag0);
 
@@ -1660,9 +1665,11 @@ static void ot_csrng_command_scheduler(void *opaque)
     }
     s->in_scheduler = true;
 
+    OtCSRNGInstance *inst;
+
 next:
     /* handle a single instance per cycle */
-    OtCSRNGInstance *inst = QSIMPLEQ_FIRST(&s->cmd_requests);
+    inst = QSIMPLEQ_FIRST(&s->cmd_requests);
     if (!inst || s->state != CSRNG_IDLE) {
         s->in_scheduler = false;
         return;
@@ -1702,9 +1709,8 @@ next:
         /* command re-insertion */
         trace_ot_csrng_show_command("push back", slot, CMD_NAME(acmd), acmd);
         QSIMPLEQ_INSERT_TAIL(&s->cmd_requests, inst, cmd_request);
-        timer_mod(s->entropy_scheduler,
-                  qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                      (int64_t)s->entropy_delay);
+        timer_mod(s->entropy_scheduler, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                            (int64_t)s->entropy_delay);
         s->entropy_delay = 0;
         s->in_scheduler = false;
         return;
@@ -2092,8 +2098,8 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= RECOV_ALERT_STS_MASK;
         /*
          * In csrng_core.sv:784-846, invalid CTRL mubi4 field alerts
-         * continuously assert hw2reg.recov_alert_sts.*_field_alert.{de,d} = 1'b1
-         * as long as the invalid mubi4 value remains in CTRL.
+         * continuously assert hw2reg.recov_alert_sts.*_field_alert.{de,d} =
+         * 1'b1 as long as the invalid mubi4 value remains in CTRL.
          */
         s->regs[reg] =
             (s->regs[reg] & val32) | ot_csrng_get_ctrl_recov_alert_sts(s);
@@ -2108,9 +2114,9 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs[R_ERR_CODE_TEST] = val32;
         uint32_t err_bit = (1u << val32) & ERR_CODE_MASK;
-        uint32_t err_en_mask = ot_csrng_is_ctrl_enabled(s) ?
-                                   ERR_CODE_MASK :
-                                   R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
+        uint32_t err_en_mask =
+            ot_csrng_is_ctrl_enabled(s) ? ERR_CODE_MASK :
+                                          R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
         s->regs[R_ERR_CODE] |= err_bit & err_en_mask;
         if (err_bit & 0x07f00000u) {
             if (ot_csrng_is_ctrl_enabled(s)) {

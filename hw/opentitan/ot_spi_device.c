@@ -909,8 +909,8 @@ ot_spi_device_is_mailbox_match(const OtSPIDeviceState *s, uint32_t addr)
     return (addr & R_MAILBOX_ADDR_UPPER_MASK) == mailbox_addr;
 }
 
-static void ot_spi_device_flash_pace_spibus_ns(OtSPIDeviceState *s,
-                                               int64_t delay_ns)
+static void
+ot_spi_device_flash_pace_spibus_ns(OtSPIDeviceState *s, int64_t delay_ns)
 {
     SpiDeviceFlash *f = &s->flash;
 
@@ -931,8 +931,8 @@ static void ot_spi_device_update_passthrough_en(OtSPIDeviceState *s)
     bool busy_blocked =
         (s->spi_regs[R_FLASH_STATUS] & R_FLASH_STATUS_BUSY_MASK) &&
         (s->bus.state == SPI_BUS_IDLE);
-    bool en = (ot_spi_device_get_mode(s) == CTRL_MODE_PASSTHROUGH) &&
-              !busy_blocked;
+    bool en =
+        (ot_spi_device_get_mode(s) == CTRL_MODE_PASSTHROUGH) && !busy_blocked;
     ibex_irq_set(&s->passthrough_en, en);
 }
 
@@ -998,13 +998,13 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
          * "does not show the commands falling into the mailbox region or
          *  Read SFDP command’s address."
          */
-        if (was_active &&
-            f->slot >= SLOT_HW_READ_NORMAL && f->slot <= SLOT_HW_READ_QUAD_IO &&
+        if (was_active && f->slot >= SLOT_HW_READ_NORMAL &&
+            f->slot <= SLOT_HW_READ_QUAD_IO &&
             !ot_spi_device_is_mailbox_match(s, f->last_read_addr)) {
             if (!f->read_buf_modified &&
                 s->spi_regs[R_LAST_READ_ADDR] == f->last_read_addr) {
-                ot_spi_device_flash_pace_spibus_ns(
-                    s, SPI_BUS_FLASH_POLL_DELAY_NS);
+                ot_spi_device_flash_pace_spibus_ns(s,
+                                                   SPI_BUS_FLASH_POLL_DELAY_NS);
             }
             f->read_buf_modified = false;
             trace_ot_spi_device_update_last_read_addr(s->ot_id,
@@ -2012,25 +2012,28 @@ ot_spi_device_flash_transfer_passthrough(OtSPIDeviceState *s, uint8_t rx)
     return tx;
 }
 
-static bool ot_spi_device_spi_regs_accepts(void *opaque, hwaddr addr,
-                                           unsigned size, bool is_write,
-                                           MemTxAttrs attrs)
+static bool ot_spi_device_spi_regs_accepts(
+    void *opaque, hwaddr addr, unsigned size, bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     uint8_t permit =
-        ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) ? 0x1u :
+        ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) ?
+            0x1u :
         (reg == R_JEDEC_CC || reg == R_READ_THRESHOLD ||
-         reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) ? 0x3u :
+         reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) ?
+            0x3u :
         (reg == R_FLASH_STATUS || reg == R_JEDEC_ID ||
-         reg == R_UPLOAD_STATUS2) ? 0x7u : 0xfu;
+         reg == R_UPLOAD_STATUS2) ?
+            0x7u :
+            0xfu;
     return reg < SPI_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
 
-static uint64_t ot_spi_device_spi_regs_read(void *opaque, hwaddr addr,
-                                            unsigned size)
+static uint64_t
+ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtSPIDeviceState *s = opaque;
     (void)size;
@@ -2200,8 +2203,7 @@ static uint64_t ot_spi_device_spi_regs_read(void *opaque, hwaddr addr,
     case R_INTR_TEST:
     case R_ALERT_TEST:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr,
-                      SPI_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)addr, SPI_REG_NAME(reg));
         val32 = 0;
         break;
     default:
@@ -2432,23 +2434,25 @@ static void ot_spi_device_spi_regs_write(void *opaque, hwaddr addr,
     }
 }
 
-static bool ot_spi_device_tpm_regs_accepts(void *opaque, hwaddr addr,
-                                           unsigned size, bool is_write,
-                                           MemTxAttrs attrs)
+static bool ot_spi_device_tpm_regs_accepts(
+    void *opaque, hwaddr addr, unsigned size, bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit = (reg == R_TPM_CAP) ? 0x7u :
-                     (reg == R_TPM_CFG || reg == R_TPM_STATUS ||
-                      reg == R_TPM_ACCESS_1 || reg == R_TPM_INT_VECTOR ||
-                      reg == R_TPM_RID) ? 0x1u : 0xfu;
+    uint8_t permit =
+        (reg == R_TPM_CAP) ?
+            0x7u :
+        (reg == R_TPM_CFG || reg == R_TPM_STATUS || reg == R_TPM_ACCESS_1 ||
+         reg == R_TPM_INT_VECTOR || reg == R_TPM_RID) ?
+            0x1u :
+            0xfu;
     return reg < TPM_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
 
-static uint64_t ot_spi_device_tpm_regs_read(void *opaque, hwaddr addr,
-                                            unsigned size)
+static uint64_t
+ot_spi_device_tpm_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtSPIDeviceState *s = opaque;
     (void)size;
@@ -2478,8 +2482,7 @@ static uint64_t ot_spi_device_tpm_regs_read(void *opaque, hwaddr addr,
         break;
     case R_TPM_READ_FIFO:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: W/O register 0x%02x (%s)\n",
-                      __func__, s->ot_id, (uint32_t)addr,
-                      TPM_REG_NAME(reg));
+                      __func__, s->ot_id, (uint32_t)addr, TPM_REG_NAME(reg));
         val32 = 0u;
         break;
     default:
@@ -3017,8 +3020,8 @@ static int ot_spi_device_chr_can_receive(void *opaque)
         if (timer_pending(s->flash.irq_timer)) {
             length = 0u;
         } else if (s->csb_poll_enabled &&
-            (s->csb_sync == CSB_RELEASED_LOW_UNSEEN ||
-             s->csb_sync == CSB_IDLE_HIGH_UNSEEN)) {
+                   (s->csb_sync == CSB_RELEASED_LOW_UNSEEN ||
+                    s->csb_sync == CSB_IDLE_HIGH_UNSEEN)) {
             length = 0u;
         } else if (ot_spi_device_get_mode(s) == CTRL_MODE_FLASH &&
                    !ot_spi_device_is_tpm_enabled(s) &&

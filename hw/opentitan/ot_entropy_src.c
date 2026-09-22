@@ -589,8 +589,7 @@ static int ot_entropy_src_get_entropy(
         for (unsigned retry = 0;
              retry < 128u &&
              ot_fifo32_num_used(&ess->final_fifo) < ES_WORD_COUNT &&
-             ot_entropy_src_can_consume_entropy(ess) &&
-             !ess->last_ht_failed;
+             ot_entropy_src_can_consume_entropy(ess) && !ess->last_ht_failed;
              retry++) {
             ot_entropy_src_noise_refill(ess);
         }
@@ -618,8 +617,9 @@ static int ot_entropy_src_get_entropy(
             } else {
                 wait_ns = OT_ENTROPY_SRC_WAIT_DELAY_NS;
             }
-            trace_ot_entropy_src_init_ongoing(
-                ess->ot_id, STATE_NAME(ess->state), ess->state, (int)wait_ns);
+            trace_ot_entropy_src_init_ongoing(ess->ot_id,
+                                              STATE_NAME(ess->state),
+                                              ess->state, (int)wait_ns);
             /* not ready */
             return (int)wait_ns;
         }
@@ -653,8 +653,8 @@ static int ot_entropy_src_get_entropy(
         ess->ot_id, STATE_NAME(ess->state), ot_entropy_src_is_fips_enabled(ess),
         REG_MB4_IS_TRUE(ess, hi, ENTROPY_CONTROL, ES_ROUTE),
         REG_MB4_IS_TRUE(ess, hi, ENTROPY_CONTROL, ES_TYPE),
-        REG_MB4_IS_FALSE(ess, hi, CONF, RNG_BIT_ENABLE), fips_capable,
-        *fips, *fips);
+        REG_MB4_IS_FALSE(ess, hi, CONF, RNG_BIT_ENABLE), fips_capable, *fips,
+        *fips);
 
     if (ot_fifo32_num_used(&ess->final_fifo) < ES_WORD_COUNT) {
         ot_entropy_src_update_filler(ess);
@@ -936,8 +936,7 @@ static bool ot_entropy_src_check_multibitboot(
 static bool ot_entropy_src_can_consume_entropy(const OtEntropySrcState *s)
 {
     if (s->state == ENTROPY_SRC_ALERT_STATE ||
-        s->state == ENTROPY_SRC_ALERT_HANG ||
-        s->state == ENTROPY_SRC_ERROR) {
+        s->state == ENTROPY_SRC_ALERT_HANG || s->state == ENTROPY_SRC_ERROR) {
         return false;
     }
     return ot_entropy_src_is_module_enabled(s) &&
@@ -952,9 +951,9 @@ static void ot_entropy_src_update_filler(OtEntropySrcState *s)
         ot_fifo32_num_free(&s->input_fifo) >= OT_ENTROPY_SRC_FILL_WORD_COUNT;
     bool output = ot_entropy_src_is_final_fifo_slot_available(s);
     if (ot_entropy_src_is_fw_ov_mode(s)) {
-        bool obs_output = s->obs_fifo_en ||
-                          !(s->regs_hi[R_FW_OV_RD_FIFO_OVERFLOW] &
-                            R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK);
+        bool obs_output =
+            s->obs_fifo_en || !(s->regs_hi[R_FW_OV_RD_FIFO_OVERFLOW] &
+                                R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK);
         output = ot_entropy_src_is_fw_ov_entropy_insert(s) ?
                      obs_output :
                      (output || obs_output);
@@ -1078,11 +1077,11 @@ static void ot_entropy_src_perform_hash(OtEntropySrcState *s)
             res = sha3_384_init(&s->sha3_state);
             g_assert(res == CRYPT_OK);
             s->cond_word = 0;
-            ot_entropy_src_change_state(
-                s, REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START,
-                                   FW_OV_INSERT_START) ?
-                       ENTROPY_SRC_FW_INSERT_MSG :
-                       ENTROPY_SRC_FW_INSERT_START);
+            ot_entropy_src_change_state(s,
+                                        REG_MB4_IS_TRUE(s, hi, FW_OV_SHA3_START,
+                                                        FW_OV_INSERT_START) ?
+                                            ENTROPY_SRC_FW_INSERT_MSG :
+                                            ENTROPY_SRC_FW_INSERT_START);
         }
     } else {
         ot_entropy_src_change_state(s, ENTROPY_SRC_CONT_HT_START);
@@ -1154,19 +1153,19 @@ static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
     }
 }
 
-static void ot_entropy_src_update_watermark(OtEntropySrcState *s, unsigned reg,
-                                            bool bypass, uint16_t val,
-                                            bool low_watermark)
+static void
+ot_entropy_src_update_watermark(OtEntropySrcState *s, unsigned reg, bool bypass,
+                                uint16_t val, bool low_watermark)
 {
     unsigned shift = bypass ? 16u : 0u;
     uint16_t cur = (uint16_t)((s->regs_hi[reg] >> shift) & 0xffffu);
     uint16_t next = low_watermark ? MIN(cur, val) : MAX(cur, val);
-    s->regs_hi[reg] = (s->regs_hi[reg] & ~(0xffffu << shift)) |
-                      ((uint32_t)next << shift);
+    s->regs_hi[reg] =
+        (s->regs_hi[reg] & ~(0xffffu << shift)) | ((uint32_t)next << shift);
 }
 
-static void ot_entropy_src_inc_alert_fail_count(OtEntropySrcState *s,
-                                                unsigned shift)
+static void
+ot_entropy_src_inc_alert_fail_count(OtEntropySrcState *s, unsigned shift)
 {
     uint32_t count = (s->regs_hi[R_ALERT_FAIL_COUNTS] >> shift) & 0xfu;
     if (count < 0xfu) {
@@ -1177,8 +1176,8 @@ static void ot_entropy_src_inc_alert_fail_count(OtEntropySrcState *s,
     }
 }
 
-static bool ot_entropy_src_eval_health_tests(OtEntropySrcState *s,
-                                             unsigned window_symbols)
+static bool
+ot_entropy_src_eval_health_tests(OtEntropySrcState *s, unsigned window_symbols)
 {
     bool bypass = ot_entropy_src_is_bypass_mode(s);
     unsigned shift = bypass ? 16u : 0u;
@@ -1203,21 +1202,19 @@ static bool ot_entropy_src_eval_health_tests(OtEntropySrcState *s,
     uint16_t repcnt_val = 14u;
     uint16_t repcnts_val = 4u;
     unsigned var = (s->packet_count < 2u) ? 8u : 18u;
-    uint16_t adaptp_hi_val =
-        (uint16_t)(scope ? (window_symbols * 2u + 16u) :
-                           (window_symbols / 2u + var));
+    uint16_t adaptp_hi_val = (uint16_t)(scope ? (window_symbols * 2u + 16u) :
+                                                (window_symbols / 2u + var));
     uint16_t adaptp_lo_val =
-        (uint16_t)(scope ? (window_symbols * 2u - 16u) :
-                           (window_symbols > 32u ? window_symbols / 2u - var :
-                                                   1u));
+        (uint16_t)(scope ?
+                       (window_symbols * 2u - 16u) :
+                       (window_symbols > 32u ? window_symbols / 2u - var : 1u));
     uint16_t bucket_val = (uint16_t)(window_symbols / 16u + 16u);
-    uint16_t markov_hi_val =
-        (uint16_t)(scope ? (window_symbols + 16u) :
-                           (window_symbols / 4u + var));
+    uint16_t markov_hi_val = (uint16_t)(scope ? (window_symbols + 16u) :
+                                                (window_symbols / 4u + var));
     uint16_t markov_lo_val =
-        (uint16_t)(scope ? (window_symbols > 16u ? window_symbols - 16u : 1u) :
-                           (window_symbols > 64u ? window_symbols / 4u - var :
-                                                   1u));
+        (uint16_t)(scope ?
+                       (window_symbols > 16u ? window_symbols - 16u : 1u) :
+                       (window_symbols > 64u ? window_symbols / 4u - var : 1u));
 
     ot_entropy_src_update_watermark(s, R_REPCNT_HI_WATERMARKS, bypass,
                                     repcnt_val, false);
@@ -1328,8 +1325,7 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
             unsigned threshold = s->regs_hi[R_OBSERVE_FIFO_THRESH];
             ot_fifo32_push(&s->observe_fifo, word);
             trace_ot_entropy_src_obs_fifo(s->ot_id,
-                                          ot_fifo32_num_used(
-                                              &s->observe_fifo),
+                                          ot_fifo32_num_used(&s->observe_fifo),
                                           threshold);
             if (threshold != 0 &&
                 ot_fifo32_num_used(&s->observe_fifo) >= threshold) {
@@ -1355,10 +1351,11 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
         if (s->ht_symbol_count >= window_symbols) {
             s->ht_symbol_count = 0u;
             bool ht_fail = ot_entropy_src_eval_health_tests(s, window_symbols);
-            bool is_startup = (s->state == ENTROPY_SRC_STARTUP_HT_START ||
-                               s->state == ENTROPY_SRC_STARTUP_PHASE1 ||
-                               s->state == ENTROPY_SRC_STARTUP_PASS1 ||
-                               s->state == ENTROPY_SRC_STARTUP_FAIL1);
+            bool is_startup =
+                (s->state == ENTROPY_SRC_STARTUP_HT_START ||
+                 s->state == ENTROPY_SRC_STARTUP_PHASE1 ||
+                 s->state == ENTROPY_SRC_STARTUP_PASS1 ||
+                 s->state == ENTROPY_SRC_STARTUP_FAIL1);
             if (ht_fail) {
                 s->last_ht_failed = true;
                 ot_fifo32_reset(&s->bypass_fifo);
@@ -1369,10 +1366,12 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
                     g_assert(res == CRYPT_OK);
                 }
 
-                unsigned alert_thresh = FIELD_EX32(
-                    s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD, VAL);
-                uint16_t alert_thresh_inv = (uint16_t)~FIELD_EX32(
-                    s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD, INV);
+                unsigned alert_thresh =
+                    FIELD_EX32(s->regs_hi[R_ALERT_THRESHOLD], ALERT_THRESHOLD,
+                               VAL);
+                uint16_t alert_thresh_inv =
+                    (uint16_t)~FIELD_EX32(s->regs_hi[R_ALERT_THRESHOLD],
+                                          ALERT_THRESHOLD, INV);
                 uint32_t max_cnt =
                     (alert_thresh == 0xffffu) ? 0xfffeu : 0xffffu;
                 if (s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] < max_cnt) {
@@ -1460,9 +1459,8 @@ static uint32_t ot_entropy_src_get_entropy_data(OtEntropySrcState *s)
                 return word;
             }
             if (done) {
-                s->regs_hi[R_ERR_CODE] |=
-                    R_ERR_CODE_SFIFO_ESFINAL_ERR_MASK |
-                    R_ERR_CODE_FIFO_READ_ERR_MASK;
+                s->regs_hi[R_ERR_CODE] |= R_ERR_CODE_SFIFO_ESFINAL_ERR_MASK |
+                                          R_ERR_CODE_FIFO_READ_ERR_MASK;
                 s->fifo_err_pulse = true;
                 ot_entropy_src_update_alerts(s);
                 ot_entropy_src_update_irqs(s);
@@ -2156,8 +2154,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_ERR_CODE_TEST: {
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs_hi[R_ERR_CODE_TEST] = val32;
-        uint32_t err_bit =
-            (val32 < 31u) ? ((1u << val32) & ERR_CODE_MASK) : 0u;
+        uint32_t err_bit = (val32 < 31u) ? ((1u << val32) & ERR_CODE_MASK) : 0u;
         s->regs_hi[R_ERR_CODE] |= err_bit;
         if (err_bit & ERR_CODE_LOCAL_ESCALATE_MASK) {
             ot_entropy_src_change_state(s, ENTROPY_SRC_ERROR);

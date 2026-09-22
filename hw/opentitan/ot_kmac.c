@@ -510,9 +510,10 @@ static void ot_kmac_update_alert(OtKMACState *s)
     }
 
     s->regs[R_ALERT_TEST] = 0u;
-    uint32_t perm_level = (s->regs[R_STATUS] & R_STATUS_ALERT_FATAL_FAULT_MASK)
-                              ? (1u << ALERT_FATAL)
-                              : 0u;
+    uint32_t perm_level =
+        (s->regs[R_STATUS] & R_STATUS_ALERT_FATAL_FAULT_MASK) ?
+            (1u << ALERT_FATAL) :
+            0u;
     if (level != perm_level) {
         for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
             ibex_irq_set(&s->alerts[ix], (int)((perm_level >> ix) & 0x1u));
@@ -580,8 +581,7 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, PRESCALER);
     uint32_t wait_timer =
         FIELD_EX32(s->regs[R_ENTROPY_PERIOD], ENTROPY_PERIOD, WAIT_TIMER);
-    uint64_t wait_cycles =
-        (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
+    uint64_t wait_cycles = (uint64_t)wait_timer * ((uint64_t)prescaler + 1ULL);
 
     /*
      * In RTL (kmac_entropy.sv), seeding the 160-bit PRNG state in StRandEdn
@@ -589,8 +589,13 @@ static void ot_kmac_request_entropy(OtKMACState *s)
      * req/ack CDC synchronizers, >= 6 cycles per word = 30 cycles minimum).
      */
     if (wait_timer > 0 && wait_cycles < 30ULL) {
-        s->edn_pending = true;
-        ot_kmac_edn_wait_timer_handler(s);
+        s->edn_pending = false;
+        s->entropy_in_err = true;
+        s->entropy_seeded = true;
+        ot_kmac_report_error(s, OT_KMAC_ERR_WAIT_TIMER_EXPIRED, 0u);
+        if (s->state == KMAC_ST_PROCESSING || s->state == KMAC_ST_SQUEEZING) {
+            qemu_bh_schedule(s->bh);
+        }
         return;
     }
 
@@ -599,8 +604,8 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         (void)ot_edn_request_entropy(s->edn, s->edn_ep);
         if (wait_timer > 0) {
             uint64_t clk = s->pclk ? s->pclk : 100000000ULL;
-            uint64_t delay_ns =
-                muldiv64(wait_cycles, NANOSECONDS_PER_SECOND, clk);
+            int64_t delay_ns =
+                (int64_t)muldiv64(wait_cycles, NANOSECONDS_PER_SECOND, clk);
             timer_mod(s->edn_wait_timer,
                       qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
         }
@@ -846,9 +851,8 @@ static void ot_kmac_process(void *opaque)
         switch (s->state) {
         case KMAC_ST_PROCESSING:
         case KMAC_ST_SQUEEZING:
-            if (!s->current_app &&
-                (s->edn_pending ||
-                 (s->entropy_configured && !s->entropy_seeded))) {
+            if (!s->current_app && (s->edn_pending || (s->entropy_configured &&
+                                                       !s->entropy_seeded))) {
                 /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
@@ -865,8 +869,9 @@ static void ot_kmac_process(void *opaque)
             uint32_t reg_cfg = ot_shadow_reg_peek(&s->cfg);
             bool sideload = FIELD_EX32(reg_cfg, CFG_SHADOWED, SIDELOAD) != 0;
             if (!sideload || s->current_app) {
-                static_assert(sizeof(s->ltc_state.sha3.sb) == KECCAK_STATE_BYTES,
-                              "LibTomCrypt's Keccak state is an unexpected size");
+                static_assert(
+                    sizeof(s->ltc_state.sha3.sb) == KECCAK_STATE_BYTES,
+                    "LibTomCrypt's Keccak state is an unexpected size");
                 /* manually extract entire Keccak state, including capacity */
                 memcpy(&s->keccak_state[0], s->ltc_state.sha3.sb,
                        KECCAK_STATE_BYTES);
@@ -1004,9 +1009,9 @@ static void ot_kmac_process_start(OtKMACState *s)
     case OT_KMAC_MODE_KMAC:
         s->ltc_state.sha3.suffix = 0x04u;
         if (s->current_app) {
-            sha3_cshake_init(&s->ltc_state, (int)strength,
-                             cfg->prefix.funcname, cfg->prefix.funcname_len,
-                             cfg->prefix.customstr, cfg->prefix.customstr_len);
+            sha3_cshake_init(&s->ltc_state, (int)strength, cfg->prefix.funcname,
+                             cfg->prefix.funcname_len, cfg->prefix.customstr,
+                             cfg->prefix.customstr_len);
         } else {
             /*
              * RTL (sha3pad.sv:236, 327-358, 509-533):
@@ -1034,10 +1039,11 @@ static void ot_kmac_process_start(OtKMACState *s)
      * RTL (kmac_core.sv:180, 286-376):
      * StKey absorbs {encoded_key, encode_bytepad} whenever kmac_en_i is set.
      */
-    bool kmac_en = s->current_app ?
-                       (cfg->mode == OT_KMAC_MODE_KMAC) :
-                       (FIELD_EX32(ot_shadow_reg_peek(&s->cfg), CFG_SHADOWED,
-                                   KMAC_EN) != 0);
+    bool kmac_en =
+        s->current_app ?
+            (cfg->mode == OT_KMAC_MODE_KMAC) :
+            (FIELD_EX32(ot_shadow_reg_peek(&s->cfg), CFG_SHADOWED, KMAC_EN) !=
+             0);
     if (kmac_en) {
         uint8_t key[NUM_KEY_REGS * sizeof(uint32_t)];
         size_t keylen = 0;
@@ -1069,8 +1075,7 @@ static void ot_kmac_process_start(OtKMACState *s)
             (s->regs[R_ENTROPY_REFRESH_HASH_CNT] + 1u) &
             R_ENTROPY_REFRESH_HASH_CNT_HASH_CNT_MASK;
         uint32_t threshold = ot_shadow_reg_peek(&s->entropy_refresh_threshold);
-        if (threshold > 0 &&
-            s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= threshold) {
+        if (threshold > 0 && s->regs[R_ENTROPY_REFRESH_HASH_CNT] >= threshold) {
             s->regs[R_ENTROPY_REFRESH_HASH_CNT] = 0;
             if (s->entropy_configured) {
                 ot_kmac_request_entropy(s);
@@ -1274,10 +1279,10 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         uint8_t code;
         uint32_t info = 0;
         /*
-         * error encoding in OpenTitan RTL (hw/ip/kmac/rtl/kmac_errchk.sv:325-368):
-         * For err_swsequence, err_modestrength, and err_prefix:
-         *   info[23:16] = {5'h0, err_swsequence, err_modestrength, err_prefix}
-         * For err_entropy_ready:
+         * error encoding in OpenTitan RTL
+         * (hw/ip/kmac/rtl/kmac_errchk.sv:325-368): For err_swsequence,
+         * err_modestrength, and err_prefix: info[23:16] = {5'h0,
+         * err_swsequence, err_modestrength, err_prefix} For err_entropy_ready:
          *   info[23:16] = {4'h0, err_entropy_ready, err_swsequence,
          *                  err_modestrength, err_prefix}
          */
@@ -1332,9 +1337,8 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_shadow_reg_read(&s->cfg);
         break;
     case R_STATUS:
-        val32 = s->regs[R_STATUS] &
-                (R_STATUS_ALERT_FATAL_FAULT_MASK |
-                 R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK);
+        val32 = s->regs[R_STATUS] & (R_STATUS_ALERT_FATAL_FAULT_MASK |
+                                     R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK);
         switch (s->state) {
         case KMAC_ST_IDLE:
             val32 |= R_STATUS_SHA3_IDLE_MASK;
@@ -1455,7 +1459,8 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs[R_INTR_STATE] &= ~(val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK));
+        s->regs[R_INTR_STATE] &=
+            ~(val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK));
         ot_kmac_update_irq(s);
         break;
     case R_INTR_ENABLE:
@@ -1464,7 +1469,8 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case R_INTR_TEST:
         s->regs[R_INTR_TEST] = val32 & INTR_FIFO_EMPTY_MASK;
-        s->regs[R_INTR_STATE] |= val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK);
+        s->regs[R_INTR_STATE] |=
+            val32 & (INTR_KMAC_DONE_MASK | INTR_KMAC_ERR_MASK);
         ot_kmac_update_irq(s);
         break;
     case R_ALERT_TEST:
@@ -1574,7 +1580,8 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
             s->sw_seed_cnt++;
             /*
              * RTL (kmac_entropy.sv:357, prim_trivium.sv:72,104):
-             * BiviumStateWidth = 177, PartialSeedWidth = 32 -> NumStateParts = 6.
+             * BiviumStateWidth = 177, PartialSeedWidth = 32 -> NumStateParts
+             * = 6.
              */
             if (s->sw_seed_cnt >= 6u) {
                 s->entropy_seeded = true;
@@ -1662,6 +1669,7 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtKMACState *s = OT_KMAC(opaque);
+    (void)size;
     uint32_t val32;
 
     if (s->state != KMAC_ST_ABSORBED) {
@@ -1937,10 +1945,10 @@ static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
     [R_ENTROPY_REFRESH_HASH_CNT] = 0x3u,
     [R_ENTROPY_REFRESH_THRESHOLD_SHADOWED] = 0x3u,
     [R_ENTROPY_SEED] = 0xfu,
-    [R_KEY_SHARE0_0 ... R_KEY_SHARE0_15] = 0xfu,
-    [R_KEY_SHARE1_0 ... R_KEY_SHARE1_15] = 0xfu,
+    [R_KEY_SHARE0_0... R_KEY_SHARE0_15] = 0xfu,
+    [R_KEY_SHARE1_0... R_KEY_SHARE1_15] = 0xfu,
     [R_KEY_LEN] = 0x1u,
-    [R_PREFIX_0 ... R_PREFIX_10] = 0xfu,
+    [R_PREFIX_0... R_PREFIX_10] = 0xfu,
     [R_ERR_CODE] = 0xfu,
 };
 

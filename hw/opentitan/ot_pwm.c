@@ -126,13 +126,13 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         bool dc_wrap_q = false;
         uint64_t max_steps = MIN(htbt_steps, 4096ULL);
         for (uint64_t i = 0; i < max_steps; i++) {
-            uint32_t ext = htbt_dir ?
-                               ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
-                               ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
+            uint32_t ext =
+                htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
+                           ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
             bool dc_wrap = (ext >> 16u) & 1u;
             uint16_t dc_htbt_d = (uint16_t)ext;
-            dc_wrap_q = pos_htbt ? (dc_wrap && !htbt_dir) :
-                                   (dc_wrap && htbt_dir);
+            dc_wrap_q =
+                pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
             dc_htbt = dc_htbt_d;
             if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
                 htbt_dir = true;
@@ -231,7 +231,7 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_INVERT:
         s->regs[R_INVERT] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
         break;
-    case R_PWM_PARAM_0 ... (R_PWM_PARAM_0 + PARAM_NUM_OUTPUTS - 1u):
+    case R_PWM_PARAM_0 ...(R_PWM_PARAM_0 + PARAM_NUM_OUTPUTS - 1u):
         s->regs[reg] = val32 & 0xc000ffffu;
         break;
     default:

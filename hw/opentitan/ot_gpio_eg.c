@@ -244,8 +244,7 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
     uint32_t periph_out_en = s->data_oe & ~(s->opendrain & periph_out_v);
     periph_out_en =
         (periph_out_en & ~s->force_en) | (s->force_oe & s->force_en);
-    periph_out_v =
-        (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
+    periph_out_v = (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
     periph_out_v &= periph_out_en;
 
     uint32_t periph_pull_en = s->pull_en & ~s->force_en;
@@ -286,14 +285,16 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                 level = (int)ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
             } else if (outsel >= 65u && outsel < 71u && s->pwm) {
                 driven_by_dev = true;
-                level = (int)ot_pwm_get_channel_level(
-                    s->pwm, outsel - 65u,
-                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                level = (int)ot_pwm_get_channel_level(s->pwm, outsel - 65u,
+                                                      qemu_clock_get_ns(
+                                                          QEMU_CLOCK_VIRTUAL));
             }
             if (!driven_by_dev) {
                 if (p == 14u || p == 15u) {
-                    /* Open-drain DIO pins (IOR8/ec_rst_l, IOR9/flash_wp_l) with board pull-ups */
-                    bool host_low = !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
+                    /* Open-drain DIO pins (IOR8/ec_rst_l, IOR9/flash_wp_l) with
+                     * board pull-ups */
+                    bool host_low =
+                        !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
                     level = host_low ? 0 : 1;
                 } else if (!((s->data_bi >> p) & 1u)) {
                     level = (int)((s->data_ib >> p) & 1u);
@@ -337,9 +338,9 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
         unsigned g_out = outsel - 3u;
         if ((s->data_oe >> g_out) & 1u) {
             bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
-            bool od = (bool)(pad_attr &
-                             (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
-                              OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
+            bool od =
+                (bool)(pad_attr & (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
+                                   OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
             if (!(od && (g_out_val ^ pad_inv))) {
                 return g_out_val ? 1 : 0;
             }
@@ -349,9 +350,8 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
     } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
         return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
     } else if (outsel >= 65u && outsel < 71u && s->pwm) {
-        return ot_pwm_get_channel_level(
-                   s->pwm, outsel - 65u,
-                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
+        return ot_pwm_get_channel_level(s->pwm, outsel - 65u,
+                                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
                    1 :
                    0;
     }
@@ -385,8 +385,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 routed_bi &= ~(1u << g);
             } else if (insel >= 2u && (insel - 2u) < 47u) {
                 unsigned mio_pad = insel - 2u;
-                int hp = all_muxed ? (int)g :
-                                     ot_pinmux_eg_mio_to_host_pin(mio_pad);
+                int hp =
+                    all_muxed ? (int)g : ot_pinmux_eg_mio_to_host_pin(mio_pad);
                 if (hp >= 0 && hp < (int)PARAM_NUM_IO) {
                     unsigned host_pin = (unsigned)hp;
                     if ((eff_data_ib >> host_pin) & 1u) {
@@ -453,8 +453,7 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 
     s->regs[R_DATA_IN] = data_mix;
 
-    trace_ot_gpio_in_update(s->ot_id, s->invert, ext_in, s->data_out,
-                            data_mix);
+    trace_ot_gpio_in_update(s->ot_id, s->invert, ext_in, s->data_out, data_mix);
 
     ot_gpio_eg_update_intr_level(s);
     ot_gpio_eg_update_intr_edge(s, prev);
@@ -564,8 +563,7 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
     }
     confstr[3u] = '\0';
 
-    uint32_t force_mode =
-        SHARED_FIELD_EX32(cfg, OT_PINMUX_PAD_ATTR_FORCE_MODE);
+    uint32_t force_mode = SHARED_FIELD_EX32(cfg, OT_PINMUX_PAD_ATTR_FORCE_MODE);
     switch (force_mode) {
     case OT_PINMUX_PAD_FORCE_LOW:
         s->force_en |= bit;
@@ -622,8 +620,7 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->regs[reg];
         if (val32 == s->last_read_data_in) {
             s->poll_count++;
-            if (s->poll_count > 16u &&
-                qemu_chr_fe_backend_connected(&s->chr)) {
+            if (s->poll_count > 16u && qemu_chr_fe_backend_connected(&s->chr)) {
                 bql_unlock();
                 replay_mutex_unlock();
                 g_usleep(50);
@@ -652,7 +649,7 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
          * same output data register: a masked write must be observable through
          * a DIRECT_OUT read. Return the live output value rather than the last
          * value written specifically through DIRECT_OUT.
-        */
+         */
         val32 = s->data_out;
         break;
     case R_DIRECT_OE:
@@ -807,8 +804,7 @@ static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
     for (unsigned bit = 0; bit < s->bb_npins; bit++) {
         uint32_t outsel =
             ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]);
-        if (outsel == 41u || outsel == 42u || outsel == 53u ||
-            outsel == 54u) {
+        if (outsel == 41u || outsel == 42u || outsel == 53u || outsel == 54u) {
             return true;
         }
     }
@@ -891,8 +887,7 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         if (outsel >= 65u && outsel < 71u && s->pwm) {
             return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
         }
-        if ((outsel == 41u || outsel == 53u || outsel == 54u) &&
-            s->spi_host1) {
+        if ((outsel == 41u || outsel == 53u || outsel == 54u) && s->spi_host1) {
             return ot_spi_host_get_pin_level(s->spi_host1, outsel, sample_ns);
         }
     }
@@ -913,9 +908,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     bool uses_spi_host1 = ot_gpio_eg_bitbang_uses_spi_host1(s);
     OtI2CState *active_i2c =
         uses_spi_host1 ? NULL : ot_gpio_eg_get_active_override_i2c(s);
-    OtI2CState *target_i2c = (uses_spi_host1 || active_i2c) ?
-                                 NULL :
-                                 ot_gpio_eg_get_active_target_i2c(s);
+    OtI2CState *target_i2c =
+        (uses_spi_host1 || active_i2c) ? NULL :
+                                         ot_gpio_eg_get_active_target_i2c(s);
     bool uses_pwm =
         !uses_spi_host1 && !active_i2c && !target_i2c && (s->pwm != NULL);
 
@@ -978,8 +973,8 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
                 s->bb_wait_pwm_ticks = 50000u;
                 s->bb_tail_ticks = 20u;
             }
-            int64_t next_ns = s->bb_start_ns +
-                              (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+            int64_t next_ns =
+                s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
             timer_mod_ns(s->bb_timer, next_ns);
             return;
         }
@@ -1007,14 +1002,18 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                              (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
             if (uses_spi_host1) {
-                ot_spi_host_set_waveform_start_ns(
-                    s->spi_host1,
-                    s->bb_start_ns + 10LL * (int64_t)s->bb_period_ns, false);
+                ot_spi_host_set_waveform_start_ns(s->spi_host1,
+                                                  s->bb_start_ns +
+                                                      10LL * (int64_t)s
+                                                                 ->bb_period_ns,
+                                                  false);
             }
             if (active_i2c) {
-                ot_i2c_set_waveform_start_ns(
-                    active_i2c,
-                    s->bb_start_ns + 100LL * (int64_t)s->bb_period_ns, false);
+                ot_i2c_set_waveform_start_ns(active_i2c,
+                                             s->bb_start_ns +
+                                                 100LL *
+                                                     (int64_t)s->bb_period_ns,
+                                             false);
             }
         }
 
@@ -1027,9 +1026,8 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
         }
 
         for (uint32_t k = 0; k < chunk; k++) {
-            int64_t sample_ns =
-                s->bb_start_ns +
-                (int64_t)(s->bb_idx + k) * (int64_t)s->bb_period_ns;
+            int64_t sample_ns = s->bb_start_ns + (int64_t)(s->bb_idx + k) *
+                                                     (int64_t)s->bb_period_ns;
             uint8_t sample_byte = 0;
             for (unsigned bit = 0; bit < s->bb_npins; bit++) {
                 unsigned pad = s->bb_pins[bit];
@@ -1094,8 +1092,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     g_string_append(resp, "\r\n");
 
     if (qemu_chr_fe_backend_connected(&s->chr)) {
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)resp->str,
-                              (int)resp->len);
+        qemu_chr_fe_write(&s->chr, (const uint8_t *)resp->str, (int)resp->len);
     }
     g_string_free(resp, TRUE);
 
@@ -1346,8 +1343,7 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     /* Apply PINMUX sleep retention force overrides */
     periph_out_en =
         (periph_out_en & ~s->force_en) | (s->force_oe & s->force_en);
-    periph_out_v =
-        (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
+    periph_out_v = (periph_out_v & ~s->force_en) | (s->force_out & s->force_en);
 
     periph_out_v &= periph_out_en;
 
@@ -1360,8 +1356,8 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     if (s->pinmux) {
         for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
             if ((p == 14u || p == 15u) && s->sysrst_ctrl) {
-                bool host_low = !((s->data_bi >> p) & 1u) &&
-                                !((s->data_ib >> p) & 1u);
+                bool host_low =
+                    !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
                 int drv =
                     ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 86u + p);
                 out_en |= (1u << p);
@@ -1401,8 +1397,8 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
                     out_v |= (1u << p);
                 }
             } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
-                int drv = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl,
-                                                          outsel);
+                int drv =
+                    ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
                 out_en |= (1u << p);
                 if (drv != 0) {
                     out_v |= (1u << p);
@@ -1451,19 +1447,24 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     len += snprintf(&buf[len], sizeof(buf) - len, "T:%08x\r\n", now_us);
 
     if (force || bstate.hi_z != s->backend_state.hi_z) {
-        len += snprintf(&buf[len], sizeof(buf) - len, "Z:%08x\r\n", bstate.hi_z);
+        len +=
+            snprintf(&buf[len], sizeof(buf) - len, "Z:%08x\r\n", bstate.hi_z);
     }
     if (force || bstate.pull_v != s->backend_state.pull_v) {
-        len += snprintf(&buf[len], sizeof(buf) - len, "P:%08x\r\n", bstate.pull_v);
+        len +=
+            snprintf(&buf[len], sizeof(buf) - len, "P:%08x\r\n", bstate.pull_v);
     }
     if (force || bstate.out_en != s->backend_state.out_en) {
-        len += snprintf(&buf[len], sizeof(buf) - len, "D:%08x\r\n", bstate.out_en);
+        len +=
+            snprintf(&buf[len], sizeof(buf) - len, "D:%08x\r\n", bstate.out_en);
     }
     if (force || bstate.out_v != s->backend_state.out_v) {
-        len += snprintf(&buf[len], sizeof(buf) - len, "O:%08x\r\n", bstate.out_v);
+        len +=
+            snprintf(&buf[len], sizeof(buf) - len, "O:%08x\r\n", bstate.out_v);
     }
     if (force || s->pending_input_ack || bstate.in_m != s->backend_state.in_m) {
-        len += snprintf(&buf[len], sizeof(buf) - len, "Y:%08x\r\n", bstate.in_m);
+        len +=
+            snprintf(&buf[len], sizeof(buf) - len, "Y:%08x\r\n", bstate.in_m);
     }
 
     s->backend_state = bstate;

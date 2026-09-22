@@ -237,16 +237,11 @@ static void ot_timer_clock_input(void *opaque, int irq, int level)
 }
 
 static const uint8_t RV_TIMER_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,
-    [R_CTRL] = 0x1u,
-    [R_INTR_ENABLE0] = 0x1u,
-    [R_INTR_STATE0] = 0x1u,
-    [R_INTR_TEST0] = 0x1u,
-    [R_CFG0] = 0x7u,
-    [R_TIMER_V_LOWER0] = 0xfu,
-    [R_TIMER_V_UPPER0] = 0xfu,
-    [R_COMPARE_LOWER0_0] = 0xfu,
-    [R_COMPARE_UPPER0_0] = 0xfu,
+    [R_ALERT_TEST] = 0x1u,       [R_CTRL] = 0x1u,
+    [R_INTR_ENABLE0] = 0x1u,     [R_INTR_STATE0] = 0x1u,
+    [R_INTR_TEST0] = 0x1u,       [R_CFG0] = 0x7u,
+    [R_TIMER_V_LOWER0] = 0xfu,   [R_TIMER_V_UPPER0] = 0xfu,
+    [R_COMPARE_LOWER0_0] = 0xfu, [R_COMPARE_UPPER0_0] = 0xfu,
 };
 
 static bool ot_timer_accepts(void *opaque, hwaddr addr, unsigned size,

@@ -474,9 +474,8 @@ static void ot_pwrmgr_sync_slow_regs(OtPwrMgrState *s)
     s->slow_regs.reset_en = s->regs[R_RESET_EN];
     s->slow_regs.wakeup_en = s->regs[R_WAKEUP_EN];
     s->slow_regs.control = s->regs[R_CONTROL];
-    if (s->wake_info_recording &&
-        !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
-          R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+    if (s->wake_info_recording && !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                                    R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
         s->regs[R_WAKE_INFO] |=
             (s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en);
     }
@@ -487,9 +486,10 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s);
 static void ot_pwrmgr_update_usb_clock(OtPwrMgrState *s)
 {
     if (s->clock_ctrl) {
-        bool usb_en = s->in_low_power ?
-            (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_LP_MASK) :
-            (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_ACTIVE_MASK);
+        bool usb_en =
+            s->in_low_power ?
+                (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_LP_MASK) :
+                (bool)(s->slow_regs.control & R_CONTROL_USB_CLK_EN_ACTIVE_MASK);
         OT_CLOCK_CTRL_IF_GET_CLASS(s->clock_ctrl)
             ->clock_enable(OT_CLOCK_CTRL_IF(s->clock_ctrl), "usb", usb_en);
     }
@@ -577,8 +577,8 @@ static void ot_pwrmgr_set_low_power(OtPwrMgrState *s, bool low_power)
     s->in_low_power = low_power;
     ot_pwrmgr_update_usb_clock(s);
     ibex_irq_set(&s->sleep_en, (int)low_power);
-    OtAonTimerState *aon = (OtAonTimerState *)object_resolve_path_type(
-        "", TYPE_OT_AON_TIMER, NULL);
+    OtAonTimerState *aon = (OtAonTimerState *)
+        object_resolve_path_type("", TYPE_OT_AON_TIMER, NULL);
     if (aon) {
         ot_aon_timer_set_sleep_mode(aon, low_power);
     }
@@ -600,10 +600,11 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             return;
         }
         if (!s->in_low_power) {
-            OtFlashState *flash = (OtFlashState *)object_resolve_path_type(
-                "", TYPE_OT_FLASH, NULL);
+            OtFlashState *flash = (OtFlashState *)
+                object_resolve_path_type("", TYPE_OT_FLASH, NULL);
             if (flash && !ot_flash_is_idle(flash)) {
-                /* FastPwrStateNvmIdleChk: abort low power entry if flash busy */
+                /* FastPwrStateNvmIdleChk: abort low power entry if flash busy
+                 */
                 if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
                       R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
                     s->wake_info_recording = true;
@@ -625,9 +626,8 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             }
             if (!active_wkup &&
                 s->slow_regs.wakeup_en == (1u << OT_PWRMGR_WAKEUP_SENSOR)) {
-                OtSensorEgState *sensor =
-                    (OtSensorEgState *)object_resolve_path_type(
-                        "", TYPE_OT_SENSOR_EG, NULL);
+                OtSensorEgState *sensor = (OtSensorEgState *)
+                    object_resolve_path_type("", TYPE_OT_SENSOR_EG, NULL);
                 if (sensor) {
                     ot_sensor_eg_trigger_recov_event(sensor, 0u);
                     return;
@@ -645,9 +645,9 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
             s->regs[R_INTR_STATE] |= WAKEUP_MASK;
             if (!(s->slow_regs.control & R_CONTROL_MAIN_PD_N_MASK)) {
                 ibex_irq_set(&s->cpu_enable, (int)false);
-                ibex_irq_set(&s->reset_req,
-                             OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_SLOW_DOMAIN,
-                                                     OT_RSTMGR_RESET_LOW_POWER));
+                ibex_irq_set(&s->reset_req, OT_RSTMGR_RESET_REQUEST(
+                                                OT_PWRMGR_SLOW_DOMAIN,
+                                                OT_RSTMGR_RESET_LOW_POWER));
             } else {
                 ot_pwrmgr_update_irq(s);
             }
@@ -662,9 +662,8 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         s->glitch_check_count = 0;
         if (cpu && cpu->halted && s->slow_regs.wakeup_en == 0u &&
             !(s->slow_regs.reset_en & 1u)) {
-            OtAonTimerState *aon =
-                (OtAonTimerState *)object_resolve_path_type(
-                    "", TYPE_OT_AON_TIMER, NULL);
+            OtAonTimerState *aon = (OtAonTimerState *)
+                object_resolve_path_type("", TYPE_OT_AON_TIMER, NULL);
             if (aon && !ot_aon_timer_is_active(aon)) {
                 s->regs[R_FAULT_STATUS] |= R_FAULT_STATUS_MAIN_PD_GLITCH_MASK;
                 ibex_irq_set(&s->alert, 1);
@@ -855,9 +854,9 @@ static void ot_pwrmgr_fast_fsm_tick(OtPwrMgrState *s)
         trace_ot_pwrmgr_shutdown(s->ot_id, s->main);
         s->fsm_events.escalate = false;
         if (s->main) {
-            ibex_irq_set(&s->reset_req,
-                         OT_RSTMGR_RESET_REQUEST(OT_PWRMGR_FAST_DOMAIN,
-                                                 OT_RSTMGR_RESET_ALERT_HANDLER));
+            ibex_irq_set(&s->reset_req, OT_RSTMGR_RESET_REQUEST(
+                                            OT_PWRMGR_FAST_DOMAIN,
+                                            OT_RSTMGR_RESET_ALERT_HANDLER));
         }
     }
 
@@ -1214,9 +1213,8 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         val32 &= WAKE_INFO_MASK(s);
         s->regs[reg] &= ~val32; /* RW1C */
-        if (s->wake_info_recording &&
-            !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
-              R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+        if (s->wake_info_recording && !(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                                        R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
             s->regs[reg] |= (s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en);
         }
         break;

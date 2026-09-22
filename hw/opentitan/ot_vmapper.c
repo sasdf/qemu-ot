@@ -362,8 +362,7 @@ static int ot_vmapper_get_phy_addr(OtVMapperState *s, CPURISCVState *env,
     bool share_page = false;
     if (!range_subpage && other_range && (addr <= other_range->end) &&
         !ot_vmapper_is_subpage(other_range, addr_page)) {
-        uint32_t phys_page =
-            range->dest + ((uint32_t)addr_page - range->start);
+        uint32_t phys_page = range->dest + ((uint32_t)addr_page - range->start);
         uint32_t other_phys_page =
             other_range->dest + ((uint32_t)addr_page - other_range->start);
         share_page = (phys_page == other_phys_page);
@@ -469,28 +468,27 @@ static GList *ot_vmapper_range_discretize(OtVMapperState *s, GList *rglist)
                     g_free(next->data);
                     g_list_free_1(next);
                     continue;
-                } else {
-                    /*
-                     * case (a2): central part of current is masked by next
-                     * 1. create a new region for the right part of current
-                     * 2. insert the new region after next
-                     * 3. update current's end position
-                     */
-                    if (VMAP_RANGE(next)->end < VMAP_RANGE(current)->end) {
-                        OtRegionRange *right = g_new0(OtRegionRange, 1);
-                        right->start = VMAP_RANGE(next)->end + 1u;
-                        right->end = VMAP_RANGE(current)->end;
-                        right->dest = VMAP_RANGE(current)->dest + right->start -
-                                      VMAP_RANGE(current)->start;
-                        right->prio = VMAP_RANGE(current)->prio;
-                        right->execute = VMAP_RANGE(current)->execute;
-                        right->active = true;
-                        /* assignation is useless, but GCC won't let it go */
-                        next = g_list_insert(next, right, 1u);
-                    }
-                    /* trim current on next */
-                    VMAP_RANGE(current)->end = VMAP_RANGE(next)->start - 1u;
                 }
+                /*
+                 * case (a2): central part of current is masked by next
+                 * 1. create a new region for the right part of current
+                 * 2. insert the new region after next
+                 * 3. update current's end position
+                 */
+                if (VMAP_RANGE(next)->end < VMAP_RANGE(current)->end) {
+                    OtRegionRange *right = g_new0(OtRegionRange, 1);
+                    right->start = VMAP_RANGE(next)->end + 1u;
+                    right->end = VMAP_RANGE(current)->end;
+                    right->dest = VMAP_RANGE(current)->dest + right->start -
+                                  VMAP_RANGE(current)->start;
+                    right->prio = VMAP_RANGE(current)->prio;
+                    right->execute = VMAP_RANGE(current)->execute;
+                    right->active = true;
+                    /* assignation is useless, but GCC won't let it go */
+                    next = g_list_insert(next, right, 1u);
+                }
+                /* trim current on next */
+                VMAP_RANGE(current)->end = VMAP_RANGE(next)->start - 1u;
             } else {
                 /* case (b): next extends after current, two cases:
                  *

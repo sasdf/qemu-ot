@@ -359,8 +359,8 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
     }
 
     if (!escalated) {
-        uint32_t new_key = (ot_prng_random_u32(s->prng) | 1u) ^
-                           ((s->scr_key & 1u) ? 2u : 0u);
+        uint32_t new_key =
+            (ot_prng_random_u32(s->prng) | 1u) ^ ((s->scr_key & 1u) ? 2u : 0u);
         ot_sram_ctrl_apply_scr_key(s, new_key);
         if (!s->noinit && s->init_sram_bm) {
             size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
@@ -426,9 +426,9 @@ static void ot_sram_ctrl_lc_escalate(void *opaque, int irq, int level)
         s->initializing = false;
         s->init_slot_pos = 0;
         s->regs[R_STATUS] |= R_STATUS_ESCALATED_MASK;
-        s->regs[R_STATUS] &= ~(R_STATUS_SCR_KEY_VALID_MASK |
-                               R_STATUS_SCR_KEY_SEED_VALID_MASK |
-                               R_STATUS_INIT_DONE_MASK);
+        s->regs[R_STATUS] &=
+            ~(R_STATUS_SCR_KEY_VALID_MASK | R_STATUS_SCR_KEY_SEED_VALID_MASK |
+              R_STATUS_INIT_DONE_MASK);
         s->regs[R_SCR_KEY_ROTATED] = OT_MULTIBITBOOL4_FALSE;
         ot_sram_ctrl_apply_scr_key(s, 0u);
         memory_region_set_enabled(&s->mem->alias, false);
@@ -671,8 +671,9 @@ static MemTxResult ot_sram_ctrl_mem_init_read_with_attrs(
         (s->init_sram_bm[ot_sram_ctrl_get_u64_slot(cell)] &
          (1ull << ot_sram_ctrl_get_u64_offset(cell)))) {
         SysBusDevice *sbd = SYS_BUS_DEVICE(s);
-        ot_common_raise_load_integrity_error(
-            DEVICE(s), (sbd->mmio[1].addr - sbd->mmio[0].addr) + addr);
+        ot_common_raise_load_integrity_error(DEVICE(s), (sbd->mmio[1].addr -
+                                                         sbd->mmio[0].addr) +
+                                                            addr);
     }
 
     trace_ot_sram_ctrl_mem_io_reado(s->ot_id, (uint32_t)addr, size, val32, pc);
@@ -814,8 +815,7 @@ static void ot_sram_ctrl_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    if (s->ot_id && !strcmp(s->ot_id, "ret") &&
-        ot_rstmgr_is_low_power_exit()) {
+    if (s->ot_id && !strcmp(s->ot_id, "ret") && ot_rstmgr_is_low_power_exit()) {
         return;
     }
 

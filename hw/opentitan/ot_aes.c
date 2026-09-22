@@ -1270,7 +1270,8 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
         if (!ot_aes_is_data_in_ready(r) && !s->ctx->di_full) {
             val32 |= R_STATUS_INPUT_READY_MASK;
         }
-        if ((r->status & R_STATUS_OUTPUT_VALID_MASK || s->ctx->do_full) && s->ctx->di_full) {
+        if ((r->status & R_STATUS_OUTPUT_VALID_MASK || s->ctx->do_full) &&
+            s->ctx->di_full) {
             val32 |= R_STATUS_STALL_MASK;
         }
         break;

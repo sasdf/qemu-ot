@@ -52,8 +52,8 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
-#include "block/aio.h"
 #include "qapi/error.h"
+#include "block/aio.h"
 #include "hw/i2c/i2c.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
@@ -456,8 +456,8 @@ static void ot_i2c_update_irqs(OtI2CState *s)
     uint32_t state_masked = state & s->regs[R_INTR_ENABLE];
 
     if (state || s->regs[R_INTR_ENABLE]) {
-        trace_ot_i2c_update_irqs(s->ot_id, state,
-                                 s->regs[R_INTR_ENABLE], state_masked);
+        trace_ot_i2c_update_irqs(s->ot_id, state, s->regs[R_INTR_ENABLE],
+                                 state_masked);
     }
 
     for (unsigned index = 0; index < ARRAY_SIZE(s->irqs); index++) {
@@ -561,9 +561,8 @@ static void ot_i2c_update_fmt_threshold(OtI2CState *s)
             uint64_t next_ns = s->fmt_finish_ns;
             uint32_t thresh = ot_i2c_get_fmt_threshold(s);
             if (!below && thresh > 0) {
-                uint64_t drop_ns =
-                    s->fmt_finish_ns -
-                    (uint64_t)(thresh - 1u) * ot_i2c_get_byte_ns(s);
+                uint64_t drop_ns = s->fmt_finish_ns - (uint64_t)(thresh - 1u) *
+                                                          ot_i2c_get_byte_ns(s);
                 if ((int64_t)drop_ns > now && drop_ns < next_ns) {
                     next_ns = drop_ns;
                 }
@@ -1046,8 +1045,8 @@ static uint64_t ot_i2c_get_target_stretch_ns(OtI2CState *s, bool is_read)
 {
     I2CNode *node;
     QLIST_FOREACH(node, &s->bus->current_devs, next) {
-        PmodI2CSensorState *dev = (PmodI2CSensorState *)object_dynamic_cast(
-            OBJECT(node->elt), TYPE_PMOD_I2C_SENSOR);
+        PmodI2CSensorState *dev = (PmodI2CSensorState *)
+            object_dynamic_cast(OBJECT(node->elt), TYPE_PMOD_I2C_SENSOR);
         if (dev && dev->parent_obj.address == 0x22u) {
             return (uint64_t)dev->regs[is_read ? 0xdcu : 0xdbu] * 1000000ULL;
         }
@@ -1235,10 +1234,9 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_TARGET_ID:
-        s->regs[R_TARGET_ID] = val32 & (R_TARGET_ID_ADDRESS0_MASK |
-                                        R_TARGET_ID_MASK0_MASK |
-                                        R_TARGET_ID_ADDRESS1_MASK |
-                                        R_TARGET_ID_MASK1_MASK);
+        s->regs[R_TARGET_ID] =
+            val32 & (R_TARGET_ID_ADDRESS0_MASK | R_TARGET_ID_MASK0_MASK |
+                     R_TARGET_ID_ADDRESS1_MASK | R_TARGET_ID_MASK1_MASK);
         address = FIELD_EX32(val32, TARGET_ID, ADDRESS0);
         mask = FIELD_EX32(val32, TARGET_ID, MASK0);
         /* Update the address mask of this target on the bus. */
@@ -1258,11 +1256,11 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
          * Allow both ENABLEHOST and ENABLETARGET to be set so the
          * host can decide how to configure and use the controller.
          */
-        val32 &= R_CTRL_ENABLEHOST_MASK | R_CTRL_ENABLETARGET_MASK |
-                 R_CTRL_LLPBK_MASK | R_CTRL_NACK_ADDR_AFTER_TIMEOUT_MASK |
-                 R_CTRL_ACK_CTRL_EN_MASK |
-                 R_CTRL_MULTI_CONTROLLER_MONITOR_EN_MASK |
-                 R_CTRL_TX_STRETCH_CTRL_EN_MASK;
+        val32 &=
+            R_CTRL_ENABLEHOST_MASK | R_CTRL_ENABLETARGET_MASK |
+            R_CTRL_LLPBK_MASK | R_CTRL_NACK_ADDR_AFTER_TIMEOUT_MASK |
+            R_CTRL_ACK_CTRL_EN_MASK | R_CTRL_MULTI_CONTROLLER_MONITOR_EN_MASK |
+            R_CTRL_TX_STRETCH_CTRL_EN_MASK;
         s->regs[reg] = val32;
         if (!ot_i2c_host_enabled(s)) {
             s->fmt_finish_ns = 0;
@@ -1346,9 +1344,9 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
                 } else if (s->ovrd_len < ARRAY_SIZE(s->ovrd_steps)) {
                     int64_t prev_ns = s->ovrd_steps[s->ovrd_len - 1u].offset_ns;
                     bool prev_scl = s->ovrd_steps[s->ovrd_len - 1u].scl;
-                    int64_t delta =
-                        (prev_scl && !scl && s->ovrd_len > 3u) ? 40000LL :
-                                                                 20000LL;
+                    int64_t delta = (prev_scl && !scl && s->ovrd_len > 3u) ?
+                                        40000LL :
+                                        20000LL;
                     s->ovrd_steps[s->ovrd_len++] =
                         (OtI2cOvrdStep){ prev_ns + delta, scl, sda };
                 }
@@ -1405,8 +1403,8 @@ static void ot_i2c_write(void *opaque, hwaddr addr, uint64_t val64,
             s->ack_ctrl_stretching = false;
             ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
             if (nack && ot_i2c_host_enabled(s) && i2c_bus_busy(s->bus)) {
-                uint32_t fval = FIELD_DP32(0, FDATA, FBYTE,
-                                           s->acq_fifo_next_data);
+                uint32_t fval =
+                    FIELD_DP32(0, FDATA, FBYTE, s->acq_fifo_next_data);
                 fval = FIELD_DP32(fval, FDATA, NAKOK, s->host_pending_nakok);
                 ot_fifo32_push(&s->host_tx_fifo, fval);
                 ot_i2c_host_send(s);
@@ -1567,8 +1565,8 @@ static int ot_i2c_target_event(I2CSlave *target, enum i2c_event event)
         if (s->in_target_xact) {
             /* Signal STOP or NACK_STOP as the last entry in the fifo. */
             ot_i2c_target_set_acqdata(s, 0,
-                                      s->nack_transaction ? SIGNAL_NACK_STOP
-                                                          : SIGNAL_STOP);
+                                      s->nack_transaction ? SIGNAL_NACK_STOP :
+                                                            SIGNAL_STOP);
         }
         s->in_bus_xact = false;
         s->in_target_xact = false;
@@ -1987,8 +1985,8 @@ bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in)
                 s->bb_drive_sda_low = match;
                 s->bb_state = match ? OT_I2C_BB_ADDR : OT_I2C_BB_IGNORE;
                 if (match) {
-                    OtI2CSignal sig = s->bb_seen_valid_start ? SIGNAL_RESTART :
-                                                               SIGNAL_START;
+                    OtI2CSignal sig =
+                        s->bb_seen_valid_start ? SIGNAL_RESTART : SIGNAL_START;
                     ot_i2c_target_set_acqdata(s, s->bb_shift_reg, sig);
                     s->bb_seen_valid_start = true;
                 }
@@ -2001,10 +1999,9 @@ bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in)
                     s->bb_drive_sda_low = false;
                 } else {
                     s->bb_state = OT_I2C_BB_READ_DATA;
-                    s->bb_cur_tx_byte =
-                        fifo8_is_empty(&s->target_tx_fifo) ?
-                            0xffu :
-                            fifo8_pop(&s->target_tx_fifo);
+                    s->bb_cur_tx_byte = fifo8_is_empty(&s->target_tx_fifo) ?
+                                            0xffu :
+                                            fifo8_pop(&s->target_tx_fifo);
                     ot_i2c_irq_set_state(s, TX_THRESHOLD,
                                          ot_i2c_tx_threshold_intr(s));
                     s->bb_drive_sda_low =
@@ -2030,14 +2027,12 @@ bool ot_i2c_bitbang_target_step(OtI2CState *s, bool scl, bool sda_in)
                 s->bb_drive_sda_low = false;
             } else if (s->bb_bit_count == 9u) {
                 s->bb_bit_count = 0;
-                s->bb_cur_tx_byte =
-                    fifo8_is_empty(&s->target_tx_fifo) ?
-                        0xffu :
-                        fifo8_pop(&s->target_tx_fifo);
+                s->bb_cur_tx_byte = fifo8_is_empty(&s->target_tx_fifo) ?
+                                        0xffu :
+                                        fifo8_pop(&s->target_tx_fifo);
                 ot_i2c_irq_set_state(s, TX_THRESHOLD,
                                      ot_i2c_tx_threshold_intr(s));
-                s->bb_drive_sda_low =
-                    (((s->bb_cur_tx_byte >> 7u) & 1u) == 0);
+                s->bb_drive_sda_low = (((s->bb_cur_tx_byte >> 7u) & 1u) == 0);
             }
             break;
         default:
@@ -2236,7 +2231,8 @@ static void pmod_i2c_sensor_reset(DeviceState *dev)
     case 0x59u: /* SGP30 Gas Sensor (0xD4 = kSelfTestPass & non-00/non-FF) */
         memset(s->regs, 0xd4u, sizeof(s->regs));
         break;
-    case 0x7cu: /* I2C Reserved Device ID for MB85RC256V FRAM (0x51 << 1 = 0xA2) */
+    case 0x7cu: /* I2C Reserved Device ID for MB85RC256V FRAM (0x51 << 1 = 0xA2)
+                 */
         s->regs[0xa3u] = 0xa5u;
         s->regs[0xa4u] = 0x10u;
         break;
@@ -2268,9 +2264,11 @@ static int pmod_i2c_sensor_send(I2CSlave *i2c, uint8_t data)
     uint8_t asize = (addr == 0x51u || addr == 0x52u) ? 2u : 1u;
     if (s->addr_bytes < asize) {
         uint8_t mapped = (addr == 0x40u) ? (uint8_t)(data << 1u) :
-                         (addr == 0x22u && data == 0xcfu) ? 0x00u : data;
+                         (addr == 0x22u && data == 0xcfu) ? 0x00u :
+                                                            data;
         s->reg_ptr = (s->addr_bytes == 0) ?
-                     mapped : ((s->reg_ptr << 8u) | mapped) & 0x7ffu;
+                         mapped :
+                         ((s->reg_ptr << 8u) | mapped) & 0x7ffu;
         s->addr_bytes++;
         return 0;
     }
@@ -2287,8 +2285,8 @@ static uint8_t pmod_i2c_sensor_recv(I2CSlave *i2c)
     PmodI2CSensorState *s = PMOD_I2C_SENSOR(i2c);
     uint8_t addr = s->parent_obj.address;
     uint8_t val = s->regs[s->reg_ptr];
-    s->reg_ptr = (s->reg_ptr + 1u) &
-                 ((addr == 0x51u || addr == 0x52u) ? 0x7ffu : 0xffu);
+    s->reg_ptr =
+        (s->reg_ptr + 1u) & ((addr == 0x51u || addr == 0x52u) ? 0x7ffu : 0xffu);
     return val;
 }
 

@@ -37,9 +37,8 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
-#include "exec/icount.h"
 #include "chardev/char-fe.h"
-#include "io/channel-file.h"
+#include "exec/icount.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_uart.h"
@@ -49,6 +48,7 @@
 #include "hw/riscv/ibex_clock_src.h"
 #include "hw/riscv/ibex_common.h"
 #include "hw/riscv/ibex_irq.h"
+#include "io/channel-file.h"
 #include "trace.h"
 
 /* clang-format off */
@@ -325,8 +325,7 @@ static CharFrontend *ot_uart_get_tx_chr(OtUARTState *s)
 static CharFrontend *ot_uart_get_rx_chr(OtUARTState *s)
 {
     for (int i = 0; i < 4; i++) {
-        if (ot_uart_instances[i] &&
-            ot_uart_instances[i]->rx_target_uart == s) {
+        if (ot_uart_instances[i] && ot_uart_instances[i]->rx_target_uart == s) {
             return &ot_uart_instances[i]->chr;
         }
     }
@@ -409,8 +408,7 @@ static bool ot_uart_check_pty_parity(OtUARTState *s, OtUARTState *rx_owner)
         if (tcgetattr(master_fd, &tio) == 0) {
             if ((tio.c_cflag & PARENB) || (tio.c_iflag & INPCK)) {
                 bool host_odd = (tio.c_cflag & PARODD) != 0;
-                bool dev_odd =
-                    (s->regs[R_CTRL] & R_CTRL_PARITY_ODD_MASK) != 0;
+                bool dev_odd = (s->regs[R_CTRL] & R_CTRL_PARITY_ODD_MASK) != 0;
                 if (host_odd != dev_odd) {
                     return false;
                 }
@@ -432,7 +430,7 @@ static void ot_uart_check_baudrate(const OtUARTState *s)
     }
 }
 
-static uint64_t ot_uart_char_ns(const OtUARTState *s);
+static int64_t ot_uart_char_ns(const OtUARTState *s);
 
 static void ot_uart_update_val(OtUARTState *s)
 {
@@ -462,10 +460,10 @@ static void ot_uart_update_rx_timeout(OtUARTState *s)
             return;
         }
         if (ot_uart_is_rx_enabled(s) && !fifo8_is_empty(&s->rx_fifo)) {
-            uint64_t bit_ns = MAX(ot_uart_char_ns(s) / 10ULL, 100ULL);
-            uint64_t delay_ns = bit_ns * (uint64_t)val;
+            int64_t bit_ns = MAX(ot_uart_char_ns(s) / 10LL, 100LL);
+            int64_t delay_ns = bit_ns * (int64_t)val;
             timer_mod(s->rx_timeout_timer,
-                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)delay_ns);
+                      qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
             return;
         }
     }
@@ -487,8 +485,7 @@ static void ot_uart_rx_timeout_timer_cb(void *opaque)
 static OtUARTState *ot_uart_get_rx_owner(OtUARTState *s)
 {
     for (int i = 0; i < 4; i++) {
-        if (ot_uart_instances[i] &&
-            ot_uart_instances[i]->rx_target_uart == s) {
+        if (ot_uart_instances[i] && ot_uart_instances[i]->rx_target_uart == s) {
             return ot_uart_instances[i];
         }
     }
@@ -576,8 +573,7 @@ static void ot_uart_reset_rx_fifo(OtUARTState *s)
     fifo8_reset(&s->rx_staging_fifo);
     fifo8_reset(&s->rx_fifo);
     ot_uart_update_rx_timeout(s);
-    if ((ot_uart_is_rx_enabled(s) ||
-         (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
+    if ((ot_uart_is_rx_enabled(s) || (s->regs[R_CTRL] & R_CTRL_LLPBK_MASK)) &&
         !ot_uart_is_sys_loopack_enabled(s)) {
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
     }
@@ -627,9 +623,9 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
     }
 
     if (!timer_pending(s->rx_timer)) {
-        uint64_t mult = fifo8_is_empty(&s->rx_fifo) ? OT_UART_TX_FIFO_SIZE : 1u;
-        timer_mod(s->rx_timer,
-                  s->last_rx_ns + mult * ot_uart_char_ns(s));
+        int64_t mult =
+            fifo8_is_empty(&s->rx_fifo) ? (int64_t)OT_UART_TX_FIFO_SIZE : 1LL;
+        timer_mod(s->rx_timer, s->last_rx_ns + mult * ot_uart_char_ns(s));
     }
 }
 
@@ -705,14 +701,15 @@ static void ot_uart_send_byte(OtUARTState *s, uint8_t ch)
     }
 }
 
-static uint64_t ot_uart_char_ns(const OtUARTState *s)
+static int64_t ot_uart_char_ns(const OtUARTState *s)
 {
     uint32_t nco = FIELD_EX32(s->regs[R_CTRL], CTRL, NCO);
     if (nco && s->pclk) {
-        return (10ULL * NANOSECONDS_PER_SECOND << (R_CTRL_NCO_LENGTH + 4)) /
-               ((uint64_t)nco * (uint64_t)s->pclk);
+        return (int64_t)((10ULL * NANOSECONDS_PER_SECOND
+                          << (R_CTRL_NCO_LENGTH + 4)) /
+                         ((uint64_t)nco * (uint64_t)s->pclk));
     }
-    return 86805ULL;
+    return 86805LL;
 }
 
 static void ot_uart_tx_timer_cb(void *opaque)
@@ -765,8 +762,8 @@ static void ot_uart_xmit(OtUARTState *s)
         CharFrontend *tx_chr = ot_uart_get_tx_chr(s);
         while (!fifo8_is_empty(&s->tx_fifo)) {
             /* get a continuous buffer from the FIFO */
-            buf =
-                fifo8_peek_bufptr(&s->tx_fifo, fifo8_num_used(&s->tx_fifo), &size);
+            buf = fifo8_peek_bufptr(&s->tx_fifo, fifo8_num_used(&s->tx_fifo),
+                                    &size);
             /* send as much as possible */
             ret = qemu_chr_fe_write(tx_chr, buf, (int)size);
             /* if some characters were sent, remove them from the FIFO */
@@ -775,10 +772,13 @@ static void ot_uart_xmit(OtUARTState *s)
             }
             if (ret < (int)size) {
                 if (s->watch_tag == 0) {
-                    /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+                    /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
+                     */
                     s->watch_tag =
                         qemu_chr_fe_add_watch(tx_chr, G_IO_OUT | G_IO_HUP,
                                               ot_uart_watch_cb, s);
+                    /* NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+                     */
                 }
                 break;
             }
@@ -800,12 +800,11 @@ static void ot_uart_tx_schedule(OtUARTState *s)
         return;
     }
     bool use_timer =
-        (s->regs[R_INTR_ENABLE] &
-         (INTR_TX_DONE_MASK | INTR_TX_WATERMARK_MASK | INTR_TX_EMPTY_MASK)) !=
-            0 ||
+        (s->regs[R_INTR_ENABLE] & (INTR_TX_DONE_MASK | INTR_TX_WATERMARK_MASK |
+                                   INTR_TX_EMPTY_MASK)) != 0 ||
         s->tx_busy || ot_uart_is_sys_loopack_enabled(s) ||
         !qemu_chr_fe_backend_connected(ot_uart_get_tx_chr(s)) ||
-        ot_uart_char_ns(s) > 100000ULL;
+        ot_uart_char_ns(s) > 100000LL;
     if (!use_timer) {
         ot_uart_xmit(s);
         return;
@@ -871,16 +870,16 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
         fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2u) {
         int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         int64_t t0_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-        bool recent = s->last_rx_ns > 0 &&
-                      (now_ns - s->last_rx_ns) < 1500000000LL;
+        bool recent =
+            s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL;
         s->rx_poll_count = 1u;
         g_usleep(recent ? 200u : 10u);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         if (fifo8_is_empty(&s->rx_fifo) &&
             fifo8_is_empty(&s->rx_staging_fifo)) {
             int64_t slept_ns =
-                CLAMP(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0_ns,
-                      0LL, 2000000LL);
+                CLAMP(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0_ns, 0LL,
+                      2000000LL);
             if (!recent) {
                 slept_ns = MAX(slept_ns, 1800000LL);
             }
@@ -923,12 +922,11 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         (fifo8_is_empty(&s->rx_staging_fifo) ||
          (!s->regs[R_INTR_ENABLE] &&
           fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE))) {
-        if (++s->rx_poll_count >= 4u &&
-            fifo8_is_empty(&s->rx_staging_fifo) &&
+        if (++s->rx_poll_count >= 4u && fifo8_is_empty(&s->rx_staging_fifo) &&
             !timer_pending(s->rx_pace_timer)) {
             int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-            bool recent = s->last_rx_ns > 0 &&
-                          (now_ns - s->last_rx_ns) < 1500000000LL;
+            bool recent =
+                s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL;
             timer_mod(s->rx_pace_timer,
                       now_ns + (recent ? 150000LL : 200000LL));
         }
@@ -1150,18 +1148,10 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
 }
 
 static const uint8_t UART_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x3u,
-    [R_INTR_ENABLE] = 0x3u,
-    [R_INTR_TEST] = 0x3u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_CTRL] = 0xfu,
-    [R_STATUS] = 0x1u,
-    [R_RDATA] = 0x1u,
-    [R_WDATA] = 0x1u,
-    [R_FIFO_CTRL] = 0x1u,
-    [R_FIFO_STATUS] = 0x7u,
-    [R_OVRD] = 0x1u,
-    [R_VAL] = 0x3u,
+    [R_INTR_STATE] = 0x3u,   [R_INTR_ENABLE] = 0x3u, [R_INTR_TEST] = 0x3u,
+    [R_ALERT_TEST] = 0x1u,   [R_CTRL] = 0xfu,        [R_STATUS] = 0x1u,
+    [R_RDATA] = 0x1u,        [R_WDATA] = 0x1u,       [R_FIFO_CTRL] = 0x1u,
+    [R_FIFO_STATUS] = 0x7u,  [R_OVRD] = 0x1u,        [R_VAL] = 0x3u,
     [R_TIMEOUT_CTRL] = 0xfu,
 };
 
@@ -1172,7 +1162,8 @@ static bool ot_uart_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    return reg < REGS_COUNT && (!is_write || (UART_PERMIT[reg] & ~reg_be) == 0u);
+    return reg < REGS_COUNT &&
+           (!is_write || (UART_PERMIT[reg] & ~reg_be) == 0u);
 }
 
 static const MemoryRegionOps ot_uart_ops = {

@@ -33,10 +33,10 @@
 #include <zlib.h> /* for CRC-32 */
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
-#include "block/aio.h"
 #include "qemu/timer.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
+#include "block/aio.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_clkmgr.h"
 #include "hw/opentitan/ot_common.h"
@@ -254,7 +254,8 @@ static void ot_otbn_update_alert(OtOTBNState *s)
     /* ALERT_TEST and recoverable error alerts are transient */
     s->alert_test = 0u;
     s->errbits &= ~UINT16_MAX;
-    levels = (fatal_err_bits || s->fatal_alert_cause) ? (1u << ALERT_FATAL) : 0u;
+    levels =
+        (fatal_err_bits || s->fatal_alert_cause) ? (1u << ALERT_FATAL) : 0u;
 
     for (unsigned ix = 0u; ix < ALERT_COUNT; ix++) {
         int level = (int)((levels >> ix) & 0x1u);
@@ -350,8 +351,8 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
             if (last_cmd == OT_OTBN_CMD_EXECUTE) {
                 uint32_t insncount =
                     ot_otbn_proxy_get_instruction_count(s->proxy);
-                delay_ns =
-                    MIN(2000000ULL, MAX(500000ULL, (uint64_t)insncount * 10ULL));
+                delay_ns = MIN(2000000ULL,
+                               MAX(500000ULL, (uint64_t)insncount * 10ULL));
             }
             int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             int64_t min_end_ns = s->exec_start_ns + (int64_t)delay_ns;
@@ -810,10 +811,11 @@ static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
     if (written || was_locked) {
         /*
          * In otbn.sv:737-739, mem_crc_data_in_valid is gated by
-         * ~(dmem_access_core | imem_access_core), i.e. ~(busy_execute_q | start_q),
-         * and is NOT gated by ~locking. When OTBN is already in StatusLocked,
-         * prim_ram_1p_scr suppresses the SRAM macro write (.intg_error_i(locking)),
-         * but u_mem_load_crc32 still advances on 32-bit bus writes.
+         * ~(dmem_access_core | imem_access_core), i.e. ~(busy_execute_q |
+         * start_q), and is NOT gated by ~locking. When OTBN is already in
+         * StatusLocked, prim_ram_1p_scr suppresses the SRAM macro write
+         * (.intg_error_i(locking)), but u_mem_load_crc32 still advances on
+         * 32-bit bus writes.
          */
         ot_otbn_update_checksum(s, doi, addr, value);
     }

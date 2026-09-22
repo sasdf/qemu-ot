@@ -361,8 +361,9 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
     ot_aon_timer_sync_wkup(s);
     if (reset_origin) {
         int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        s->wkup_origin_ns = ot_aon_timer_ticks_to_ns(
-            s, 0u, ot_aon_timer_ns_to_ticks(s, 0u, now));
+        s->wkup_origin_ns =
+            ot_aon_timer_ticks_to_ns(s, 0u,
+                                     ot_aon_timer_ns_to_ticks(s, 0u, now));
     }
 
     /* if not enabled, ignore threshold */
@@ -376,8 +377,7 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
                      (uint64_t)s->regs[R_WKUP_COUNT_LO];
     uint64_t threshold = ((uint64_t)s->regs[R_WKUP_THOLD_HI] << 32u) |
                          (uint64_t)s->regs[R_WKUP_THOLD_LO];
-    uint32_t prescaler =
-        FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
+    uint32_t prescaler = FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
     if (count < threshold) {
         s->wkup_intr_level = false;
     }
@@ -391,8 +391,8 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
         ((threshold <= count) ||
          ((threshold - count) <= (INT64_MAX / 5000u) / (prescaler + 1u)))) {
         uint64_t rem_incrs = (count >= threshold) ? 0u : (threshold - count);
-        uint64_t needed_clks = ot_aon_timer_first_wkup_incr_clks(s) +
-                               rem_incrs * (prescaler + 1u);
+        uint64_t needed_clks =
+            ot_aon_timer_first_wkup_incr_clks(s) + rem_incrs * (prescaler + 1u);
         int64_t delta = ot_aon_timer_ticks_to_ns(s, 0u, needed_clks);
         int64_t next =
             ot_aon_timer_compute_next_timeout(s, s->wkup_origin_ns, delta);
@@ -419,8 +419,9 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     ot_aon_timer_sync_wdog(s);
     if (reset_origin) {
         int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
-        s->wdog_origin_ns = ot_aon_timer_ticks_to_ns(
-            s, 0u, ot_aon_timer_ns_to_ticks(s, 0u, now));
+        s->wdog_origin_ns =
+            ot_aon_timer_ticks_to_ns(s, 0u,
+                                     ot_aon_timer_ns_to_ticks(s, 0u, now));
     }
 
     /* if not enabled, ignore threshold */
@@ -439,18 +440,19 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     }
 
     uint64_t needed_clks = UINT64_MAX;
-    bool bark_done =
-        (s->wdog_bark_level ||
-         (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
-        (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+    bool bark_done = (s->wdog_bark_level ||
+                      (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
+                     (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
     if (!bark_done) {
-        uint64_t bark_clks =
-            (count >= bark_threshold) ? 1u : ((uint64_t)(bark_threshold - count) + 1u);
+        uint64_t bark_clks = (count >= bark_threshold) ?
+                                 1u :
+                                 ((uint64_t)(bark_threshold - count) + 1u);
         needed_clks = MIN(needed_clks, bark_clks);
     }
     if (!s->wdog_bite) {
-        uint64_t bite_clks =
-            (count >= bite_threshold) ? 1u : ((uint64_t)(bite_threshold - count) + 1u);
+        uint64_t bite_clks = (count >= bite_threshold) ?
+                                 1u :
+                                 ((uint64_t)(bite_threshold - count) + 1u);
         needed_clks = MIN(needed_clks, bite_clks);
     }
 
@@ -520,20 +522,13 @@ static void ot_aon_timer_lc_escalate(void *opaque, int irq, int level)
  * (i.e. (PERMIT & ~reg_be) != 0).
  */
 static const uint8_t AON_TIMER_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,
-    [R_WKUP_CTRL] = 0x3u,
-    [R_WKUP_THOLD_HI] = 0xfu,
-    [R_WKUP_THOLD_LO] = 0xfu,
-    [R_WKUP_COUNT_HI] = 0xfu,
-    [R_WKUP_COUNT_LO] = 0xfu,
-    [R_WDOG_REGWEN] = 0x1u,
-    [R_WDOG_CTRL] = 0x1u,
-    [R_WDOG_BARK_THOLD] = 0xfu,
-    [R_WDOG_BITE_THOLD] = 0xfu,
-    [R_WDOG_COUNT] = 0xfu,
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_WKUP_CAUSE] = 0x1u,
+    [R_ALERT_TEST] = 0x1u,      [R_WKUP_CTRL] = 0x3u,
+    [R_WKUP_THOLD_HI] = 0xfu,   [R_WKUP_THOLD_LO] = 0xfu,
+    [R_WKUP_COUNT_HI] = 0xfu,   [R_WKUP_COUNT_LO] = 0xfu,
+    [R_WDOG_REGWEN] = 0x1u,     [R_WDOG_CTRL] = 0x1u,
+    [R_WDOG_BARK_THOLD] = 0xfu, [R_WDOG_BITE_THOLD] = 0xfu,
+    [R_WDOG_COUNT] = 0xfu,      [R_INTR_STATE] = 0x1u,
+    [R_INTR_TEST] = 0x1u,       [R_WKUP_CAUSE] = 0x1u,
 };
 
 static bool ot_aon_timer_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -736,8 +731,7 @@ static void ot_aon_timer_reset_enter(Object *obj, ResetType type)
     timer_del(s->wkup_timer);
     timer_del(s->wdog_timer);
 
-    if (type != RESET_TYPE_COLD &&
-        (s->sleep_mode || s->low_power_exit) &&
+    if (type != RESET_TYPE_COLD && (s->sleep_mode || s->low_power_exit) &&
         !s->wdog_bite) {
         ot_aon_timer_sync_wkup(s);
         ot_aon_timer_sync_wdog(s);

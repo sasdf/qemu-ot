@@ -138,10 +138,10 @@ static void ot_pattgen_timer_cb(void *opaque)
         uint64_t step_us[PARAM_NUM_CHANNELS] = { UINT64_MAX, UINT64_MAX };
         for (unsigned c = 0; c < PARAM_NUM_CHANNELS; c++) {
             if (run_ch[c] && k[c] <= total_steps[c]) {
-                uint64_t t_ns = ((uint64_t)k[c] *
-                                 ((uint64_t)s->chan[c].prediv + 1ULL) *
-                                 1000000000ULL) /
-                                6000000ULL;
+                uint64_t t_ns =
+                    ((uint64_t)k[c] * ((uint64_t)s->chan[c].prediv + 1ULL) *
+                     1000000000ULL) /
+                    6000000ULL;
                 step_us[c] = base_us + (t_ns / 1000ULL);
             }
         }
@@ -198,8 +198,9 @@ static uint64_t ot_pattgen_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     hwaddr reg = R32_OFF(addr);
     if (reg == R_INTR_TEST || reg == R_ALERT_TEST) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: W/O register 0x%02" HWADDR_PRIx "\n",
-                      __func__, addr);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: W/O register 0x%02" HWADDR_PRIx "\n", __func__,
+                      addr);
         return 0;
     }
     return s->regs[reg];
@@ -259,8 +260,9 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
                 s->chan[c].active = true;
                 s->chan[c].pending_start = true;
                 schedule_timer = true;
-                uint64_t total_steps = 2ULL * ((uint64_t)s->chan[c].len + 1ULL) *
-                                       ((uint64_t)s->chan[c].reps + 1ULL);
+                uint64_t total_steps =
+                    2ULL * ((uint64_t)s->chan[c].len + 1ULL) *
+                    ((uint64_t)s->chan[c].reps + 1ULL);
                 uint64_t dur_ns =
                     (total_steps * ((uint64_t)s->chan[c].prediv + 1ULL) *
                      1000000000ULL) /
@@ -274,9 +276,8 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
         }
 
         if (schedule_timer) {
-            timer_mod_ns(s->timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                             (int64_t)max_duration_ns);
+            timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                       (int64_t)max_duration_ns);
         }
         break;
     }

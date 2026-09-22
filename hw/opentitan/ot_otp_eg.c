@@ -500,8 +500,8 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
         }
     }
 
-    status = FIELD_DP32(status, STATUS, DAI_IDLE,
-                        !ot_otp_engine_dai_is_busy(s));
+    status =
+        FIELD_DP32(status, STATUS, DAI_IDLE, !ot_otp_engine_dai_is_busy(s));
 
     return status;
 }
@@ -529,7 +529,11 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
         permit = 0xfu;
         break;
     default:
-        permit = (reg == R_DIRECT_ACCESS_ADDRESS) ? 0x3u : ((reg == R_STATUS) ? 0x7u : ((reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u));
+        permit = (reg == R_DIRECT_ACCESS_ADDRESS) ?
+                     0x3u :
+                     ((reg == R_STATUS) ?
+                          0x7u :
+                          ((reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u));
         break;
     }
     uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);

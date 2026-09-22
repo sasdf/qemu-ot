@@ -258,13 +258,13 @@ static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
     s->ast_alert_latch &= ~(recov_events & ~s->regs[R_ALERT_TRIG]);
     uint32_t rem_recov =
         s->ast_alert_latch & alert_en_mask & ~s->regs[R_FATAL_ALERT_EN];
-    if (!rem_recov && !(s->regs[R_ALERT_TEST] & R_ALERT_TEST_RECOV_ALERT_MASK)) {
+    if (!rem_recov &&
+        !(s->regs[R_ALERT_TEST] & R_ALERT_TEST_RECOV_ALERT_MASK)) {
         ibex_irq_set(&s->alerts[0], 0);
     }
 
-    ibex_irq_set(&s->wkup,
-                 (int)(bool)((s->ast_alert_latch & alert_en_mask) ||
-                             s->regs[R_RECOV_ALERT]));
+    ibex_irq_set(&s->wkup, (int)(bool)((s->ast_alert_latch & alert_en_mask) ||
+                                       s->regs[R_RECOV_ALERT]));
 }
 
 void ot_sensor_eg_trigger_recov_event(OtSensorEgState *s, unsigned event_idx)

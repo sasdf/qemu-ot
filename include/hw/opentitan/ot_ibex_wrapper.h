@@ -37,7 +37,7 @@
 #define TYPE_OT_IBEX_WRAPPER "ot-ibex_wrapper"
 OBJECT_DECLARE_TYPE(OtIbexWrapperState, OtIbexWrapperClass, OT_IBEX_WRAPPER)
 
-#define OT_IBEX_WRAPPER_CPU_EN TYPE_OT_IBEX_WRAPPER "-cpu-en"
+#define OT_IBEX_WRAPPER_CPU_EN    TYPE_OT_IBEX_WRAPPER "-cpu-en"
 #define OT_IBEX_WRAPPER_WDOG_BARK TYPE_OT_IBEX_WRAPPER "-wdog-bark"
 
 typedef enum {
