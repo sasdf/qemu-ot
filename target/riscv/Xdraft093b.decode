@@ -1,9 +1,10 @@
 #
 # RISC-V translation routines for the RV32 Bitmanip Draft 0.93 (Xdraft093b) extension
 #
-# Copyright (c) 2024 lowRISC contributors
+# Copyright lowRISC contributors.
 #
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
 
 # Fields:
 %rs3       27:5
