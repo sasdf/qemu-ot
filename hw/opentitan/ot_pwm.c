@@ -51,9 +51,44 @@ struct OtPwmState {
 
     uint32_t regs[REGS_COUNT];
     int64_t cntr_start_ns;
+    uint32_t beat_ctr_q;
+    uint16_t phase_ctr_q;
+    uint16_t dc_htbt_q[PARAM_NUM_OUTPUTS];
 
     char *ot_id;
 };
+
+static void ot_pwm_sync_state(OtPwmState *s, int64_t now_ns)
+{
+    bool cntr_en = (bool)FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN);
+    if (!cntr_en || now_ns <= s->cntr_start_ns) {
+        return;
+    }
+
+    uint64_t ticks = (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
+    if (ticks == 0ULL) {
+        return;
+    }
+    s->cntr_start_ns += (int64_t)(ticks * 4000ULL);
+
+    uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
+    uint32_t dc_resn = FIELD_EX32(s->regs[R_CFG], CFG, DC_RESN);
+    uint64_t period = (uint64_t)clk_div + 1ULL;
+    uint64_t rem =
+        (s->beat_ctr_q <= clk_div) ? (uint64_t)(clk_div - s->beat_ctr_q) : 0ULL;
+
+    if (ticks <= rem) {
+        s->beat_ctr_q += (uint32_t)ticks;
+    } else {
+        uint64_t ticks_after = ticks - (rem + 1ULL);
+        uint64_t beat_ends = 1ULL + (ticks_after / period);
+        s->beat_ctr_q = (uint32_t)(ticks_after % period);
+        uint32_t step = 1u << (15u - dc_resn);
+        uint64_t total_phase =
+            (uint64_t)s->phase_ctr_q + beat_ends * (uint64_t)step;
+        s->phase_ctr_q = (uint16_t)(total_phase & 0xffffu);
+    }
+}
 
 void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
 {
@@ -82,22 +117,33 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     bool chan_en = (bool)((s->regs[R_PWM_EN] >> ch) & 1u);
     bool invert = (bool)((s->regs[R_INVERT] >> ch) & 1u);
 
-    if (!cntr_en || !chan_en || now_ns < s->cntr_start_ns) {
+    if (!chan_en) {
         return invert;
     }
 
     uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
     uint32_t dc_resn = FIELD_EX32(s->regs[R_CFG], CFG, DC_RESN);
-
-    /* AON clock frequency in Earlgrey QEMU is 250 kHz (4000 ns per tick) */
-    uint64_t beat_ns = (uint64_t)(clk_div + 1u) * 4000ULL;
-
-    uint64_t elapsed_beats = (uint64_t)(now_ns - s->cntr_start_ns) / beat_ns;
-    uint32_t beats_per_cycle = 1u << (dc_resn + 1u);
-    uint64_t cycle_idx = elapsed_beats / beats_per_cycle;
-    uint32_t beat_in_cycle = (uint32_t)(elapsed_beats % beats_per_cycle);
     uint32_t step = 1u << (16u - dc_resn - 1u);
-    uint16_t phase_cntr = (uint16_t)(beat_in_cycle * step);
+
+    uint64_t cycle_idx = 0ULL;
+    uint16_t phase_cntr = s->phase_ctr_q;
+
+    if (cntr_en && now_ns >= s->cntr_start_ns) {
+        uint64_t elapsed_ticks =
+            (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
+        uint64_t period = (uint64_t)clk_div + 1ULL;
+        uint64_t rem = (s->beat_ctr_q <= clk_div) ?
+                           (uint64_t)(clk_div - s->beat_ctr_q) :
+                           0ULL;
+        uint64_t elapsed_beats =
+            (elapsed_ticks <= rem) ?
+                0ULL :
+                (1ULL + (elapsed_ticks - (rem + 1ULL)) / period);
+        uint64_t total_phase =
+            (uint64_t)s->phase_ctr_q + elapsed_beats * (uint64_t)step;
+        phase_cntr = (uint16_t)(total_phase & 0xffffu);
+        cycle_idx = total_phase >> 16u;
+    }
 
     uint32_t duty_reg = s->regs[R_DUTY_CYCLE_0 + ch];
     uint16_t duty_a = (uint16_t)(duty_reg & 0xffffu);
@@ -118,30 +164,32 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         uint16_t blink_ctr =
             (uint16_t)(cycle_idx % ((uint64_t)blink_sum + 1ULL));
         duty_cycle_actual = (blink_ctr > blink_x) ? duty_b : duty_a;
-    } else if (blink_en && htbt_en && duty_a != duty_b) {
-        uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
+    } else if (blink_en && htbt_en) {
+        uint16_t dc_htbt = s->dc_htbt_q[ch];
         bool pos_htbt = (duty_a < duty_b);
-        bool htbt_dir = !pos_htbt;
-        uint16_t dc_htbt = duty_a;
         bool dc_wrap_q = false;
-        uint64_t max_steps = MIN(htbt_steps, 4096ULL);
-        for (uint64_t i = 0; i < max_steps; i++) {
-            uint32_t ext =
-                htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
-                           ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
-            bool dc_wrap = (ext >> 16u) & 1u;
-            uint16_t dc_htbt_d = (uint16_t)ext;
-            dc_wrap_q =
-                pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
-            dc_htbt = dc_htbt_d;
-            if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
-                htbt_dir = true;
-            } else if (pos_htbt && dc_htbt == duty_a) {
-                htbt_dir = false;
-            } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
-                htbt_dir = false;
-            } else if (!pos_htbt && dc_htbt == duty_a) {
-                htbt_dir = true;
+        if (duty_a != duty_b) {
+            uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
+            bool htbt_dir = !pos_htbt;
+            uint64_t max_steps = MIN(htbt_steps, 4096ULL);
+            for (uint64_t i = 0; i < max_steps; i++) {
+                uint32_t ext =
+                    htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
+                               ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
+                bool dc_wrap = (ext >> 16u) & 1u;
+                uint16_t dc_htbt_d = (uint16_t)ext;
+                dc_wrap_q =
+                    pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
+                dc_htbt = dc_htbt_d;
+                if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
+                    htbt_dir = true;
+                } else if (pos_htbt && dc_htbt == duty_a) {
+                    htbt_dir = false;
+                } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
+                    htbt_dir = false;
+                } else if (!pos_htbt && dc_htbt == duty_a) {
+                    htbt_dir = true;
+                }
             }
         }
         duty_cycle_actual = !dc_wrap_q ? dc_htbt : (pos_htbt ? 0xffffu : 0u);
@@ -212,19 +260,32 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
         return;
     }
 
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ot_pwm_sync_state(s, now_ns);
+
     switch (reg) {
-    case R_CFG:
-        s->regs[R_CFG] = val32;
-        if (FIELD_EX32(val32, CFG, CNTR_EN)) {
-            s->cntr_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    case R_CFG: {
+        uint32_t new_clk_div = FIELD_EX32(val32, CFG, CLK_DIV);
+        /*
+         * pwm_core.sv:85: phase_ctr_en = beat_end & (clr_phase_cntr | cntr_en)
+         * where beat_end = (beat_ctr_q == clk_div).
+         */
+        if (s->beat_ctr_q == new_clk_div) {
+            s->phase_ctr_q = 0u;
         }
+        s->beat_ctr_q = 0u;
+        s->regs[R_CFG] = val32;
+        s->cntr_start_ns = now_ns;
         break;
+    }
     case R_PWM_EN: {
         uint32_t prev_en = s->regs[R_PWM_EN];
         s->regs[R_PWM_EN] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
         if (!prev_en && s->regs[R_PWM_EN] &&
             FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN)) {
-            s->cntr_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            s->beat_ctr_q = 0u;
+            s->phase_ctr_q = 0u;
+            s->cntr_start_ns = now_ns;
         }
         break;
     }
@@ -237,6 +298,14 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     default:
         s->regs[reg] = val32;
         break;
+    }
+
+    for (unsigned ch = 0; ch < PARAM_NUM_OUTPUTS; ch++) {
+        bool htbt_en = (bool)((s->regs[R_PWM_PARAM_0 + ch] >> 30u) & 1u);
+        if (!htbt_en) {
+            s->dc_htbt_q[ch] =
+                (uint16_t)(s->regs[R_DUTY_CYCLE_0 + ch] & 0xffffu);
+        }
     }
 
     ot_gpio_eg_notify_sysrst_change();
@@ -271,8 +340,11 @@ static void ot_pwm_reset_enter(Object *obj, ResetType type)
     s->regs[R_CFG] = (7u << R_CFG_DC_RESN_SHIFT) | 0x8000u;
     for (unsigned i = 0; i < PARAM_NUM_OUTPUTS; i++) {
         s->regs[R_DUTY_CYCLE_0 + i] = 0x7fff7fffull;
+        s->dc_htbt_q[i] = 0x7fffu;
     }
     s->cntr_start_ns = 0;
+    s->beat_ctr_q = 0u;
+    s->phase_ctr_q = 0u;
     ibex_irq_set(&s->alert, 0);
 }
 
