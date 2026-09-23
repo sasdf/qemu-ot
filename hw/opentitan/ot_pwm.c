@@ -131,38 +131,37 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     uint16_t blink_x = (uint16_t)(blink_reg & 0xffffu);
     uint16_t blink_y = (uint16_t)((blink_reg >> 16u) & 0xffffu);
 
-    uint16_t duty_cycle_actual = duty_a;
+    uint16_t duty_cycle_actual =
+        (blink_en && htbt_en) ? s->dc_htbt_q[ch] : duty_a;
     if (blink_en && !htbt_en) {
         uint16_t blink_sum = (uint16_t)(blink_x + blink_y + 1u);
         uint16_t blink_ctr =
             (uint16_t)(cycle_idx % ((uint64_t)blink_sum + 1ULL));
         duty_cycle_actual = (blink_ctr > blink_x) ? duty_b : duty_a;
-    } else if (blink_en && htbt_en) {
-        uint16_t dc_htbt = s->dc_htbt_q[ch];
+    } else if (blink_en && htbt_en && duty_a != duty_b) {
+        uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
         bool pos_htbt = (duty_a < duty_b);
+        bool htbt_dir = !pos_htbt;
+        uint16_t dc_htbt = s->dc_htbt_q[ch];
         bool dc_wrap_q = false;
-        if (duty_a != duty_b) {
-            uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
-            bool htbt_dir = !pos_htbt;
-            uint64_t max_steps = MIN(htbt_steps, 4096ULL);
-            for (uint64_t i = 0; i < max_steps; i++) {
-                uint32_t ext =
-                    htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
-                               ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
-                bool dc_wrap = (ext >> 16u) & 1u;
-                uint16_t dc_htbt_d = (uint16_t)ext;
-                dc_wrap_q =
-                    pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
-                dc_htbt = dc_htbt_d;
-                if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
-                    htbt_dir = true;
-                } else if (pos_htbt && dc_htbt == duty_a) {
-                    htbt_dir = false;
-                } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
-                    htbt_dir = false;
-                } else if (!pos_htbt && dc_htbt == duty_a) {
-                    htbt_dir = true;
-                }
+        uint64_t max_steps = MIN(htbt_steps, 4096ULL);
+        for (uint64_t i = 0; i < max_steps; i++) {
+            uint32_t ext =
+                htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
+                           ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
+            bool dc_wrap = (ext >> 16u) & 1u;
+            uint16_t dc_htbt_d = (uint16_t)ext;
+            dc_wrap_q =
+                pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
+            dc_htbt = dc_htbt_d;
+            if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
+                htbt_dir = true;
+            } else if (pos_htbt && dc_htbt == duty_a) {
+                htbt_dir = false;
+            } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
+                htbt_dir = false;
+            } else if (!pos_htbt && dc_htbt == duty_a) {
+                htbt_dir = true;
             }
         }
         duty_cycle_actual = !dc_wrap_q ? dc_htbt : (pos_htbt ? 0xffffu : 0u);
