@@ -112,6 +112,14 @@ static uint64_t ot_timer_ns_to_ticks(OtTimerState *s, int64_t ns)
     uint64_t ticks = muldiv64((uint64_t)ns, s->pclk, NANOSECONDS_PER_SECOND);
     uint64_t step = FIELD_EX32(s->regs[R_CFG0], CFG0, STEP);
     if (s->runaway_rem_cycles) {
+        /*
+         * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39 (ERRATA-RV_TIMER-001),
+         * tick_count resets only on exact equality (tick_count == prescaler)
+         * while tick asserts whenever active & (tick_count >= prescaler).
+         * During a 12-bit wrap burst, tick asserts every clock cycle for
+         * runaway_rem_cycles (4096 - tick_count) before resuming normal
+         * (prescaler + 1) division.
+         */
         uint64_t burst = MIN(ticks, (uint64_t)s->runaway_rem_cycles);
         return (burst + (ticks - burst) / (prescaler + 1u)) * step;
     }
@@ -237,6 +245,7 @@ static void ot_timer_clock_input(void *opaque, int irq, int level)
     }
 
     trace_ot_timer_update_clock(s->ot_id, s->pclk);
+
     /* TODO: @loic: update on-going timer */
 }
 
@@ -263,7 +272,7 @@ static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtTimerState *s = opaque;
     (void)size;
-    uint32_t val32 = 0;
+    uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -386,8 +395,15 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
             uint32_t tick_count =
                 (uint32_t)(pclk_ticks % (old_prescaler + 1u)) & 0xfffu;
             if (tick_count > FIELD_EX32(val32, CFG0, PRESCALE)) {
-                /* timer_core.sv:32,39: 12-bit wrap runaway when tick_count >
-                 * prescaler */
+                /*
+                 * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39
+                 * (ERRATA-RV_TIMER-001), tick_count only clears on exact
+                 * equality (tick_count == prescaler). Lowering CFG0.PRESCALE
+                 * below the in-flight 12-bit tick_count while active causes
+                 * tick (tick_count >= prescaler) to assert every clock cycle
+                 * until tick_count wraps 0xfff -> 0x000 (4096 - tick_count
+                 * cycles).
+                 */
                 s->runaway_rem_cycles = 4096u - tick_count;
             }
             s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
