@@ -294,20 +294,13 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
         }
     } else {
         s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
-        uint32_t np_thresh =
-            (uint16_t)((s->regs[R_ADC_SAMPLE_CTL] & 0xffffu) - 1u);
-        int64_t total_samples = (int64_t)np_thresh + 1;
-        if (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) {
-            uint32_t lp_thresh =
-                (uint8_t)((s->regs[R_ADC_LP_SAMPLE_CTL] & 0xffu) - 1u);
-            total_samples += (int64_t)lp_thresh + 1;
-        }
-        int64_t delay_ns = total_samples * 25000LL;
-        if (delay_ns < 100000LL) {
-            delay_ns = 100000LL;
-        }
-        timer_mod_ns(s->fsm_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns);
+        int64_t samples =
+            (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL +
+            ((s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) ?
+                 (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL :
+                 0LL);
+        timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                       MAX(samples * 25000LL, 100000LL));
     }
 }
 
