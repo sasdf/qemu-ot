@@ -433,6 +433,12 @@ static void ot_uart_check_baudrate(const OtUARTState *s)
 
 static int64_t ot_uart_char_ns(const OtUARTState *s);
 
+/*
+ * In hw/ip/uart/rtl/uart_core.sv:165-173,213-224, rx_val_q resets to 0x0000
+ * and only shifts in rx_in on tick_baud_x16 when (tx_enable || rx_enable) and
+ * CTRL.NCO != 0; in SLPBK mode rx_in muxes tx_out_q before the OVRD.TXVAL gate
+ * so VAL reads 0xffff even when OVRD.TXEN=1, TXVAL=0.
+ */
 static void ot_uart_update_val(OtUARTState *s)
 {
     if ((ot_uart_is_tx_enabled(s) || ot_uart_is_rx_enabled(s)) &&
@@ -450,10 +456,10 @@ static void ot_uart_update_rx_timeout(OtUARTState *s)
         uint32_t val = FIELD_EX32(s->regs[R_TIMEOUT_CTRL], TIMEOUT_CTRL, VAL);
         if (val == 0u) {
             /*
-             * In uart_core.sv, event_rx_timeout = (rx_timeout_count_q ==
-             * uart_rxto_val) & uart_rxto_en. Since rx_timeout_count_q is 0 when
-             * idle/empty, enabling TIMEOUT_CTRL with VAL == 0 immediately
-             * asserts INTR_STATE.RX_TIMEOUT.
+             * In hw/ip/uart/rtl/uart_core.sv:358-376, event_rx_timeout =
+             * (rx_timeout_count_q == uart_rxto_val) & uart_rxto_en. Since
+             * rx_timeout_count_q is 0 when idle/empty, enabling TIMEOUT_CTRL
+             * with VAL == 0 immediately asserts INTR_STATE.RX_TIMEOUT.
              */
             s->regs[R_INTR_STATE] |= INTR_RX_TIMEOUT_MASK;
             ot_uart_update_irqs(s);
@@ -714,6 +720,15 @@ static int64_t ot_uart_char_ns(const OtUARTState *s)
     return 86805LL;
 }
 
+/*
+ * Under QEMU -icount, guest WFI fast-forwards OT_VIRTUAL_CLOCK to the next
+ * scheduled timer (tx_timer, ~86.8 us virtual time) in microseconds of host
+ * wall-clock time. When full-duplex tests (e.g. uart_tx_rx_test) arm both TX
+ * and INTR_RX_WATERMARK on an external host PTY while RX is still empty,
+ * briefly pace tx_timer in host wall-clock time so the host harness has time
+ * to react to the console trigger and write RX bytes to the PTY before all TX
+ * chunks complete.
+ */
 static bool ot_uart_tx_should_wait_rx(OtUARTState *s)
 {
     return (s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
@@ -1169,6 +1184,11 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 }
 
+/*
+ * Sub-word write byte-enable mask enforcement per
+ * hw/ip/uart/rtl/uart_reg_pkg.sv:397-411 (UART_PERMIT) and
+ * hw/ip/uart/rtl/uart_reg_top.sv:758-770 (wr_err).
+ */
 static const uint8_t UART_PERMIT[REGS_COUNT] = {
     [R_INTR_STATE] = 0x3u,   [R_INTR_ENABLE] = 0x3u, [R_INTR_TEST] = 0x3u,
     [R_ALERT_TEST] = 0x1u,   [R_CTRL] = 0xfu,        [R_STATUS] = 0x1u,
