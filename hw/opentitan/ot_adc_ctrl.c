@@ -294,11 +294,17 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
         }
     } else {
         s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
-        int64_t samples =
-            (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL +
-            ((s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) ?
-                 (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL :
-                 0LL);
+        /*
+         * RTL: adc_ctrl_fsm.sv:183, 187 computes
+         * np_sample_cnt_thresh = cfg_normal_mode_val_i - 1'b1 (16-bit) and
+         * lp_sample_cnt_thresh = cfg_lp_mode_val_i - 1'b1 (8-bit), so
+         * configuring 0 underflows to 0xffff (65536 samples) / 0xff (256
+         * samples).
+         */
+        int64_t samples = (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
+        if (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) {
+            samples += (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL;
+        }
         timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                        MAX(samples * 25000LL, 100000LL));
     }
