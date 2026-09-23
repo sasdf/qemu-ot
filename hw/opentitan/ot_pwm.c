@@ -92,7 +92,12 @@ void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
 
 bool ot_pwm_is_active(OtPwmState *s)
 {
-    return s && FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN) && s->regs[R_PWM_EN];
+    if (!s) {
+        return false;
+    }
+    bool cntr_en = (bool)FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN);
+    bool chan_en = (s->regs[R_PWM_EN] != 0);
+    return cntr_en && chan_en;
 }
 
 bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
@@ -103,6 +108,7 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
 
     bool chan_en = (bool)((s->regs[R_PWM_EN] >> ch) & 1u);
     bool invert = (bool)((s->regs[R_INVERT] >> ch) & 1u);
+
     if (!chan_en) {
         return invert;
     }
@@ -113,17 +119,17 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     uint64_t cycle_idx = total_phase >> 16u;
 
     uint32_t duty_reg = s->regs[R_DUTY_CYCLE_0 + ch];
-    uint16_t duty_a = (uint16_t)duty_reg;
-    uint16_t duty_b = (uint16_t)(duty_reg >> 16u);
+    uint16_t duty_a = (uint16_t)(duty_reg & 0xffffu);
+    uint16_t duty_b = (uint16_t)((duty_reg >> 16u) & 0xffffu);
 
     uint32_t param_reg = s->regs[R_PWM_PARAM_0 + ch];
-    uint16_t phase_delay = (uint16_t)param_reg;
+    uint16_t phase_delay = (uint16_t)(param_reg & 0xffffu);
     bool htbt_en = (bool)((param_reg >> 30u) & 1u);
     bool blink_en = (bool)((param_reg >> 31u) & 1u);
 
     uint32_t blink_reg = s->regs[R_BLINK_PARAM_0 + ch];
-    uint16_t blink_x = (uint16_t)blink_reg;
-    uint16_t blink_y = (uint16_t)(blink_reg >> 16u);
+    uint16_t blink_x = (uint16_t)(blink_reg & 0xffffu);
+    uint16_t blink_y = (uint16_t)((blink_reg >> 16u) & 0xffffu);
 
     uint16_t duty_cycle_actual = duty_a;
     if (blink_en && !htbt_en) {
@@ -136,22 +142,26 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         bool pos_htbt = (duty_a < duty_b);
         bool dc_wrap_q = false;
         if (duty_a != duty_b) {
-            uint64_t max_steps =
-                MIN(cycle_idx / ((uint64_t)blink_x + 1ULL), 4096ULL);
+            uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
             bool htbt_dir = !pos_htbt;
+            uint64_t max_steps = MIN(htbt_steps, 4096ULL);
             for (uint64_t i = 0; i < max_steps; i++) {
                 uint32_t ext =
                     htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
                                ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
                 bool dc_wrap = (ext >> 16u) & 1u;
-                dc_wrap_q = dc_wrap && (pos_htbt ? !htbt_dir : htbt_dir);
-                dc_htbt = (uint16_t)ext;
-                if (pos_htbt ? (dc_htbt >= duty_b || dc_wrap) :
-                               (dc_htbt == duty_a)) {
+                uint16_t dc_htbt_d = (uint16_t)ext;
+                dc_wrap_q =
+                    pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
+                dc_htbt = dc_htbt_d;
+                if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
                     htbt_dir = true;
-                } else if (pos_htbt ? (dc_htbt == duty_a) :
-                                      (dc_htbt <= duty_b || dc_wrap)) {
+                } else if (pos_htbt && dc_htbt == duty_a) {
                     htbt_dir = false;
+                } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
+                    htbt_dir = false;
+                } else if (!pos_htbt && dc_htbt == duty_a) {
+                    htbt_dir = true;
                 }
             }
         }
@@ -234,6 +244,13 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
 
     switch (reg) {
     case R_CFG:
+        /*
+         * [ERRATA-PWM-001] (hw/ip/pwm/rtl/pwm_core.sv:85-103):
+         * In RTL, phase_ctr_en = beat_end & (clr_phase_cntr | cntr_en), where
+         * beat_end = (beat_ctr_q == clk_div). Because clr_phase_cntr is gated
+         * by beat_end, phase_ctr_q is preserved across CFG updates unless
+         * beat_ctr_q equals the newly written CLK_DIV.
+         */
         if (s->beat_ctr_q == FIELD_EX32(val32, CFG, CLK_DIV)) {
             s->phase_ctr_q = 0u;
         }
@@ -263,9 +280,16 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     }
 
+    /*
+     * [ERRATA-PWM-002] (hw/ip/pwm/rtl/pwm_chan.sv:140-154):
+     * In RTL, dc_htbt_q only loads duty_cycle_a_i while htbt_en_i == 0
+     * (ignoring blink_en_i == 0), so writing DUTY_CYCLE while htbt_en == 1
+     * does not re-seed dc_htbt_q.
+     */
     for (unsigned ch = 0; ch < PARAM_NUM_OUTPUTS; ch++) {
         if (!(s->regs[R_PWM_PARAM_0 + ch] & (1u << 30u))) {
-            s->dc_htbt_q[ch] = (uint16_t)s->regs[R_DUTY_CYCLE_0 + ch];
+            s->dc_htbt_q[ch] =
+                (uint16_t)(s->regs[R_DUTY_CYCLE_0 + ch] & 0xffffu);
         }
     }
 
