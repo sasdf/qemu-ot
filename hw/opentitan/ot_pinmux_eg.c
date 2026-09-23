@@ -522,11 +522,13 @@ static void ot_pinmux_eg_eval_wkup_detectors(OtPinmuxEgState *s)
         case 2: /* Edge */
             match = (prev != level);
             break;
-        case 3: /* TimedHigh */
-            match = (level == 1);
+        case 3: /* TimedHigh (pinmux_wkup.sv:52, 65-68: cnt_eq_th ungated by
+                   cnt_en) */
+            match = (level == 1) || (regs->wkup_detector_cnt_th[i] == 0u);
             break;
-        case 4: /* TimedLow */
-            match = (level == 0);
+        case 4: /* TimedLow (pinmux_wkup.sv:52, 69-72: cnt_eq_th ungated by
+                   cnt_en) */
+            match = (level == 0) || (regs->wkup_detector_cnt_th[i] == 0u);
             break;
         }
         if (match) {
