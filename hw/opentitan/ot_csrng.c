@@ -578,7 +578,8 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
     }
 
     if (acmd == OT_CSRNG_CMD_UNINSTANTIATE) {
-        if (!ot_csrng_drng_is_instantiated(inst)) {
+        if (!ot_csrng_drng_is_instantiated(inst) &&
+            ot_csrng_is_in_queue(inst)) {
             /*
              * Very special hacky case:
              *

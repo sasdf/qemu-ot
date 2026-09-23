@@ -739,19 +739,19 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
         s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
         ot_edn_update_irqs(s);
         ot_edn_update_alerts(s);
-        command = (uint32_t)OT_CSRNG_CMD_NONE;
-        length = 1u; /* always push the command */
-        c->buffer[0] = command;
-    } else {
-        command = ot_fifo32_peek(&c->cmd_reseed_fifo);
-        uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-        uint32_t used = ot_fifo32_num_used(&c->cmd_reseed_fifo);
-        length = MIN(used, clen_words);
-        uint32_t avail = used;
-        const uint32_t *cmd =
-            ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &avail);
-        memcpy(c->buffer, cmd, length * sizeof(uint32_t));
+        c->hw_auto_mode = true;
+        ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
+        return;
     }
+
+    command = ot_fifo32_peek(&c->cmd_reseed_fifo);
+    uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
+    uint32_t used = ot_fifo32_num_used(&c->cmd_reseed_fifo);
+    length = MIN(used, clen_words);
+    uint32_t avail = used;
+    const uint32_t *cmd =
+        ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &avail);
+    memcpy(c->buffer, cmd, length * sizeof(uint32_t));
 
     ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
     c->no_fips = false;
@@ -778,22 +778,21 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
         ot_edn_update_irqs(s);
         ot_edn_update_alerts(s);
-        command = (uint32_t)OT_CSRNG_CMD_NONE;
-        length = 1u; /* always push the command */
-        c->buffer[0] = command;
-    } else {
-        command = ot_fifo32_peek(&c->cmd_gen_fifo);
-        uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-        uint32_t used = ot_fifo32_num_used(&c->cmd_gen_fifo);
-        length = MIN(used, clen_words);
-        uint32_t avail = used;
-        const uint32_t *cmd =
-            ot_fifo32_peek_buf(&c->cmd_gen_fifo, length, &avail);
-        memcpy(c->buffer, cmd, length * sizeof(uint32_t));
-        c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
-        xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
-                            c->rem_packet_count);
+        c->hw_auto_mode = true;
+        ot_edn_change_state(s, EDN_AUTO_SEND_GEN_CMD);
+        return;
     }
+
+    command = ot_fifo32_peek(&c->cmd_gen_fifo);
+    uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
+    uint32_t used = ot_fifo32_num_used(&c->cmd_gen_fifo);
+    length = MIN(used, clen_words);
+    uint32_t avail = used;
+    const uint32_t *cmd = ot_fifo32_peek_buf(&c->cmd_gen_fifo, length, &avail);
+    memcpy(c->buffer, cmd, length * sizeof(uint32_t));
+    c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
+    xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
+                        c->rem_packet_count);
 
     xtrace_ot_edn_xinfo(c->appid, "COMMAND", c->buffer[0]);
 
