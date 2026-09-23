@@ -58,36 +58,29 @@ struct OtPwmState {
     char *ot_id;
 };
 
-static void ot_pwm_sync_state(OtPwmState *s, int64_t now_ns)
+static uint64_t ot_pwm_calc_phase(const OtPwmState *s, int64_t now_ns,
+                                  uint32_t *beat_out)
 {
-    bool cntr_en = (bool)FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN);
-    if (!cntr_en || now_ns <= s->cntr_start_ns) {
-        return;
+    uint32_t beat = s->beat_ctr_q;
+    uint64_t total_phase = s->phase_ctr_q;
+    if (FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN) && now_ns > s->cntr_start_ns) {
+        uint64_t ticks = (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
+        uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
+        uint32_t dc_resn = FIELD_EX32(s->regs[R_CFG], CFG, DC_RESN);
+        uint64_t period = (uint64_t)clk_div + 1ULL;
+        uint64_t rem = (beat <= clk_div) ? (clk_div - beat) : 0ULL;
+        if (ticks <= rem) {
+            beat += (uint32_t)ticks;
+        } else {
+            uint64_t after = ticks - (rem + 1ULL);
+            beat = (uint32_t)(after % period);
+            total_phase += (1ULL + after / period) << (15u - dc_resn);
+        }
     }
-
-    uint64_t ticks = (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
-    if (ticks == 0ULL) {
-        return;
+    if (beat_out) {
+        *beat_out = beat;
     }
-    s->cntr_start_ns += (int64_t)(ticks * 4000ULL);
-
-    uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
-    uint32_t dc_resn = FIELD_EX32(s->regs[R_CFG], CFG, DC_RESN);
-    uint64_t period = (uint64_t)clk_div + 1ULL;
-    uint64_t rem =
-        (s->beat_ctr_q <= clk_div) ? (uint64_t)(clk_div - s->beat_ctr_q) : 0ULL;
-
-    if (ticks <= rem) {
-        s->beat_ctr_q += (uint32_t)ticks;
-    } else {
-        uint64_t ticks_after = ticks - (rem + 1ULL);
-        uint64_t beat_ends = 1ULL + (ticks_after / period);
-        s->beat_ctr_q = (uint32_t)(ticks_after % period);
-        uint32_t step = 1u << (15u - dc_resn);
-        uint64_t total_phase =
-            (uint64_t)s->phase_ctr_q + beat_ends * (uint64_t)step;
-        s->phase_ctr_q = (uint16_t)(total_phase & 0xffffu);
-    }
+    return total_phase;
 }
 
 void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
@@ -99,12 +92,7 @@ void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
 
 bool ot_pwm_is_active(OtPwmState *s)
 {
-    if (!s) {
-        return false;
-    }
-    bool cntr_en = (bool)FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN);
-    bool chan_en = (s->regs[R_PWM_EN] != 0);
-    return cntr_en && chan_en;
+    return s && FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN) && s->regs[R_PWM_EN];
 }
 
 bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
@@ -113,50 +101,29 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         return false;
     }
 
-    bool cntr_en = (bool)FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN);
     bool chan_en = (bool)((s->regs[R_PWM_EN] >> ch) & 1u);
     bool invert = (bool)((s->regs[R_INVERT] >> ch) & 1u);
-
     if (!chan_en) {
         return invert;
     }
 
-    uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
     uint32_t dc_resn = FIELD_EX32(s->regs[R_CFG], CFG, DC_RESN);
-    uint32_t step = 1u << (16u - dc_resn - 1u);
-
-    uint64_t cycle_idx = 0ULL;
-    uint16_t phase_cntr = s->phase_ctr_q;
-
-    if (cntr_en && now_ns >= s->cntr_start_ns) {
-        uint64_t elapsed_ticks =
-            (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
-        uint64_t period = (uint64_t)clk_div + 1ULL;
-        uint64_t rem = (s->beat_ctr_q <= clk_div) ?
-                           (uint64_t)(clk_div - s->beat_ctr_q) :
-                           0ULL;
-        uint64_t elapsed_beats =
-            (elapsed_ticks <= rem) ?
-                0ULL :
-                (1ULL + (elapsed_ticks - (rem + 1ULL)) / period);
-        uint64_t total_phase =
-            (uint64_t)s->phase_ctr_q + elapsed_beats * (uint64_t)step;
-        phase_cntr = (uint16_t)(total_phase & 0xffffu);
-        cycle_idx = total_phase >> 16u;
-    }
+    uint64_t total_phase = ot_pwm_calc_phase(s, now_ns, NULL);
+    uint16_t phase_cntr = (uint16_t)total_phase;
+    uint64_t cycle_idx = total_phase >> 16u;
 
     uint32_t duty_reg = s->regs[R_DUTY_CYCLE_0 + ch];
-    uint16_t duty_a = (uint16_t)(duty_reg & 0xffffu);
-    uint16_t duty_b = (uint16_t)((duty_reg >> 16u) & 0xffffu);
+    uint16_t duty_a = (uint16_t)duty_reg;
+    uint16_t duty_b = (uint16_t)(duty_reg >> 16u);
 
     uint32_t param_reg = s->regs[R_PWM_PARAM_0 + ch];
-    uint16_t phase_delay = (uint16_t)(param_reg & 0xffffu);
+    uint16_t phase_delay = (uint16_t)param_reg;
     bool htbt_en = (bool)((param_reg >> 30u) & 1u);
     bool blink_en = (bool)((param_reg >> 31u) & 1u);
 
     uint32_t blink_reg = s->regs[R_BLINK_PARAM_0 + ch];
-    uint16_t blink_x = (uint16_t)(blink_reg & 0xffffu);
-    uint16_t blink_y = (uint16_t)((blink_reg >> 16u) & 0xffffu);
+    uint16_t blink_x = (uint16_t)blink_reg;
+    uint16_t blink_y = (uint16_t)(blink_reg >> 16u);
 
     uint16_t duty_cycle_actual = duty_a;
     if (blink_en && !htbt_en) {
@@ -169,26 +136,22 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         bool pos_htbt = (duty_a < duty_b);
         bool dc_wrap_q = false;
         if (duty_a != duty_b) {
-            uint64_t htbt_steps = cycle_idx / ((uint64_t)blink_x + 1ULL);
+            uint64_t max_steps =
+                MIN(cycle_idx / ((uint64_t)blink_x + 1ULL), 4096ULL);
             bool htbt_dir = !pos_htbt;
-            uint64_t max_steps = MIN(htbt_steps, 4096ULL);
             for (uint64_t i = 0; i < max_steps; i++) {
                 uint32_t ext =
                     htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
                                ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
                 bool dc_wrap = (ext >> 16u) & 1u;
-                uint16_t dc_htbt_d = (uint16_t)ext;
-                dc_wrap_q =
-                    pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
-                dc_htbt = dc_htbt_d;
-                if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
+                dc_wrap_q = dc_wrap && (pos_htbt ? !htbt_dir : htbt_dir);
+                dc_htbt = (uint16_t)ext;
+                if (pos_htbt ? (dc_htbt >= duty_b || dc_wrap) :
+                               (dc_htbt == duty_a)) {
                     htbt_dir = true;
-                } else if (pos_htbt && dc_htbt == duty_a) {
+                } else if (pos_htbt ? (dc_htbt == duty_a) :
+                                      (dc_htbt <= duty_b || dc_wrap)) {
                     htbt_dir = false;
-                } else if (!pos_htbt && (dc_htbt <= duty_b || dc_wrap)) {
-                    htbt_dir = false;
-                } else if (!pos_htbt && dc_htbt == duty_a) {
-                    htbt_dir = true;
                 }
             }
         }
@@ -261,23 +224,23 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 
     int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    ot_pwm_sync_state(s, now_ns);
+    uint64_t ticks = (now_ns > s->cntr_start_ns) ?
+                         (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL :
+                         0ULL;
+    if (FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN) && ticks > 0ULL) {
+        s->phase_ctr_q = (uint16_t)ot_pwm_calc_phase(s, now_ns, &s->beat_ctr_q);
+        s->cntr_start_ns += (int64_t)(ticks * 4000ULL);
+    }
 
     switch (reg) {
-    case R_CFG: {
-        uint32_t new_clk_div = FIELD_EX32(val32, CFG, CLK_DIV);
-        /*
-         * pwm_core.sv:85: phase_ctr_en = beat_end & (clr_phase_cntr | cntr_en)
-         * where beat_end = (beat_ctr_q == clk_div).
-         */
-        if (s->beat_ctr_q == new_clk_div) {
+    case R_CFG:
+        if (s->beat_ctr_q == FIELD_EX32(val32, CFG, CLK_DIV)) {
             s->phase_ctr_q = 0u;
         }
         s->beat_ctr_q = 0u;
         s->regs[R_CFG] = val32;
         s->cntr_start_ns = now_ns;
         break;
-    }
     case R_PWM_EN: {
         uint32_t prev_en = s->regs[R_PWM_EN];
         s->regs[R_PWM_EN] = val32 & ((1u << PARAM_NUM_OUTPUTS) - 1u);
@@ -301,10 +264,8 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 
     for (unsigned ch = 0; ch < PARAM_NUM_OUTPUTS; ch++) {
-        bool htbt_en = (bool)((s->regs[R_PWM_PARAM_0 + ch] >> 30u) & 1u);
-        if (!htbt_en) {
-            s->dc_htbt_q[ch] =
-                (uint16_t)(s->regs[R_DUTY_CYCLE_0 + ch] & 0xffffu);
+        if (!(s->regs[R_PWM_PARAM_0 + ch] & (1u << 30u))) {
+            s->dc_htbt_q[ch] = (uint16_t)s->regs[R_DUTY_CYCLE_0 + ch];
         }
     }
 
