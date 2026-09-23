@@ -579,10 +579,10 @@ ot_csrng_push_command(OtCSRNGState *s, unsigned app_id, uint32_t word)
 
     if (acmd == OT_CSRNG_CMD_UNINSTANTIATE) {
         /*
-         * RTL: csrng_main_sm.sv / csrng_ctr_drbg_cmd.sv accepts UNINSTANTIATE
-         * even when the instance is already uninstantiated (ERRATA-CSRNG-001).
-         * Only remove inst from s->cmd_requests if an earlier command is
-         * actually queued (ot_csrng_is_in_queue(inst)).
+         * In hw/ip/csrng/rtl/csrng_main_sm.sv and csrng_ctr_drbg_cmd.sv,
+         * UNINSTANTIATE is accepted even when the instance is already
+         * uninstantiated. Only remove inst from s->cmd_requests if an earlier
+         * command is actually queued (ot_csrng_is_in_queue(inst)).
          */
         if (!ot_csrng_drng_is_instantiated(inst) &&
             ot_csrng_is_in_queue(inst)) {

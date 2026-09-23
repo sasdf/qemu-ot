@@ -244,8 +244,8 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     switch (reg) {
     case R_CFG:
         /*
-         * [ERRATA-PWM-001] (hw/ip/pwm/rtl/pwm_core.sv:85-103):
-         * In RTL, phase_ctr_en = beat_end & (clr_phase_cntr | cntr_en), where
+         * In hw/ip/pwm/rtl/pwm_core.sv:85-103,
+         * phase_ctr_en = beat_end & (clr_phase_cntr | cntr_en), where
          * beat_end = (beat_ctr_q == clk_div). Because clr_phase_cntr is gated
          * by beat_end, phase_ctr_q is preserved across CFG updates unless
          * beat_ctr_q equals the newly written CLK_DIV.
@@ -280,10 +280,9 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 
     /*
-     * [ERRATA-PWM-002] (hw/ip/pwm/rtl/pwm_chan.sv:140-154):
-     * In RTL, dc_htbt_q only loads duty_cycle_a_i while htbt_en_i == 0
-     * (ignoring blink_en_i == 0), so writing DUTY_CYCLE while htbt_en == 1
-     * does not re-seed dc_htbt_q.
+     * In hw/ip/pwm/rtl/pwm_chan.sv:140-154, dc_htbt_q only loads
+     * duty_cycle_a_i while htbt_en_i == 0 (ignoring blink_en_i == 0), so
+     * writing DUTY_CYCLE while htbt_en == 1 does not re-seed dc_htbt_q.
      */
     for (unsigned ch = 0; ch < PARAM_NUM_OUTPUTS; ch++) {
         if (!(s->regs[R_PWM_PARAM_0 + ch] & (1u << 30u))) {

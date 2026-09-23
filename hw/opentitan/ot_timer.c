@@ -113,7 +113,7 @@ static uint64_t ot_timer_ns_to_ticks(OtTimerState *s, int64_t ns)
     uint64_t step = FIELD_EX32(s->regs[R_CFG0], CFG0, STEP);
     if (s->runaway_rem_cycles) {
         /*
-         * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39 (ERRATA-RV_TIMER-001),
+         * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39,
          * tick_count resets only on exact equality (tick_count == prescaler)
          * while tick asserts whenever active & (tick_count >= prescaler).
          * During a 12-bit wrap burst, tick asserts every clock cycle for
@@ -396,13 +396,12 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
                 (uint32_t)(pclk_ticks % (old_prescaler + 1u)) & 0xfffu;
             if (tick_count > FIELD_EX32(val32, CFG0, PRESCALE)) {
                 /*
-                 * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39
-                 * (ERRATA-RV_TIMER-001), tick_count only clears on exact
-                 * equality (tick_count == prescaler). Lowering CFG0.PRESCALE
-                 * below the in-flight 12-bit tick_count while active causes
-                 * tick (tick_count >= prescaler) to assert every clock cycle
-                 * until tick_count wraps 0xfff -> 0x000 (4096 - tick_count
-                 * cycles).
+                 * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39, tick_count only
+                 * clears on exact equality (tick_count == prescaler). Lowering
+                 * CFG0.PRESCALE below the in-flight 12-bit tick_count while
+                 * active causes tick (tick_count >= prescaler) to assert every
+                 * clock cycle until tick_count wraps 0xfff -> 0x000
+                 * (4096 - tick_count cycles).
                  */
                 s->runaway_rem_cycles = 4096u - tick_count;
             }

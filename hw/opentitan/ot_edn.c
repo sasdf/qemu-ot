@@ -410,7 +410,7 @@ static void ot_edn_update_alerts(OtEDNState *s)
         level |= 1u << ALERT_FATAL;
     }
     /*
-     * [ERRATA-EDN-007] In edn_core.sv, sfifo_*_err signals are gated by
+     * In hw/ip/edn/rtl/edn_core.sv, sfifo_*_err signals are gated by
      * edn_enable_fo before driving fatal_loc_events / event_edn_fatal_err.
      */
     if (ot_edn_is_enabled(s) &&
@@ -523,7 +523,7 @@ static bool ot_edn_is_cmd_reg_rdy(const OtEDNState *s)
 static bool ot_edn_is_cmd_rdy(const OtEDNState *s)
 {
     /*
-     * [ERRATA-EDN-001] In edn_core.sv / edn_main_sm.sv, after the first word of
+     * In hw/ip/edn/rtl/edn_core.sv and edn_main_sm.sv, after the first word of
      * SW_CMD_REQ is written in AutoLoadIns, the FSM transitions immediately to
      * AutoFirstAckWait where sw_cmd_req_load is no longer asserted, so
      * SW_CMD_STS.CMD_RDY drops to 0 while CMD_REG_RDY remains 1.
@@ -748,8 +748,8 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
 
     if (ot_fifo32_is_empty(&c->cmd_reseed_fifo)) {
         /*
-         * [ERRATA-EDN-003] In edn_core.sv, sfifo_rescmd_err asserts ERR_CODE
-         * and fatal alert/interrupt, but edn_main_sm still transitions through
+         * In hw/ip/edn/rtl/edn_core.sv, sfifo_rescmd_err asserts ERR_CODE and
+         * fatal alert/interrupt, but edn_main_sm still transitions through
          * AutoSendReseedCmd -> AutoAckWait and pushes an all-zero word to
          * CSRNG.
          */
@@ -764,7 +764,7 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
     } else {
         command = ot_fifo32_peek(&c->cmd_reseed_fifo);
         /*
-         * [ERRATA-EDN-004] In edn_core.sv (sfifo_rescmd), the replay FIFO pops
+         * In hw/ip/edn/rtl/edn_core.sv (sfifo_rescmd), the replay FIFO pops
          * and rotates every pushed word back to wdata (`fifo_rescmd_rready`),
          * ignoring CLEN; only the actual pushed FIFO depth is sent.
          */
@@ -800,8 +800,8 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
 
     if (ot_fifo32_is_empty(&c->cmd_gen_fifo)) {
         /*
-         * [ERRATA-EDN-003] In edn_core.sv, sfifo_gencmd_err asserts ERR_CODE
-         * and fatal alert/interrupt, but edn_main_sm still transitions through
+         * In hw/ip/edn/rtl/edn_core.sv, sfifo_gencmd_err asserts ERR_CODE and
+         * fatal alert/interrupt, but edn_main_sm still transitions through
          * AutoSendGenCmd -> AutoAckWait and pushes an all-zero word to CSRNG.
          */
         s->regs[R_ERR_CODE] |=
@@ -815,7 +815,7 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
     } else {
         command = ot_fifo32_peek(&c->cmd_gen_fifo);
         /*
-         * [ERRATA-EDN-004] In edn_core.sv (sfifo_gencmd), the replay FIFO pops
+         * In hw/ip/edn/rtl/edn_core.sv (sfifo_gencmd), the replay FIFO pops
          * and rotates every pushed word back to wdata (`fifo_gencmd_rready`),
          * ignoring CLEN; only the actual pushed FIFO depth is sent.
          */
@@ -1246,7 +1246,7 @@ static void ot_edn_handle_ep_request(void *opaque)
                     pkt[ix] = ot_fifo32_pop(&c->bits_fifo);
                 }
                 /*
-                 * [ERRATA-EDN-005] In edn_core.sv, csrng_fips_prev is a 128-bit
+                 * In hw/ip/edn/rtl/edn_core.sv, csrng_fips_prev is a 128-bit
                  * register comparing consecutive CSRNG packets across commands.
                  */
                 if (c->prev_bits_valid &&
@@ -1334,7 +1334,7 @@ static void ot_edn_csrng_ack_irq(void *opaque, int n, int level)
 
     if (cmd_status != CSRNG_STATUS_SUCCESS) {
         /*
-         * [ERRATA-EDN-002] In edn_main_sm.sv, any non-zero csrng_cmd_ack_sts
+         * In hw/ip/edn/rtl/edn_main_sm.sv, any non-zero csrng_cmd_ack_sts
          * transitions to RejectCsrngEntropy (terminal until EDN_ENABLE=0) and
          * pulses recov_alert_sts.csrng_ack_err without setting ERR_CODE.
          */
@@ -1580,10 +1580,10 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs[reg] = val32;
         /*
-         * [ERRATA-EDN-006/007] In edn_core.sv, ERR_CODE_TEST bit 30
-         * (FIFO_STATE_ERR) is not included in fatal_loc_events unless a FIFO
-         * source bit (0,1) or type bit (28,29) is also set, and bits 0,1,28,29,
-         * 30 are gated by edn_enable_fo.
+         * In hw/ip/edn/rtl/edn_core.sv, ERR_CODE_TEST bit 30 (FIFO_STATE_ERR)
+         * is not included in fatal_loc_events unless a FIFO source bit (0,1)
+         * or type bit (28,29) is also set, and bits 0,1,28,29,30 are gated by
+         * edn_enable_fo.
          */
         if ((1u << val32) & ERR_CODE_ACTIVE_MASK) {
             s->regs[R_ERR_CODE] |= 1u << val32;
