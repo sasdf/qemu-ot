@@ -197,6 +197,7 @@ struct OtUARTState {
     QEMUTimer *rx_timeout_timer;
     int64_t last_rx_ns;
     uint32_t rx_poll_count;
+    uint32_t tx_wait_rx_count;
 };
 
 typedef struct {
@@ -686,6 +687,7 @@ static void ot_uart_reset_tx_fifo(OtUARTState *s)
         s->watch_tag = 0;
     }
     s->tx_busy = false;
+    s->tx_wait_rx_count = 0u;
     fifo8_reset(&s->tx_fifo);
 }
 
@@ -712,11 +714,30 @@ static int64_t ot_uart_char_ns(const OtUARTState *s)
     return 86805LL;
 }
 
+static bool ot_uart_tx_should_wait_rx(OtUARTState *s)
+{
+    return (s->regs[R_INTR_ENABLE] & INTR_RX_WATERMARK_MASK) &&
+           ot_uart_is_rx_enabled(s) && !ot_uart_is_sys_loopack_enabled(s) &&
+           !(s->regs[R_CTRL] & R_CTRL_LLPBK_MASK) &&
+           fifo8_is_empty(&s->rx_fifo) && fifo8_is_empty(&s->rx_staging_fifo) &&
+           s->tx_wait_rx_count < 400u;
+}
+
 static void ot_uart_tx_timer_cb(void *opaque)
 {
     OtUARTState *s = opaque;
 
     if (ot_uart_is_tx_enabled(s) && !fifo8_is_empty(&s->tx_fifo)) {
+        if (ot_uart_tx_should_wait_rx(s)) {
+            s->tx_wait_rx_count++;
+            g_usleep(500u);
+            qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
+            if (ot_uart_tx_should_wait_rx(s)) {
+                timer_mod(s->tx_timer, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                           ot_uart_char_ns(s));
+                return;
+            }
+        }
         uint8_t ch = fifo8_pop(&s->tx_fifo);
         s->tx_busy = true;
         ot_uart_send_byte(s, ch);
@@ -810,9 +831,10 @@ static void ot_uart_tx_schedule(OtUARTState *s)
         return;
     }
     if (!s->tx_busy && !fifo8_is_empty(&s->tx_fifo)) {
-        uint8_t ch = fifo8_pop(&s->tx_fifo);
         s->tx_busy = true;
-        ot_uart_send_byte(s, ch);
+        if (!ot_uart_tx_should_wait_rx(s)) {
+            ot_uart_send_byte(s, fifo8_pop(&s->tx_fifo));
+        }
         timer_mod(s->tx_timer,
                   qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + ot_uart_char_ns(s));
     }
