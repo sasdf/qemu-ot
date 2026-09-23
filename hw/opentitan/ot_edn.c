@@ -620,6 +620,27 @@ static bool ot_edn_update_genbits_ready(OtEDNState *s)
     return accept_entropy;
 }
 
+static void ot_edn_complete_sw_req(OtEDNState *s, OtCSRNGCmdStatus cmd_status);
+
+static void
+ot_edn_handle_csrng_ack_error(OtEDNState *s, OtCSRNGCmdStatus cmd_status)
+{
+    OtEDNCSRNG *c = &s->rng;
+
+    trace_ot_edn_push_csrng_error(c->appid, (int)cmd_status);
+    memset(c->buffer, 0, sizeof(c->buffer));
+    if (s->state == EDN_AUTO_FIRST_ACK_WAIT || s->state == EDN_SW_PORT_MODE) {
+        ot_edn_complete_sw_req(s, cmd_status);
+    } else {
+        c->hw_cmd_status = cmd_status;
+        c->hw_ack = true;
+    }
+    if (s->state != EDN_ERROR) {
+        ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
+    }
+    ot_edn_trigger_recov_alert(s, R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK);
+}
+
 static OtCSRNGCmdStatus
 ot_edn_push_csrng_request(OtEDNState *s, bool auto_mode, uint32_t length)
 {
@@ -640,13 +661,7 @@ ot_edn_push_csrng_request(OtEDNState *s, bool auto_mode, uint32_t length)
                                         c->buffer[cix]);
         res = c->csrng->push_command(c->device, c->appid, c->buffer[cix]);
         if (res != CSRNG_STATUS_SUCCESS) {
-            trace_ot_edn_push_csrng_error(c->appid, (int)res);
-            c->hw_cmd_status = res;
-            c->hw_ack = true;
-            ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
-            /* do not expect any delayed completion */
-            memset(c->buffer, 0, sizeof(c->buffer));
-            ot_edn_trigger_recov_alert(s, R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK);
+            ot_edn_handle_csrng_ack_error(s, res);
             break;
         }
     }
@@ -739,19 +754,17 @@ static void ot_edn_send_auto_reseed_cmd(OtEDNState *s)
         s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
         ot_edn_update_irqs(s);
         ot_edn_update_alerts(s);
-        c->hw_auto_mode = true;
-        ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
-        return;
+        command = (uint32_t)OT_CSRNG_CMD_NONE;
+        length = 1u; /* always push the command */
+        c->buffer[0] = command;
+    } else {
+        command = ot_fifo32_peek(&c->cmd_reseed_fifo);
+        length = MIN(ot_fifo32_num_used(&c->cmd_reseed_fifo),
+                     FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u);
+        memcpy(c->buffer,
+               ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &length),
+               length * sizeof(uint32_t));
     }
-
-    command = ot_fifo32_peek(&c->cmd_reseed_fifo);
-    uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-    uint32_t used = ot_fifo32_num_used(&c->cmd_reseed_fifo);
-    length = MIN(used, clen_words);
-    uint32_t avail = used;
-    const uint32_t *cmd =
-        ot_fifo32_peek_buf(&c->cmd_reseed_fifo, length, &avail);
-    memcpy(c->buffer, cmd, length * sizeof(uint32_t));
 
     ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
     c->no_fips = false;
@@ -778,21 +791,19 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
         s->regs[R_INTR_STATE] |= INTR_EDN_FATAL_ERR_MASK;
         ot_edn_update_irqs(s);
         ot_edn_update_alerts(s);
-        c->hw_auto_mode = true;
-        ot_edn_change_state(s, EDN_AUTO_SEND_GEN_CMD);
-        return;
+        command = (uint32_t)OT_CSRNG_CMD_NONE;
+        length = 1u; /* always push the command */
+        c->buffer[0] = command;
+    } else {
+        command = ot_fifo32_peek(&c->cmd_gen_fifo);
+        length = MIN(ot_fifo32_num_used(&c->cmd_gen_fifo),
+                     FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u);
+        memcpy(c->buffer, ot_fifo32_peek_buf(&c->cmd_gen_fifo, length, &length),
+               length * sizeof(uint32_t));
+        c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
+        xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
+                            c->rem_packet_count);
     }
-
-    command = ot_fifo32_peek(&c->cmd_gen_fifo);
-    uint32_t clen_words = FIELD_EX32(command, OT_CSNRG_CMD, CLEN) + 1u;
-    uint32_t used = ot_fifo32_num_used(&c->cmd_gen_fifo);
-    length = MIN(used, clen_words);
-    uint32_t avail = used;
-    const uint32_t *cmd = ot_fifo32_peek_buf(&c->cmd_gen_fifo, length, &avail);
-    memcpy(c->buffer, cmd, length * sizeof(uint32_t));
-    c->rem_packet_count = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, GLEN);
-    xtrace_ot_edn_dinfo(c->appid, "Generate cmd w/ packets",
-                        c->rem_packet_count);
 
     xtrace_ot_edn_xinfo(c->appid, "COMMAND", c->buffer[0]);
 
@@ -1071,10 +1082,7 @@ static void ot_edn_handle_sw_cmd_req(OtEDNState *s, uint32_t value)
     OtCSRNGCmdStatus res = c->csrng->push_command(c->device, c->appid, value);
     if (res != CSRNG_STATUS_SUCCESS) {
         xtrace_ot_edn_error(c->appid, "CSRNG rejected command");
-        s->sw_cmd_ready = false;
-        ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
-        ot_edn_complete_sw_req(s, res);
-        ot_edn_trigger_recov_alert(s, R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK);
+        ot_edn_handle_csrng_ack_error(s, res);
         return;
     }
 }
@@ -1290,63 +1298,41 @@ static void ot_edn_csrng_ack_irq(void *opaque, int n, int level)
     }
 
     if (cmd_status != CSRNG_STATUS_SUCCESS) {
-        trace_ot_edn_push_csrng_error(c->appid, level);
-        switch (s->state) {
-        case EDN_BOOT_INS_ACK_WAIT:
-        case EDN_BOOT_GEN_ACK_WAIT:
-        case EDN_BOOT_UNI_ACK_WAIT:
-        case EDN_AUTO_ACK_WAIT:
-            c->hw_cmd_status = cmd_status;
-            c->hw_ack = true;
-            break;
-        case EDN_AUTO_FIRST_ACK_WAIT:
-        case EDN_SW_PORT_MODE:
-            ot_edn_complete_sw_req(s, cmd_status);
-            break;
-        default:
-            break;
-        }
-        if (s->state != EDN_ERROR) {
-            ot_edn_change_state(s, EDN_REJECT_CSRNG_ENTROPY);
-        }
-        ot_edn_trigger_recov_alert(s, R_RECOV_ALERT_STS_CSRNG_ACK_ERR_MASK);
+        ot_edn_handle_csrng_ack_error(s, cmd_status);
         return;
+    }
+
+    if (s->state == EDN_AUTO_FIRST_ACK_WAIT || s->state == EDN_SW_PORT_MODE) {
+        ot_edn_complete_sw_req(s, cmd_status);
+    } else {
+        c->hw_cmd_status = cmd_status;
+        c->hw_ack = true;
     }
 
     switch (s->state) {
     case EDN_BOOT_INS_ACK_WAIT:
-        c->hw_cmd_status = cmd_status;
-        c->hw_ack = true;
         ot_edn_change_state(s, EDN_BOOT_LOAD_GEN);
         ot_edn_send_boot_req(s, R_BOOT_GEN_CMD);
         break;
     case EDN_BOOT_GEN_ACK_WAIT:
-        c->hw_cmd_status = cmd_status;
-        c->hw_ack = true;
         ot_edn_change_state(s, EDN_BOOT_PULSE);
         ot_edn_change_state(s, EDN_BOOT_DONE);
         ot_edn_update_mode(s);
         break;
     case EDN_BOOT_UNI_ACK_WAIT:
-        c->hw_cmd_status = cmd_status;
-        c->hw_ack = true;
         ot_edn_reset_replay_fifos(s);
         ot_edn_change_state(s, EDN_IDLE);
         ot_edn_update_mode(s);
         break;
     case EDN_AUTO_FIRST_ACK_WAIT:
         ot_edn_change_state(s, EDN_AUTO_DISPATCH);
-        ot_edn_complete_sw_req(s, cmd_status);
         ot_edn_auto_dispatch(s);
         break;
     case EDN_AUTO_ACK_WAIT:
-        c->hw_cmd_status = cmd_status;
-        c->hw_ack = true;
         ot_edn_change_state(s, EDN_AUTO_DISPATCH);
         ot_edn_auto_dispatch(s);
         break;
     case EDN_SW_PORT_MODE:
-        ot_edn_complete_sw_req(s, cmd_status);
         break;
     default:
         break;
@@ -1479,11 +1465,6 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_edn_handle_sw_cmd_req(s, val32);
         break;
     case R_RESEED_CMD:
-        if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) ==
-            OT_MULTIBITBOOL4_TRUE) {
-            ot_edn_reset_replay_fifos(s);
-            break;
-        }
         if (ot_fifo32_is_full(&c->cmd_reseed_fifo)) {
             if (ot_edn_is_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_RESCMD_ERR_MASK |
@@ -1492,16 +1473,12 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 ot_edn_update_irqs(s);
                 ot_edn_update_alerts(s);
             }
-        } else {
+        } else if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) !=
+                   OT_MULTIBITBOOL4_TRUE) {
             ot_fifo32_push(&c->cmd_reseed_fifo, val32);
         }
         break;
     case R_GENERATE_CMD:
-        if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) ==
-            OT_MULTIBITBOOL4_TRUE) {
-            ot_edn_reset_replay_fifos(s);
-            break;
-        }
         if (ot_fifo32_is_full(&c->cmd_gen_fifo)) {
             if (ot_edn_is_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_SFIFO_GENCMD_ERR_MASK |
@@ -1510,7 +1487,8 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 ot_edn_update_irqs(s);
                 ot_edn_update_alerts(s);
             }
-        } else {
+        } else if (FIELD_EX32(s->regs[R_CTRL], CTRL, CMD_FIFO_RST) !=
+                   OT_MULTIBITBOOL4_TRUE) {
             xtrace_ot_edn_xinfo(c->appid, "PUSH GEN CMD", val32);
             ot_fifo32_push(&c->cmd_gen_fifo, val32);
         }
