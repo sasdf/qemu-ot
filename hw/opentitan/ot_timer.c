@@ -111,13 +111,9 @@ static uint64_t ot_timer_ns_to_ticks(OtTimerState *s, int64_t ns)
     uint32_t prescaler = FIELD_EX32(s->regs[R_CFG0], CFG0, PRESCALE);
     uint64_t ticks = muldiv64((uint64_t)ns, s->pclk, NANOSECONDS_PER_SECOND);
     uint64_t step = FIELD_EX32(s->regs[R_CFG0], CFG0, STEP);
-    if (s->runaway_rem_cycles > 0u) {
-        if (ticks <= s->runaway_rem_cycles) {
-            return ticks * step;
-        }
-        uint64_t rem = ticks - s->runaway_rem_cycles;
-        return ((uint64_t)s->runaway_rem_cycles + (rem / (prescaler + 1u))) *
-               step;
+    if (s->runaway_rem_cycles) {
+        uint64_t burst = MIN(ticks, (uint64_t)s->runaway_rem_cycles);
+        return (burst + (ticks - burst) / (prescaler + 1u)) * step;
     }
     return (ticks / (prescaler + 1u)) * step;
 }
@@ -241,7 +237,6 @@ static void ot_timer_clock_input(void *opaque, int irq, int level)
     }
 
     trace_ot_timer_update_clock(s->ot_id, s->pclk);
-
     /* TODO: @loic: update on-going timer */
 }
 
@@ -268,7 +263,7 @@ static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtTimerState *s = opaque;
     (void)size;
-    uint32_t val32;
+    uint32_t val32 = 0;
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -339,9 +334,9 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[R_CTRL] = val32 & R_CTRL_ACTIVE0_MASK;
         uint32_t change = prev ^ s->regs[R_CTRL];
         if (change & R_CTRL_ACTIVE0_MASK) {
+            s->runaway_rem_cycles = 0u;
             if (ot_timer_is_active(s)) {
                 /* start timer */
-                s->runaway_rem_cycles = 0u;
                 ot_timer_rearm(s, true);
             } else {
                 /* stop timer */
@@ -352,7 +347,6 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
                 s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
                 s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
                 s->origin_ns = now;
-                s->runaway_rem_cycles = 0u;
             }
         }
         break;
@@ -381,6 +375,7 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         ot_timer_update_irqs(s);
         break;
     case R_CFG0:
+        s->runaway_rem_cycles = 0u;
         if (ot_timer_is_active(s)) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             uint64_t mtime = ot_timer_get_mtime(s, now);
@@ -389,25 +384,14 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
             uint64_t pclk_ticks = muldiv64((uint64_t)(now - s->origin_ns),
                                            s->pclk, NANOSECONDS_PER_SECOND);
             uint32_t tick_count =
-                (uint32_t)(pclk_ticks % ((uint64_t)old_prescaler + 1ULL)) &
-                0xfffu;
-            uint32_t new_prescaler = FIELD_EX32(val32, CFG0, PRESCALE);
-            if (tick_count > new_prescaler) {
-                /*
-                 * ERRATA-RV_TIMER-001 (timer_core.sv:32-39): tick_count resets
-                 * on exact equality (tick_count == prescaler), while tick
-                 * asserts on (tick_count >= prescaler). Lowering prescaler
-                 * below tick_count while active asserts tick=1 on every clock
-                 * cycle until tick_count wraps 12-bit 0xfff -> 0x000.
-                 */
+                (uint32_t)(pclk_ticks % (old_prescaler + 1u)) & 0xfffu;
+            if (tick_count > FIELD_EX32(val32, CFG0, PRESCALE)) {
+                /* timer_core.sv:32,39: 12-bit wrap runaway when tick_count >
+                 * prescaler */
                 s->runaway_rem_cycles = 4096u - tick_count;
-            } else {
-                s->runaway_rem_cycles = 0u;
             }
             s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
             s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
-        } else {
-            s->runaway_rem_cycles = 0u;
         }
         s->regs[R_CFG0] = val32 & (R_CFG0_PRESCALE_MASK | R_CFG0_STEP_MASK);
         ot_timer_rearm(s, true);
@@ -476,6 +460,7 @@ static void ot_timer_reset_enter(Object *obj, ResetType type)
     timer_del(s->timer);
 
     memset(s->regs, 0, sizeof(s->regs));
+    s->runaway_rem_cycles = 0u;
     s->regs[R_CFG0] = 1u << R_CFG0_STEP_SHIFT;
     s->regs[R_COMPARE_LOWER0_0] = UINT32_MAX;
     s->regs[R_COMPARE_UPPER0_0] = UINT32_MAX;
