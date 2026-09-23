@@ -1154,29 +1154,27 @@ static void ot_flash_set_error(OtFlashState *s, uint32_t ebit, uint32_t eaddr)
                 R_ERR_CODE_MP_ERR_MASK | R_ERR_CODE_RD_ERR_MASK |
                 R_ERR_CODE_PROG_ERR_MASK;
             if (ebit & addr_err_mask) {
-                uint32_t latched_eaddr = eaddr;
                 if (s->op.kind == OP_ERASE) {
                     uint32_t align_mask = (s->op.erase_sel == ERASE_SEL_BANK) ?
                                               ~(BYTES_PER_BANK - 1u) :
                                               ~(BYTES_PER_PAGE - 1u);
-                    latched_eaddr = s->op.address & align_mask;
+                    eaddr = s->op.address & align_mask;
                 } else if (s->op.kind == OP_READ) {
                     /*
                      * In flash_ctrl_rd.sv:96-102, 135-147, op_err_addr_o is a
                      * registered flop updated on (~|op_err_q && |op_err_d).
-                     * When OP_READ faults on its final word (remaining == 1,
-                     * e.g. 1-word read with CONTROL.NUM == 0), cnt_hit == 1
-                     * asserts op_done_o and hw2reg.err_addr.de on the same
-                     * cycle before op_err_addr_o updates, latching the
+                     * When OP_READ faults on its final word (remaining == 1),
+                     * cnt_hit == 1 asserts op_done_o and hw2reg.err_addr.de on
+                     * the same cycle before op_err_addr_o updates, latching the
                      * previous rd_err_addr into ERR_ADDR.
                      */
-                    if (s->op.remaining == 1u) {
-                        latched_eaddr = s->rd_err_addr;
-                    }
+                    uint32_t prev_eaddr = s->rd_err_addr;
                     s->rd_err_addr = eaddr;
+                    if (s->op.remaining == 1u) {
+                        eaddr = prev_eaddr;
+                    }
                 }
-                s->regs[R_ERR_ADDR] =
-                    FIELD_DP32(0, ERR_ADDR, ERR_ADDR, latched_eaddr);
+                s->regs[R_ERR_ADDR] = FIELD_DP32(0, ERR_ADDR, ERR_ADDR, eaddr);
             }
             s->regs[R_ERR_CODE] |= ebit;
             s->regs[R_ALERT_TEST] |= ALERT_RECOV_ERR_MASK;
