@@ -384,10 +384,10 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         ot_timer_update_irqs(s);
         break;
     case R_CFG0:
-        s->runaway_rem_cycles = 0u;
         if (ot_timer_is_active(s)) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             uint64_t mtime = ot_timer_get_mtime(s, now);
+            s->runaway_rem_cycles = 0u;
             uint32_t old_prescaler =
                 FIELD_EX32(s->regs[R_CFG0], CFG0, PRESCALE);
             uint64_t pclk_ticks = muldiv64((uint64_t)(now - s->origin_ns),
