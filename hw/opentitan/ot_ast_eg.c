@@ -429,8 +429,12 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_REGA0:
     case R_REGA1:
     case R_REGA28:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is read-only\n", __func__,
-                      REG_NAME(reg));
+        /*
+         * ROM startup (sw/device/silicon_creator/rom/rom_start.S) bulk-copies
+         * CREATOR_SW_CFG_AST_CFG across the contiguous REGA0..REGAL range via
+         * crt_section_copy when AST_INIT_EN is enabled; ignore writes to these
+         * read-only registers without logging guest errors.
+         */
         break;
     case R_REGA2:
     case R_REGA3:
