@@ -3025,3 +3025,9 @@ static void ot_otp_engine_register_types(void)
 }
 
 type_init(ot_otp_engine_register_types);
+
+bool ot_otp_engine_is_idle(const void *opaque)
+{
+    OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
+    return !ot_otp_engine_dai_is_busy(s);
+}

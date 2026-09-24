@@ -37,6 +37,7 @@
 #include "hw/opentitan/ot_clock_ctrl.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_flash.h"
+#include "hw/opentitan/ot_otp_engine.h"
 #include "hw/opentitan/ot_pwrmgr.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sensor_eg.h"
@@ -602,7 +603,9 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         if (!s->in_low_power) {
             OtFlashState *flash = (OtFlashState *)
                 object_resolve_path_type("", TYPE_OT_FLASH, NULL);
-            if (flash && !ot_flash_is_idle(flash)) {
+            void *otp = object_resolve_path_type("", "ot-otp_engine", NULL);
+            bool otp_idle = !otp || ot_otp_engine_is_idle(otp);
+            if ((flash && !ot_flash_is_idle(flash)) || !otp_idle) {
                 /* FastPwrStateNvmIdleChk: abort low power entry if flash busy
                  */
                 if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
@@ -612,6 +615,11 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 }
                 s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                 s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                if (s->version >= 2) {
+                    /* [ERRATA-PWRMGR-V2-002] Pulse sleep_en before abort */
+                    ot_pwrmgr_set_low_power(s, true);
+                    ot_pwrmgr_set_low_power(s, false);
+                }
                 s->regs[R_INTR_STATE] |= WAKEUP_MASK;
                 ot_pwrmgr_update_irq(s);
                 return;

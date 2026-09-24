@@ -414,3 +414,4 @@ static inline uint32_t ot_otp_engine_dai_is_busy(const OtOTPEngineState *s)
 }
 
 #endif /* HW_OPENTITAN_OT_OTP_ENGINE_H */
+bool ot_otp_engine_is_idle(const void *s);
