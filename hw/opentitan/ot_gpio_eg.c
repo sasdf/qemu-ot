@@ -75,11 +75,13 @@ REG32(INTR_CTRL_EN_FALLING, 0x30u)
 REG32(INTR_CTRL_EN_LVLHIGH, 0x34u)
 REG32(INTR_CTRL_EN_LVLLOW, 0x38u)
 REG32(CTRL_EN_INPUT_FILTER, 0x3cu)
+REG32(HW_STRAPS_DATA_IN_VALID, 0x40u)
+REG32(HW_STRAPS_DATA_IN, 0x44u)
 /* clang-format on */
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
-#define R_LAST_REG (R_CTRL_EN_INPUT_FILTER)
+#define R_LAST_REG (R_HW_STRAPS_DATA_IN)
 #define REGS_COUNT (R_LAST_REG + 1u)
 #define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
 #define REG_NAME(_reg_) \
@@ -106,6 +108,8 @@ static const char *REG_NAMES[REGS_COUNT] = {
     REG_NAME_ENTRY(INTR_CTRL_EN_LVLHIGH),
     REG_NAME_ENTRY(INTR_CTRL_EN_LVLLOW),
     REG_NAME_ENTRY(CTRL_EN_INPUT_FILTER),
+    REG_NAME_ENTRY(HW_STRAPS_DATA_IN_VALID),
+    REG_NAME_ENTRY(HW_STRAPS_DATA_IN),
 };
 #undef REG_NAME_ENTRY
 
@@ -127,6 +131,7 @@ struct OtGpioEgState {
     MemoryRegion mmio;
 
     uint32_t regs[REGS_COUNT];
+    uint8_t version;
     uint32_t data_out; /* output data */
     uint32_t data_oe; /* output enable */
     uint32_t data_ii; /* input data from IRQ lines */
@@ -597,12 +602,15 @@ static void ot_gpio_eg_pad_attr_change(void *opaque, int no, int level)
 static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
                                bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtGpioEgState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
+    unsigned regs_count =
+        (s->version >= 2u) ? REGS_COUNT : (R_CTRL_EN_INPUT_FILTER + 1u);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit = (reg == R_ALERT_TEST) ? 0x1u : 0xfu;
-    return reg < REGS_COUNT && (addr & 3u) + size <= 4u &&
+    uint8_t permit =
+        (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) ? 0x1u : 0xfu;
+    return reg < regs_count && (addr & 3u) + size <= 4u &&
            (!is_write || (permit & ~reg_be) == 0u);
 }
 
@@ -641,6 +649,8 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
     case R_INTR_CTRL_EN_LVLHIGH:
     case R_INTR_CTRL_EN_LVLLOW:
     case R_CTRL_EN_INPUT_FILTER:
+    case R_HW_STRAPS_DATA_IN_VALID:
+    case R_HW_STRAPS_DATA_IN:
         val32 = s->regs[reg];
         break;
     case R_DIRECT_OUT:
@@ -786,6 +796,8 @@ static void ot_gpio_eg_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_DATA_IN:
+    case R_HW_STRAPS_DATA_IN_VALID:
+    case R_HW_STRAPS_DATA_IN:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: R/O register 0x%02x (%s)\n",
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
@@ -1578,6 +1590,7 @@ static const MemoryRegionOps ot_gpio_eg_regs_ops = {
 
 static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtGpioEgState, ot_id),
+    DEFINE_PROP_UINT8("version", OtGpioEgState, version, 1u),
     DEFINE_PROP_UINT32("in", OtGpioEgState, reset_in, 0u),
     DEFINE_PROP_UINT32("out", OtGpioEgState, reset_out, 0u),
     DEFINE_PROP_UINT32("oe", OtGpioEgState, reset_oe, 0u),
@@ -1696,7 +1709,7 @@ static void ot_gpio_eg_init(Object *obj)
     OtGpioEgState *s = OT_GPIO_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_gpio_eg_regs_ops, s,
-                          TYPE_OT_GPIO_EG, REGS_SIZE);
+                          TYPE_OT_GPIO_EG, 0x100u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->irqs = g_new(IbexIRQ, PARAM_NUM_IO);

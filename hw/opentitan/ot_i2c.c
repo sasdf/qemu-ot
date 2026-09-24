@@ -893,6 +893,26 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->regs[reg];
         break;
     case R_STATUS: {
+        if (s->ack_ctrl_stretching && FIELD_EX32(s->regs[R_TARGET_TIMEOUT_CTRL],
+                                                 TARGET_TIMEOUT_CTRL, EN)) {
+            s->ack_ctrl_stretching = false;
+            ot_i2c_irq_set_state(s, ACQ_STRETCH, false);
+            ARRAY_FIELD_DP32(s->regs, TARGET_EVENTS, BUS_TIMEOUT, 1);
+            s->nack_transaction = true;
+            ot_i2c_target_set_acqdata(s, s->acq_fifo_next_data, SIGNAL_NACK);
+            s->last_ack_result = -1;
+            if (!s->host_pending_nakok) {
+                ARRAY_FIELD_DP32(s->regs, CONTROLLER_EVENTS, NACK, 1);
+                ot_i2c_irq_set_state(s, CONTROLLER_HALT, true);
+            }
+            if (s->host_pending_stop) {
+                s->host_pending_stop = false;
+                i2c_end_transfer(s->bus);
+                ot_i2c_irq_set_state(s, CMD_COMPLETE, true);
+                i2c_schedule_pending_master(s->bus);
+                ot_i2c_pump_async_bus(s);
+            }
+        }
         ot_i2c_update_fmt_threshold(s);
         uint32_t fmt_depth = ot_i2c_get_fmt_depth(s);
         val32 = FIELD_DP32(val32, STATUS, HOSTIDLE,
@@ -1068,6 +1088,15 @@ static void ot_i2c_write_fdata(OtI2CState *s, uint32_t fdata)
             ot_fifo32_push(&s->host_tx_fifo, fdata);
         }
         ot_i2c_update_fmt_threshold(s);
+        return;
+    }
+
+    if ((s->regs[R_OVRD] &
+         (R_OVRD_TXOVRDEN_MASK | R_OVRD_SCLVAL_MASK | R_OVRD_SDAVAL_MASK)) ==
+        (R_OVRD_TXOVRDEN_MASK | R_OVRD_SCLVAL_MASK)) {
+        ot_i2c_irq_set_state(s, SDA_INTERFERENCE, true);
+        ARRAY_FIELD_DP32(s->regs, CONTROLLER_EVENTS, ARBITRATION_LOST, 1);
+        ot_i2c_irq_set_state(s, CONTROLLER_HALT, true);
         return;
     }
 

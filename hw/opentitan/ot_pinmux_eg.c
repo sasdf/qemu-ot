@@ -214,6 +214,7 @@ struct OtPinmuxEgState {
     uint8_t mio_latched_sleep_mode[PARAM_N_MIO_PADS];
     uint8_t dio_latched_sleep_mode[PARAM_N_DIO_PADS];
     uint8_t wkup_prev_level[PARAM_N_WKUP_DETECT];
+    uint8_t version;
 
     OtPinmuxEgStateRegs *regs;
 };
@@ -840,7 +841,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_attr, MIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_MIO_PAD_ATTR;
             g_assert(pad_no < R_MIO_PAD_ATTR);
-            val32 &= MIO_PAD_ATTR_MASK;
+            val32 &= (s->version >= 2u) ? 0x00000083u : MIO_PAD_ATTR_MASK;
             regs->mio_pad_attr[pad_no] = val32;
             ot_pinmux_eg_update_pads(s);
             ot_gpio_eg_notify_sysrst_change();
@@ -857,8 +858,13 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_attr, DIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_DIO_PAD_ATTR;
             g_assert(pad_no < PARAM_N_DIO_PADS);
-            val32 &= (pad_no == 12u || pad_no == 13u) ? 0x0000008du :
-                                                        DIO_PAD_ATTR_MASK;
+            if (s->version >= 2u) {
+                val32 &= (pad_no == 12u || pad_no == 13u) ? 0x00000081u :
+                                                            0x00000083u;
+            } else {
+                val32 &= (pad_no == 12u || pad_no == 13u) ? 0x0000008du :
+                                                            DIO_PAD_ATTR_MASK;
+            }
             regs->dio_pad_attr[pad_no] = val32;
             ibex_irq_set(&s->dios[pad_no], PAD_ATTR_TO_IRQ(val32));
             ot_pinmux_eg_update_sysrst_inputs(s);
@@ -1140,11 +1146,16 @@ static void ot_pinmux_eg_init(Object *obj)
     ot_pinmux_eg_instance = s;
 }
 
+static const Property ot_pinmux_eg_properties[] = {
+    DEFINE_PROP_UINT8("version", OtPinmuxEgState, version, 1u),
+};
+
 static void ot_pinmux_eg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     (void)data;
 
+    device_class_set_props(dc, ot_pinmux_eg_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 
     ResettableClass *rc = RESETTABLE_CLASS(klass);

@@ -2050,6 +2050,16 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             OT_EG_SOC_DEVLINK("i2c1", I2C1),
             OT_EG_SOC_DEVLINK("i2c2", I2C2)
         ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio"),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_PINMUX] = {
+        .type = TYPE_OT_PINMUX_EG,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
     },
     [OT_EG_SOC_DEV_ALERT_HANDLER] = {
         .type = TYPE_OT_ALERT,
@@ -2269,6 +2279,10 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_HART].prop;
         v2_devs[OT_EG_SOC_DEV_GPIO].link =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_GPIO].link;
+        v2_devs[OT_EG_SOC_DEV_GPIO].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_GPIO].prop;
+        v2_devs[OT_EG_SOC_DEV_PINMUX].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PINMUX].prop;
         v2_devs[OT_EG_SOC_DEV_ALERT_HANDLER].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ALERT_HANDLER].prop;
         v2_devs[OT_EG_SOC_DEV_PLIC].prop =
