@@ -53,8 +53,10 @@ enum OtOTBNStatus {
 
 enum OtOTBNRandomSource { OT_OTBN_URND, OT_OTBN_RND, OT_OTBN_RND_COUNT };
 
-#define OT_OTBN_IMEM_SIZE (8U << 10U)
-#define OT_OTBN_DMEM_SIZE (3U << 10U)
+#define OT_OTBN_IMEM_SIZE     (8U << 10U)
+#define OT_OTBN_DMEM_SIZE     (3U << 10U)
+#define OT_OTBN_V2_IMEM_SIZE  (16U << 10U)
+#define OT_OTBN_V2_DMEM_SIZE  (16U << 10U)
 
 #define OT_OTBN_RANDOM_BIT_WIDTH 256u
 #define OT_OTBN_RANDOM_WORD_COUNT \
@@ -63,7 +65,9 @@ enum OtOTBNRandomSource { OT_OTBN_URND, OT_OTBN_RND, OT_OTBN_RND_COUNT };
 extern OTBNProxy
 ot_otbn_proxy_new(ot_otbn_fetch_entropy_fn urnd_req_entropy, void *urnd_opaque,
                   ot_otbn_fetch_entropy_fn rnd_req_entropy, void *rnd_opaque,
-                  ot_otbn_signal_completion_fn signal, void *on_comp_opaque);
+                  ot_otbn_signal_completion_fn signal, void *on_comp_opaque,
+                  uint32_t imem_size, uint32_t dmem_size,
+                  uint32_t dmem_pub_size);
 extern void ot_otbn_proxy_start(OTBNProxy proxy, bool test_mode,
                                 const char *logname, bool log_asm);
 extern void ot_otbn_proxy_terminate(OTBNProxy proxy);

@@ -376,15 +376,26 @@ static void ot_rram_ctrl_load(OtRramCtrlState *s, Error **errp)
 
         /* "vFSH" in little endian: 'v'=0x76, 'F'=0x46, 'S'=0x53, 'H'=0x48 */
         if (magic == 0x48534676) {
-            blk_pread(s->blk, 32, 0x100000, s->storage, 0);
-
             int64_t blk_len = blk_getlength(s->blk);
-            if (blk_len >= 0x100020 + (int64_t)sizeof(s->info_storage)) {
-                blk_pread(s->blk, 0x100020, sizeof(s->info_storage),
+            uint16_t pages_per_bank = 256;
+            blk_pread(s->blk, 14, sizeof(pages_per_bank), &pages_per_bank, 0);
+            uint32_t data_size = (uint32_t)pages_per_bank * 2u * 2048u;
+            if (data_size == 0 || data_size > RRAM_HOST_SIZE) {
+                data_size = 0x100000;
+            }
+            int64_t read_size = MIN((int64_t)data_size, blk_len - 32);
+            if (read_size > 0) {
+                blk_pread(s->blk, 32, read_size, s->storage, 0);
+            }
+
+            int64_t info_base = 32 + (int64_t)data_size;
+            if (blk_len >= info_base + (int64_t)sizeof(s->info_storage)) {
+                blk_pread(s->blk, info_base, sizeof(s->info_storage),
                           s->info_storage, 0);
             }
-            if (blk_len >= 0x105020 + 2048) {
-                blk_pread(s->blk, 0x105020, 2048, s->storage + 0xFC000, 0);
+            if (blk_len >= info_base + 0x5000 + 2048) {
+                blk_pread(s->blk, info_base + 0x5000, 2048,
+                          s->storage + 0x1FC000, 0);
             }
         } else {
             blk_pread(s->blk, 0, RRAM_HOST_SIZE, s->storage, 0);
@@ -468,8 +479,8 @@ static void ot_rram_ctrl_init(Object *obj)
 {
     OtRramCtrlState *s = OT_RRAM_CTRL(obj);
 
-    ot_fifo32_create(&s->wr_fifo, 16);
-    ot_fifo32_create(&s->rd_fifo, 16);
+    ot_fifo32_create(&s->wr_fifo, 1024);
+    ot_fifo32_create(&s->rd_fifo, 1024);
 }
 
 static const Property ot_rram_ctrl_properties[] = {

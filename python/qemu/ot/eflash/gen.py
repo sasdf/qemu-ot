@@ -379,13 +379,30 @@ class FlashGen:
                 raise ValueError(f'Invalid address 0x{address:x} for bin '
                                  f'{basename(bin_filename)}')
             with open(bin_filename, 'rb') as bfp:
-                data = bfp.read()
+                raw_data = bfp.read()
+            raw_end = address + len(raw_data)
+            data = raw_data.rstrip(b'\xff')
             address_end = address + len(data)
+            if max(raw_end, address_end) > max_offset and max(raw_end, address_end) <= 2 * max_offset:
+                self.PAGES_PER_BANK = 512
+                self.BYTES_PER_BANK = 1048576
+                max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
+                tfmt = ''.join(self.DEBUG_TRAILER_FORMAT.values())
+                trailer_size = scalc(tfmt)
+                self._image_size = ((self.BYTES_PER_BANK + self.info_part_size()) *
+                                    self.NUM_BANKS + self._header_size + trailer_size)
+                if self._ffp:
+                    path = self._ffp.name
+                    self._ffp.truncate(0)
+                    self._ffp.close()
+                    self._ffp = None
+                    self.open(path)
             if not 0 <= address_end <= max_offset:
                 raise ValueError(f'Binary {basename(bin_filename)} at '
                                  f'0x{address:x}:0x{address_end:x} does not '
                                  f'fit in flash size 0x{max_offset:x}')
-            self._write(self._header_size + address, data)
+            if data:
+                self._write(self._header_size + address, data)
 
     def _compare_bin_elf(self, bindesc: RuntimeDescriptor, elfpath: str) \
             -> Optional[bool]:

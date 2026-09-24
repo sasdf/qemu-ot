@@ -28,6 +28,9 @@ pub struct Proxy {
     /// Data memory
     dmem: Arc<Mutex<memory::MemoryRegion>>,
 
+    /// Bus-accessible data memory size
+    dmem_pub_size: usize,
+
     /// Shared registers with the core
     registers: Arc<otbn::Registers>,
 
@@ -55,9 +58,20 @@ pub struct Proxy {
 
 impl Default for Proxy {
     fn default() -> Self {
+        Self::with_sizes(otbn::IMEM_SIZE, otbn::DMEM_SIZE, otbn::DMEM_PUB_SIZE)
+    }
+}
+
+impl Proxy {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn with_sizes(imem_size: usize, dmem_size: usize, dmem_pub_size: usize) -> Self {
         Self {
-            imem: Arc::new(Mutex::new(memory::MemoryRegion::new(otbn::IMEM_SIZE))),
-            dmem: Arc::new(Mutex::new(memory::MemoryRegion::new(otbn::DMEM_SIZE))),
+            imem: Arc::new(Mutex::new(memory::MemoryRegion::new(imem_size))),
+            dmem: Arc::new(Mutex::new(memory::MemoryRegion::new(dmem_size))),
+            dmem_pub_size,
             join_handle: None,
             channel: None,
             registers: Arc::new(otbn::Registers::default()),
@@ -67,12 +81,6 @@ impl Default for Proxy {
             key: Arc::new(key::Key::new()),
             on_complete: None,
         }
-    }
-}
-
-impl Proxy {
-    pub fn new() -> Self {
-        Default::default()
     }
 
     /// Report the state of the core executer
@@ -215,7 +223,7 @@ impl Proxy {
         let mem = if doi {
             &self.imem
         } else {
-            if addr as usize >= otbn::DMEM_PUB_SIZE {
+            if addr as usize >= self.dmem_pub_size {
                 *valid = true;
                 return 0;
             }
@@ -245,7 +253,7 @@ impl Proxy {
         let mem = if doi {
             &self.imem
         } else {
-            if addr as usize >= otbn::DMEM_PUB_SIZE {
+            if addr as usize >= self.dmem_pub_size {
                 return false;
             }
             &self.dmem
@@ -430,8 +438,15 @@ pub extern "C" fn ot_otbn_proxy_new(
     rnd_opaque: CCallbackArg,
     on_complete: CCallbackFunc,
     on_comp_opaque: CCallbackArg,
+    imem_size: u32,
+    dmem_size: u32,
+    dmem_pub_size: u32,
 ) -> Box<Proxy> {
-    let mut proxy = Box::new(Proxy::new());
+    let mut proxy = Box::new(Proxy::with_sizes(
+        imem_size as usize,
+        dmem_size as usize,
+        dmem_pub_size as usize,
+    ));
     proxy.register_entropy_req_cb(
         Box::new(CCallback::new(urnd_entropy_req, urnd_opaque)),
         Box::new(CCallback::new(rnd_entropy_req, rnd_opaque)),

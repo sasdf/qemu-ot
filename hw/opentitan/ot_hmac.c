@@ -800,7 +800,8 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
          */
         uint32_t raw_val;
         unsigned idx = reg - R_DIGEST_0;
-        if (s->ctx->digest_size_started == HMAC_SHA2_256) {
+        if (s->ctx->digest_size_started == HMAC_SHA2_256 ||
+            s->ctx->digest_size_started == HMAC_SHA2_NONE) {
             raw_val = s->regs->digest[(idx % 8) * 2 + 1];
         } else {
             raw_val = s->regs->digest[idx];
@@ -1194,14 +1195,14 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
          * digest. So, we only need to swap if the swap config is 0 (i.e. the
          * input digest is little endian).
          */
-        if (s->regs->cfg & R_CFG_DIGEST_SWAP_MASK) {
-            s->regs->digest[reg - R_DIGEST_0] = val32;
+        uint32_t swapped_val =
+            (s->regs->cfg & R_CFG_DIGEST_SWAP_MASK) ? val32 : bswap32(val32);
+        if (digest_size == HMAC_SHA2_256) {
+            unsigned idx = reg - R_DIGEST_0;
+            s->regs->digest[2 * idx] = 0;
+            s->regs->digest[2 * idx + 1] = swapped_val;
         } else {
-            s->regs->digest[reg - R_DIGEST_0] = bswap32(val32);
-        }
-        if (digest_size == HMAC_SHA2_256 && (reg - R_DIGEST_0) < 8u) {
-            s->regs->digest[(reg - R_DIGEST_0) + 8u] =
-                s->regs->digest[reg - R_DIGEST_0];
+            s->regs->digest[reg - R_DIGEST_0] = swapped_val;
         }
         break;
     case R_MSG_LENGTH_LOWER:

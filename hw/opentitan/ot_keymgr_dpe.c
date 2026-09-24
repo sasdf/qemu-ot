@@ -404,6 +404,7 @@ typedef struct OtKeyMgrDpeState {
 
     /* SW output keys */
     OtKeyMgrDpeKey *sw_out_key;
+    OtKeyMgrDpeKey *saved_kmac_key;
 
     char *hexstr;
 
@@ -895,6 +896,13 @@ static bool ot_keymgr_dpe_handle_kmac_resp_gen_hw_out(
     case KEYMGR_DPE_DEST_SEL_VALUE_KMAC:
     case KEYMGR_DPE_DEST_SEL_VALUE_OTBN: {
         OtKeyMgrDpeKeySink key_sink = dest_sel - KEY_SINK_OFFSET;
+        if (key_sink == KEYMGR_DPE_KEY_SINK_KMAC) {
+            memcpy(s->saved_kmac_key->share0, rsp->digest_share0,
+                   OT_KMAC_KEY_SIZE);
+            memcpy(s->saved_kmac_key->share1, rsp->digest_share1,
+                   OT_KMAC_KEY_SIZE);
+            s->saved_kmac_key->valid = true;
+        }
         ot_keymgr_dpe_push_key(s, key_sink, rsp->digest_share0,
                                rsp->digest_share1, true);
         return dest_sel != KEYMGR_DPE_DEST_SEL_VALUE_KMAC;
@@ -972,11 +980,13 @@ ot_keymgr_dpe_handle_kmac_response(void *opaque, const OtKMACAppRsp *rsp)
         g_assert_not_reached();
     }
 
-    /* reset KMAC key if required */
+    /* restore last sideloaded KMAC key after internal KDF operation */
     if (reset_kmac_key) {
-        /* TODO: maybe push last sideloaded KMAC key instead? */
         trace_ot_keymgr_dpe_reset_kmac_key(s->ot_id);
-        ot_keymgr_dpe_push_key(s, KEYMGR_DPE_KEY_SINK_KMAC, NULL, NULL, false);
+        ot_keymgr_dpe_push_key(s, KEYMGR_DPE_KEY_SINK_KMAC,
+                               s->saved_kmac_key->share0,
+                               s->saved_kmac_key->share1,
+                               s->saved_kmac_key->valid);
     }
 
     /* operation complete */
@@ -1489,6 +1499,10 @@ static void ot_keymgr_dpe_sideload_clear(OtKeyMgrDpeState *s)
             /* TODO this needs to use random data */
             memset(share0, 0, key_size);
             memset(share1, 0, key_size);
+
+            if (kix == KEYMGR_DPE_KEY_SINK_KMAC) {
+                memset(s->saved_kmac_key, 0u, sizeof(OtKeyMgrDpeKey));
+            }
 
             kc->push_key(ki, share0, share1, key_size, false);
         }
@@ -2218,6 +2232,7 @@ static void ot_keymgr_dpe_reset_enter(Object *obj, ResetType type)
 
     /* reset output keys */
     memset(s->sw_out_key, 0u, sizeof(OtKeyMgrDpeKey));
+    memset(s->saved_kmac_key, 0u, sizeof(OtKeyMgrDpeKey));
 
     /* update IRQ and alert states */
     ot_keymgr_dpe_update_irq(s);
@@ -2291,6 +2306,7 @@ static void ot_keymgr_dpe_init(Object *obj)
     }
     s->key_slots = g_new0(OtKeyMgrDpeSlot, NUM_SLOTS);
     s->sw_out_key = g_new0(OtKeyMgrDpeKey, 1u);
+    s->saved_kmac_key = g_new0(OtKeyMgrDpeKey, 1u);
 
     s->fsm_tick_bh = qemu_bh_new(&ot_keymgr_dpe_fsm_tick, s);
 

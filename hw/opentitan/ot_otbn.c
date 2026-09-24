@@ -183,6 +183,7 @@ struct OtOTBNState {
     DeviceState *clock_src;
     char *log_file;
     OtOTBNRandom rnds[OT_OTBN_RND_COUNT];
+    uint32_t version;
     bool log_asm;
     bool lc_escalated;
 };
@@ -880,6 +881,7 @@ static const Property ot_otbn_properties[] = {
     DEFINE_PROP_UINT8("edn-r-ep", OtOTBNState, rnds[OT_OTBN_RND].ep, UINT8_MAX),
     DEFINE_PROP_STRING("logfile", OtOTBNState, log_file),
     DEFINE_PROP_BOOL("logasm", OtOTBNState, log_asm, false),
+    DEFINE_PROP_UINT32("version", OtOTBNState, version, 1u),
 };
 
 static const MemoryRegionOps ot_otbn_regs_ops = {
@@ -1021,6 +1023,35 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
     g_assert(s->rnds[OT_OTBN_URND].ep != UINT8_MAX);
     g_assert(s->rnds[OT_OTBN_RND].ep != UINT8_MAX);
 
+    uint32_t imem_size =
+        (s->version == 2u) ? OT_OTBN_V2_IMEM_SIZE : OT_OTBN_IMEM_SIZE;
+    uint32_t dmem_pub_size =
+        (s->version == 2u) ? OT_OTBN_V2_DMEM_SIZE : OT_OTBN_DMEM_SIZE;
+    uint32_t dmem_size =
+        (s->version == 2u) ? (32u << 10u) : (4u << 10u);
+
+    /*
+     * IMEM cannot be defined as a RAM region since accesses need to be
+     * controlled and checksum to be computed in-order
+     */
+    memory_region_init_io(&s->imem, OBJECT(dev), &ot_otbn_imem_ops, s,
+                          TYPE_OT_OTBN ".imem", imem_size);
+    memory_region_add_subregion(&s->mmio, OT_OTBN_IMEM_BASE, &s->imem);
+
+    /*
+     * DMEM cannot be defined as a RAM region since accesses need to be
+     * controlled and checksum to be computed in-order
+     */
+    memory_region_init_io(&s->dmem, OBJECT(dev), &ot_otbn_dmem_ops, s,
+                          TYPE_OT_OTBN ".dmem", dmem_pub_size);
+    memory_region_add_subregion(&s->mmio, OT_OTBN_DMEM_BASE, &s->dmem);
+
+    s->proxy =
+        ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
+                          &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],
+                          &ot_otbn_signal_on_completion, s,
+                          imem_size, dmem_size, dmem_pub_size);
+
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_clock_input,
                             OT_OTBN_CLOCK_INPUT, 1);
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_lc_escalate_en,
@@ -1038,22 +1069,6 @@ static void ot_otbn_init(Object *obj)
                           TYPE_OT_OTBN ".regs", REGS_SIZE);
     memory_region_add_subregion(&s->mmio, OT_OTBN_REGS_BASE, &s->regs);
 
-    /*
-     * IMEM cannot be defined as a RAM region since accesses need to be
-     * controlled and checksum to be computed in-order
-     */
-    memory_region_init_io(&s->imem, obj, &ot_otbn_imem_ops, s,
-                          TYPE_OT_OTBN ".imem", OT_OTBN_IMEM_SIZE);
-    memory_region_add_subregion(&s->mmio, OT_OTBN_IMEM_BASE, &s->imem);
-
-    /*
-     * DMEM cannot be defined as a RAM region since accesses need to be
-     * controlled and checksum to be computed in-order
-     */
-    memory_region_init_io(&s->dmem, obj, &ot_otbn_dmem_ops, s,
-                          TYPE_OT_OTBN ".dmem", OT_OTBN_DMEM_SIZE);
-    memory_region_add_subregion(&s->mmio, OT_OTBN_DMEM_BASE, &s->dmem);
-
     ibex_sysbus_init_irq(obj, &s->irq_done);
     ibex_qdev_init_irqs(obj, s->alerts, OT_DEVICE_ALERT, ALERT_COUNT);
     ibex_qdev_init_irq(obj, &s->clock_active, OT_OTBN_CLOCK_ACTIVE);
@@ -1066,10 +1081,6 @@ static void ot_otbn_init(Object *obj)
 
     s->proxy_completion_bh = qemu_bh_new(&ot_otbn_proxy_completion_bh, s);
     s->proxy_defer = timer_new_ns(OT_VIRTUAL_CLOCK, &ot_otbn_post_execute, s);
-    s->proxy =
-        ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
-                          &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],
-                          &ot_otbn_signal_on_completion, s);
 
 #ifdef OT_OTBN_DEBUG
     s->hexstr = g_new0(char, OT_OTBN_HEXSTR_SIZE);
