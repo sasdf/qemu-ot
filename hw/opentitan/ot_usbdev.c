@@ -1235,10 +1235,6 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
             bool dp_pullup;
             bool dn_pullup;
             ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
-            if (!ot_usbdev_is_enabled(s) || (!dp_pullup && !dn_pullup)) {
-                s->regs[R_USBCTRL] =
-                    FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
-            }
 
             ot_usbdev_cancel_all_transfers(s, "VBUS was disconnected");
             /* If there is no host then any SOF or reset signalling stops. */
