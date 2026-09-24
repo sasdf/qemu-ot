@@ -238,14 +238,7 @@ static void ot_adc_ctrl_eval_sample(OtAdcCtrlState *s, uint32_t chn0_val,
     }
 
     ot_adc_ctrl_update_chn_val(s, chn0_val, chn1_val, any_match);
-
-    if (any_match && (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK)) {
-        /* Low power to normal power FSM transition occurred */
-        s->regs[R_FILTER_STATUS] |= (1u << FILTER_STATUS_TRANS_BIT);
-        if (s->regs[R_ADC_INTR_CTL] & (1u << FILTER_STATUS_TRANS_BIT)) {
-            s->regs[R_ADC_INTR_STATUS] |= (1u << FILTER_STATUS_TRANS_BIT);
-        }
-    }
+    /* stay in NP_0 or NP_DONE */
 
     ot_adc_ctrl_update_irqs(s);
 }
@@ -257,7 +250,46 @@ static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
         (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK)) {
         return;
     }
-    ot_adc_ctrl_eval_sample(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL);
+
+    if (s->regs[R_ADC_FSM_STATE] == 6u) { /* LP_0 */
+        /* Evaluate match for LP but don't assert MATCH interrupts, only TRANS
+         */
+        bool any_match = false;
+        for (unsigned k = 0; k < NUM_ADC_FILTERS; k++) {
+            uint32_t f0 = s->regs[R_ADC_CHN0_FILTER_CTL_0 + k];
+            uint32_t f1 = s->regs[R_ADC_CHN1_FILTER_CTL_0 + k];
+            bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
+            bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
+
+            bool match_k =
+                (en0 || en1) &&
+                (!en0 || ot_adc_ctrl_filter_match_chn(f0, DEFAULT_CHN0_VAL)) &&
+                (!en1 || ot_adc_ctrl_filter_match_chn(f1, DEFAULT_CHN1_VAL));
+            if (match_k) {
+                any_match = true;
+            }
+        }
+
+        ot_adc_ctrl_update_chn_val(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL,
+                                   any_match);
+
+        if (any_match) {
+            s->regs[R_FILTER_STATUS] |= (1u << FILTER_STATUS_TRANS_BIT);
+            if (s->regs[R_ADC_INTR_CTL] & (1u << FILTER_STATUS_TRANS_BIT)) {
+                s->regs[R_ADC_INTR_STATUS] |= (1u << FILTER_STATUS_TRANS_BIT);
+            }
+            s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
+            int64_t np_samples =
+                (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
+            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                           MAX(np_samples * 25000LL, 100000LL));
+        } else {
+            s->regs[R_ADC_FSM_STATE] = 0u;
+        }
+        ot_adc_ctrl_update_irqs(s);
+    } else {
+        ot_adc_ctrl_eval_sample(s, DEFAULT_CHN0_VAL, DEFAULT_CHN1_VAL);
+    }
 }
 
 static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
@@ -293,20 +325,20 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
             ot_adc_ctrl_update_irqs(s);
         }
     } else {
-        s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
-        /*
-         * RTL: adc_ctrl_fsm.sv:183, 187 computes
-         * np_sample_cnt_thresh = cfg_normal_mode_val_i - 1'b1 (16-bit) and
-         * lp_sample_cnt_thresh = cfg_lp_mode_val_i - 1'b1 (8-bit), so
-         * configuring 0 underflows to 0xffff (65536 samples) / 0xff (256
-         * samples).
-         */
-        int64_t samples = (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
-        if (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) {
-            samples += (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL;
+        bool lp_mode =
+            (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) != 0u;
+        if (lp_mode) {
+            s->regs[R_ADC_FSM_STATE] = 6u; /* LP_0 */
+            int64_t samples =
+                (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL;
+            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                           MAX(samples * 25000LL, 100000LL));
+        } else {
+            s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
+            int64_t samples = (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
+            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                           MAX(samples * 25000LL, 100000LL));
         }
-        timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                       MAX(samples * 25000LL, 100000LL));
     }
 }
 

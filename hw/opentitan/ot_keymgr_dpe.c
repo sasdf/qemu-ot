@@ -1768,17 +1768,19 @@ static MemTxResult ot_keymgr_dpe_read_with_attrs(
     case R_START:
     case R_SIDELOAD_CLEAR:
     case R_RESEED_INTERVAL_REGWEN:
-    case R_SLOT_POLICY_REGWEN:
     case R_SLOT_POLICY:
-    case R_SW_BINDING_REGWEN:
     case R_KEY_VERSION:
-    case R_MAX_KEY_VER_REGWEN:
     case R_WORKING_STATE:
     case R_OP_STATUS:
     case R_ERR_CODE:
     case R_FAULT_STATUS:
     case R_DEBUG:
         val32 = s->regs[reg];
+        break;
+    case R_SLOT_POLICY_REGWEN:
+    case R_SW_BINDING_REGWEN:
+    case R_MAX_KEY_VER_REGWEN:
+        val32 = s->regs[reg] & s->regs[R_CFG_REGWEN];
         break;
     case R_LOAD_KEY_LOCK:
         val32 = s->regs[reg];
