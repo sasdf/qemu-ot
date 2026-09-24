@@ -269,6 +269,8 @@ struct OtHMACContext {
     hash_state state;
     OtHMACDigestSize digest_size_started;
     bool msg_length_overflow;
+    bool done_deadlock;
+    bool pad_deadlock;
 };
 typedef struct OtHMACContext OtHMACContext;
 
@@ -434,8 +436,8 @@ static void ot_hmac_writeback_digest_state(OtHMACState *s)
     switch (s->ctx->digest_size_started) {
     case HMAC_SHA2_256:
         for (unsigned idx = 0; idx < 8u; idx++) {
-            STORE32H(s->ctx->state.sha256.state[idx], s->regs->digest + idx);
-            s->regs->digest[idx + 8u] = s->regs->digest[idx];
+            STORE32H(s->ctx->state.sha256.state[idx],
+                     s->regs->digest + 2 * idx + 1);
         }
         break;
     case HMAC_SHA2_384:
@@ -477,7 +479,8 @@ static void ot_hmac_restore_context(OtHMACState *s)
         s->ctx->state.sha256.curlen = 0;
         s->ctx->state.sha256.length = msg_length;
         for (unsigned idx = 0; idx < 8u; idx++) {
-            LOAD32H(s->ctx->state.sha256.state[idx], s->regs->digest + idx);
+            LOAD32H(s->ctx->state.sha256.state[idx],
+                    s->regs->digest + 2 * idx + 1);
         }
         break;
     case HMAC_SHA2_384:
@@ -578,12 +581,14 @@ static void ot_hmac_sha_process(OtHMACState *s, const uint8_t *in, size_t inlen,
 static void ot_hmac_sha_done(OtHMACState *s)
 {
     switch (s->ctx->digest_size_started) {
-    case HMAC_SHA2_256:
-        sha256_done(&s->ctx->state, (uint8_t *)s->regs->digest);
+    case HMAC_SHA2_256: {
+        uint32_t tmp[8];
+        sha256_done(&s->ctx->state, (uint8_t *)tmp);
         for (unsigned idx = 0; idx < 8u; idx++) {
-            s->regs->digest[idx + 8u] = s->regs->digest[idx];
+            s->regs->digest[idx * 2 + 1] = tmp[idx];
         }
         return;
+    }
     case HMAC_SHA2_384:
         sha384_done(&s->ctx->state, (uint8_t *)s->regs->digest);
         for (unsigned idx = 6u; idx < 8u; idx++) {
@@ -626,7 +631,15 @@ static void ot_hmac_compute_digest(OtHMACState *s)
         }
         ot_hmac_sha_init(s, false);
         ot_hmac_sha_process(s, (const uint8_t *)opad, pad_length_b, false);
-        ot_hmac_sha_process(s, (const uint8_t *)s->regs->digest,
+        uint32_t inner_digest[16];
+        if (s->ctx->digest_size_started == HMAC_SHA2_256) {
+            for (unsigned idx = 0; idx < 8u; idx++) {
+                inner_digest[idx] = s->regs->digest[2 * idx + 1];
+            }
+        } else {
+            memcpy(inner_digest, s->regs->digest, sizeof(inner_digest));
+        }
+        ot_hmac_sha_process(s, (const uint8_t *)inner_digest,
                             ot_hmac_get_digest_bytes(
                                 s->ctx->digest_size_started),
                             true);
@@ -655,7 +668,9 @@ static void ot_hmac_process_fifo(OtHMACState *s)
     }
 
     if (stop && ot_hmac_get_curlen(s) == 0) {
-        s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        if (!s->ctx->done_deadlock) {
+            s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        }
         s->regs->cmd = 0;
     }
 
@@ -664,7 +679,9 @@ static void ot_hmac_process_fifo(OtHMACState *s)
             return;
         }
         ot_hmac_compute_digest(s);
-        s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        if (!s->ctx->done_deadlock) {
+            s->regs->intr_state |= INTR_HMAC_DONE_MASK;
+        }
         s->regs->cmd = 0;
     }
 
@@ -745,7 +762,8 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
                 val32 |= R_STATUS_FIFO_FULL_MASK;
             }
         }
-        if (!(s->regs->cmd)) {
+        if (!s->ctx->pad_deadlock && !(s->regs->cmd) &&
+            fifo8_is_empty(&s->input_fifo)) {
             val32 |= R_STATUS_HMAC_IDLE_MASK;
         }
     } break;
@@ -780,10 +798,17 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
          * digest. So, we only need to swap if the swap config is 0 (i.e. the
          * digest should be output in little endian).
          */
-        if (s->regs->cfg & R_CFG_DIGEST_SWAP_MASK) {
-            val32 = s->regs->digest[reg - R_DIGEST_0];
+        uint32_t raw_val;
+        unsigned idx = reg - R_DIGEST_0;
+        if (s->ctx->digest_size_started == HMAC_SHA2_256) {
+            raw_val = s->regs->digest[(idx % 8) * 2 + 1];
         } else {
-            val32 = bswap32(s->regs->digest[reg - R_DIGEST_0]);
+            raw_val = s->regs->digest[idx];
+        }
+        if (s->regs->cfg & R_CFG_DIGEST_SWAP_MASK) {
+            val32 = raw_val;
+        } else {
+            val32 = bswap32(raw_val);
         }
         break;
     case R_MSG_LENGTH_LOWER:
@@ -887,9 +912,9 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         if (s->regs->cmd) {
             if (s->regs->cmd & R_CMD_HASH_STOP_MASK) {
                 if (!(val32 & R_CFG_SHA_EN_MASK)) {
+                    s->ctx->done_deadlock = true;
                     s->regs->cmd = 0;
                     s->ctx->msg_length_overflow = false;
-                    fifo8_reset(&s->input_fifo);
                 }
             } else {
                 break;
@@ -957,6 +982,9 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
                 break;
             }
             s->regs->cmd = R_CMD_HASH_START_MASK;
+            if (!fifo8_is_empty(&s->input_fifo) && s->ctx->done_deadlock) {
+                s->ctx->pad_deadlock = true;
+            }
             s->regs->msg_length = 0;
             s->ctx->msg_length_overflow = false;
 
