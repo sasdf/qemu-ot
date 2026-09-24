@@ -1768,7 +1768,7 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
          * In StAppMsg (10'b1110001011 = 0x38b -> 8'(st) = 0x8b) with
          * SelApp (5'b11001 = 0x19), info = 0x008b19.
          */
-        uint32_t err_info = s->current_app ? 0x008b19u : 0x00be14u;
+        uint32_t err_info = s->current_app ? 0x008b19u : 0x00a514u;
         ot_kmac_report_error(s, OT_KMAC_ERR_SW_PUSHED_MSG_FIFO, err_info);
         return;
     }
