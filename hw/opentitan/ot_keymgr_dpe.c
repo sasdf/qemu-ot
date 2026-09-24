@@ -903,8 +903,31 @@ static bool ot_keymgr_dpe_handle_kmac_resp_gen_hw_out(
                    OT_KMAC_KEY_SIZE);
             s->saved_kmac_key->valid = true;
         }
+
+        uint32_t sl_clear =
+            FIELD_EX32(s->regs[R_SIDELOAD_CLEAR], SIDELOAD_CLEAR, VAL);
+        uint32_t sl_bm = 0;
+        switch ((int)sl_clear) {
+        case KEYMGR_DPE_SIDELOAD_CLEAR_NONE:
+            sl_bm = 0;
+            break;
+        case KEYMGR_DPE_SIDELOAD_CLEAR_AES:
+        case KEYMGR_DPE_SIDELOAD_CLEAR_OTBN:
+        case KEYMGR_DPE_SIDELOAD_CLEAR_KMAC:
+            sl_bm = 1u << (sl_clear - KEY_SINK_OFFSET);
+            break;
+        default:
+            sl_bm = (1u << KEYMGR_DPE_KEY_SINK_COUNT) - 1u;
+            break;
+        }
+
+        bool is_valid = true;
+        if (sl_bm & (1u << key_sink)) {
+            is_valid = false;
+        }
+
         ot_keymgr_dpe_push_key(s, key_sink, rsp->digest_share0,
-                               rsp->digest_share1, true);
+                               rsp->digest_share1, is_valid);
         return dest_sel != KEYMGR_DPE_DEST_SEL_VALUE_KMAC;
     }
     case KEYMGR_DPE_DEST_SEL_VALUE_NONE:
@@ -1172,9 +1195,7 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
     if (invalid_allow_child || invalid_max_boot_stage || invalid_src_slot ||
         invalid_retain_parent) {
         s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
-        if (invalid_src_slot) {
-            s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
-        }
+        s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
         ot_keymgr_dpe_schedule_fsm(s);
@@ -1337,8 +1358,16 @@ static void ot_keymgr_dpe_operation_gen_output(OtKeyMgrDpeState *s, bool sw)
     bool key_version_valid =
         s->regs[R_KEY_VERSION] <= src_slot->max_key_version;
 
-    /* TODO trigger error */
-    (void)key_version_valid;
+    if (!key_version_valid) {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_KEY_VERSION_MASK;
+        s->regs[R_ERR_CODE] |=
+            (R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK);
+        ot_keymgr_dpe_update_alert(s);
+        s->op_state.op_ack = true;
+        ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
+        ot_keymgr_dpe_schedule_fsm(s);
+        return;
+    }
 
     g_assert(s->kdf_buf.length == KEYMGR_DPE_GEN_DATA_BYTES);
 
@@ -1358,11 +1387,13 @@ static void ot_keymgr_dpe_operation_hw_output(OtKeyMgrDpeState *s)
     ot_keymgr_dpe_operation_gen_output(s, false);
 }
 
+static void ot_keymgr_dpe_xchange_main_fsm_state(
+    OtKeyMgrDpeState *s, OtKeyMgrDpeFSMState state, int line);
 static void ot_keymgr_dpe_operation_disable(OtKeyMgrDpeState *s)
 {
-    /* TODO implement */
-    s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
     s->op_state.op_ack = true;
+    ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_SUCCESS);
+    ot_keymgr_dpe_xchange_main_fsm_state(s, KEYMGR_DPE_ST_WIPE, __LINE__);
     ot_keymgr_dpe_schedule_fsm(s);
 }
 
@@ -1668,7 +1699,8 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
         ot_keymgr_dpe_change_working_state(s,
                                            KEYMGR_DPE_WORKING_STATE_AVAILABLE);
         if (invalid_state) {
-            ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_WIPE);
+            ot_keymgr_dpe_xchange_main_fsm_state(s, KEYMGR_DPE_ST_WIPE,
+                                                 __LINE__);
         }
         if (!op_start) {
             /* no state change if op_start is not set */
@@ -1680,7 +1712,8 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
              * Given that the root key was latched by an earlier FSM state, we
              * need to take care of clearing the sensitive root key.
              */
-            ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_WIPE);
+            ot_keymgr_dpe_xchange_main_fsm_state(s, KEYMGR_DPE_ST_WIPE,
+                                                 __LINE__);
         } else if (!invalid_state && !s->op_state.op_req) {
             s->op_state.op_req = true;
             ot_keymgr_dpe_start_operation(s);
@@ -1696,10 +1729,16 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
     case KEYMGR_DPE_ST_DISABLED:
         ot_keymgr_dpe_change_working_state(s,
                                            KEYMGR_DPE_WORKING_STATE_DISABLED);
+        if (op_start) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
+        }
         break;
     case KEYMGR_DPE_ST_INVALID:
     default:
         ot_keymgr_dpe_change_working_state(s, KEYMGR_DPE_WORKING_STATE_INVALID);
+        if (op_start) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
+        }
         break;
     }
 
@@ -1752,7 +1791,12 @@ static void ot_keymgr_dpe_fsm_tick(void *opaque)
 static inline bool ot_keymgr_dpe_check_reg_write_func(
     const char *func, OtKeyMgrDpeState *s, hwaddr reg, hwaddr regwen)
 {
-    if (!s->regs[regwen]) {
+    uint32_t val = s->regs[regwen];
+    if (regwen == R_SLOT_POLICY_REGWEN || regwen == R_SW_BINDING_REGWEN ||
+        regwen == R_MAX_KEY_VER_REGWEN) {
+        val &= s->regs[R_CFG_REGWEN];
+    }
+    if (!val) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Write to %s protected with %s\n",
                       func, REG_NAME(reg), REG_NAME(regwen));
         return false;
