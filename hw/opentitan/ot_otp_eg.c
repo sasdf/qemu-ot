@@ -31,8 +31,10 @@
 #define OT_OTP_COMPORTABLE_REGS
 
 #include "qemu/osdep.h"
+#include "qemu/config-file.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "qemu/option.h"
 #include "qom/object.h"
 #include "hw/opentitan/ot_otp_eg.h"
 #include "hw/opentitan/ot_otp_engine.h"
@@ -503,16 +505,30 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
     status =
         FIELD_DP32(status, STATUS, DAI_IDLE, !ot_otp_engine_dai_is_busy(s));
 
+    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+        uint32_t part_err = (status & 0x7ffu) ? 1u : 0u;
+        status = part_err | ((status >> 10u) & 0x3feu);
+    }
+
     return status;
 }
 
 static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
                                   bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     (void)attrs;
     if (!is_write) {
         return true;
+    }
+    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+        if (addr == 0x14u) {
+            uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
+            return (0x3u & ~byte_mask) == 0u;
+        }
+        if (addr >= 0x18u) {
+            addr -= sizeof(uint32_t);
+        }
     }
     hwaddr reg = R32_OFF(addr);
     uint8_t permit;
@@ -546,6 +562,21 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
     uint32_t val32;
+
+    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+        if (addr == 0x14u) {
+            val32 = 0u;
+            for (unsigned ix = 0; ix <= (R_ERR_CODE_10 - R_ERR_CODE_0); ix++) {
+                if (s->regs[R_ERR_CODE_0 + ix] != 0u) {
+                    val32 |= 1u << ix;
+                }
+            }
+            return (uint64_t)val32;
+        }
+        if (addr >= 0x18u) {
+            addr -= sizeof(uint32_t);
+        }
+    }
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -620,6 +651,18 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
     uint32_t val32 = (uint32_t)value;
+
+    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+        if (addr == 0x14u) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: R/O register 0x%03x (PARTITION_STATUS_0)\n",
+                          __func__, s->ot_id, (uint32_t)addr);
+            return;
+        }
+        if (addr >= 0x18u) {
+            addr -= sizeof(uint32_t);
+        }
+    }
 
     hwaddr reg = R32_OFF(addr);
 
@@ -999,16 +1042,24 @@ static void ot_otp_eg_get_keymgr_secret(
     switch (type) {
     case OT_OTP_KEYMGR_SECRET_CREATOR_ROOT_KEY_SHARE0:
         partition = OTP_PART_SECRET2;
-        offset =
-            A_SECRET2_CREATOR_ROOT_KEY_SHARE0 - s->part_descs[partition].offset;
+        offset = A_SECRET2_CREATOR_ROOT_KEY_SHARE0 -
+                 OT_OTP_PART_DESCS[partition].offset;
         break;
     case OT_OTP_KEYMGR_SECRET_CREATOR_ROOT_KEY_SHARE1:
         partition = OTP_PART_SECRET2;
-        offset =
-            A_SECRET2_CREATOR_ROOT_KEY_SHARE1 - s->part_descs[partition].offset;
+        offset = A_SECRET2_CREATOR_ROOT_KEY_SHARE1 -
+                 OT_OTP_PART_DESCS[partition].offset;
         break;
     case OT_OTP_KEYMGR_SECRET_CREATOR_SEED:
     case OT_OTP_KEYMGR_SECRET_OWNER_SEED:
+        if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+            secret->valid = true;
+            memset(secret->secret,
+                   (type == OT_OTP_KEYMGR_SECRET_CREATOR_SEED) ? 0x5au : 0xa5u,
+                   OT_OTP_KEYMGR_SECRET_SIZE);
+            return;
+        }
+        /* fall through */
     default:
         error_report("%s: %s: invalid OTP keymgr secret type: %d", __func__,
                      s->ot_id, type);
@@ -1060,10 +1111,8 @@ ot_otp_eg_update_status_error(OtOTPImplIf *dev, OtOTPStatus error, bool set)
 
 static void ot_otp_eg_pwr_load_hw_cfg(OtOTPEngineState *s)
 {
-    OtOTPImplIfClass *ic = OT_OTP_IMPL_IF_GET_CLASS(s);
-
-    const OtOTPPartDesc *pdesc0 = &ic->part_descs[OTP_PART_HW_CFG0];
-    const OtOTPPartDesc *pdesc1 = &ic->part_descs[OTP_PART_HW_CFG1];
+    const OtOTPPartDesc *pdesc0 = &s->part_descs[OTP_PART_HW_CFG0];
+    const OtOTPPartDesc *pdesc1 = &s->part_descs[OTP_PART_HW_CFG1];
     const OtOTPPartController *pctrl0 = &s->part_ctrls[OTP_PART_HW_CFG0];
     const OtOTPPartController *pctrl1 = &s->part_ctrls[OTP_PART_HW_CFG1];
     const uint8_t *pdata0 = (const uint8_t *)pctrl0->buffer.data;
@@ -1125,7 +1174,7 @@ static void ot_otp_eg_pwr_load_tokens(OtOTPEngineState *s)
         unsigned secret_offset =
             secret_addr - ot_otp_engine_part_data_offset(s, partition);
         g_assert(secret_offset + sizeof(OtOTPTokenValue) <=
-                 OT_OTP_PART_DESCS[partition].size);
+                 s->part_descs[partition].size);
 
         OtOTPTokenValue value;
         memcpy(&value, &pctrl->buffer.data[secret_offset / sizeof(uint32_t)],
@@ -1195,6 +1244,10 @@ static void ot_otp_eg_init(Object *obj)
     OtOTPEngineState *es = OT_OTP_ENGINE(obj);
 
     /* note: device realization is implemented in OtOTPEngineState */
+    QemuOptsList *optlist = qemu_find_opts("ot_device");
+    if (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) {
+        es->part_descs = OT_OTP_PART_DESCS_V2;
+    }
 
     es->regs = g_new0(uint32_t, REGS_COUNT);
     es->reg_offset.dai_base = R_DIRECT_ACCESS_REGWEN;
@@ -1212,8 +1265,11 @@ static void ot_otp_eg_init(Object *obj)
                        SW_CFG_WINDOW_OFFSET + SW_CFG_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
+    uint64_t regs_size = (es->part_descs == OT_OTP_PART_DESCS_V2) ?
+                             (REGS_SIZE + sizeof(uint32_t)) :
+                             REGS_SIZE;
     memory_region_init_io(&s->mmio.sub.regs, obj, &ot_otp_eg_reg_ops, s,
-                          TYPE_OT_OTP_EG "-regs", REGS_SIZE);
+                          TYPE_OT_OTP_EG "-regs", regs_size);
     memory_region_add_subregion(&s->mmio.ctrl, 0u, &s->mmio.sub.regs);
 
     /* @todo it might be worthwhile to use a ROM-kind here */

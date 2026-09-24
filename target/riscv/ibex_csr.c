@@ -129,6 +129,38 @@ static RISCVException write_mtvec(CPURISCVState *env, int csrno,
     return RISCV_EXCP_NONE;
 }
 
+void riscv_cpu_set_mcounteren_writable(CPUState *cs, bool writable);
+void riscv_cpu_set_mcounteren_writable(CPUState *cs, bool writable)
+{
+    if (cs) {
+        RISCV_CPU(cs)->env.mcounteren_writable_disabled = !writable;
+    }
+}
+
+static RISCVException read_mcounteren(CPURISCVState *env, int csrno,
+                                      target_ulong *val)
+{
+    (void)csrno;
+    *val = env->mcounteren;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_mcounteren(CPURISCVState *env, int csrno,
+                                       target_ulong val, uintptr_t ra)
+{
+    (void)csrno;
+    (void)ra;
+    if (env->mcounteren_writable_disabled) {
+        return RISCV_EXCP_NONE;
+    }
+    /*
+     * Earlgrey top_earlgrey.sv sets RvCoreIbexMHPMCounterNum = 2,
+     * giving mcounteren WARL mask 0x0000001d (CY, IR, HPM3, HPM4; TM=0).
+     */
+    env->mcounteren = val & 0x1du;
+    return RISCV_EXCP_NONE;
+}
+
 #endif /* !defined(CONFIG_USER_ONLY) */
 
 const RISCVCSR ibex_csr_list[] = {
@@ -136,6 +168,10 @@ const RISCVCSR ibex_csr_list[] = {
     {
         .csrno = CSR_MTVEC,
         .csr_ops = { "mtvec", any, &read_mtvec, &write_mtvec },
+    },
+    {
+        .csrno = CSR_MCOUNTEREN,
+        .csr_ops = { "mcounteren", any, &read_mcounteren, &write_mcounteren },
     },
     {
         .csrno = CSR_CPUCTRLSTS,

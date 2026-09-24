@@ -197,8 +197,12 @@ typedef struct {
     uint32_t err_status;
     uint32_t rnd_data;
     uint32_t rnd_status;
+    uint32_t cheriot_ena;
+    uint32_t cheriot_lock;
     uint32_t fpga_info;
-    uint32_t _reserved[7u];
+    uint32_t mcounteren_writable_regwen;
+    uint32_t mcounteren_writable;
+    uint32_t _reserved[3u];
     uint32_t dv_sim_win[DV_SIM_COUNT];
     /* note: remap pointer introduce padding here */
     OtIbexRemap *remap[ACCESS_COUNT]; /* num_regions */
@@ -236,6 +240,8 @@ struct OtIbexWrapperState {
     bool esc_rx;
     uint32_t nmi_in;
 
+    qemu_irq cheriot_ena_out;
+
     char *ot_id;
     char *lc_ignore_ids;
     OtEDNState *edn;
@@ -243,6 +249,7 @@ struct OtIbexWrapperState {
     uint8_t num_regions;
     uint8_t edn_ep;
     uint8_t qemu_version;
+    uint8_t version;
     bool lc_ignore;
     bool alias_mode;
     bool dv_sim_status_exit;
@@ -265,7 +272,7 @@ static const char MISSING_LOG_STRING[] = "(?)";
 #define xtrace_ot_ibex_wrapper_error(_s_, _msg_) \
     trace_ot_ibex_wrapper_error((_s_)->ot_id, __func__, __LINE__, _msg_)
 
-#define REG_NAME_LENGTH 24u /* > "DBUS_ADDR_MATCHING_31" */
+#define REG_NAME_LENGTH 32u /* > "DBUS_ADDR_MATCHING_31" */
 
 #define LAST_STATIC_REG     sw_fatal_err
 #define FIRST_REMAP_REG_POS ((LAST_STATIC_REG_POS) + 1u)
@@ -338,7 +345,7 @@ static bool ot_ibex_wrapper_has_edn(OtIbexWrapperState *s)
 
 static void ot_ibex_wrapper_request_entropy(OtIbexWrapperState *s)
 {
-    if (!s->entropy_requested && ot_ibex_wrapper_has_edn(s)) {
+    if (ot_ibex_wrapper_has_edn(s)) {
         if (unlikely(!s->edn_connected)) {
             ot_edn_connect_endpoint(s->edn, s->edn_ep,
                                     &ot_ibex_wrapper_fill_entropy, s);
@@ -1334,6 +1341,42 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
     (*s->access_table[reg].write)(s, reg, val32);
 };
 
+static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
+                                                unsigned reg, uint32_t val32)
+{
+    (void)reg;
+    if (s->regs.cheriot_lock == 0x6) {
+        return; // Ignore all writes if already locked (erratum behavior)
+    }
+    s->regs.cheriot_lock = val32;
+    if (val32 == 0x6) {
+        int ena = (s->regs.cheriot_ena == 0x6) ? 0x6 : 0x9;
+        qemu_set_irq(s->cheriot_ena_out, ena);
+    }
+}
+
+static void ot_ibex_wrapper_write_mcounteren_regwen(OtIbexWrapperState *s,
+                                                    unsigned reg, uint32_t val)
+{
+    (void)reg;
+    s->regs.mcounteren_writable_regwen &= val & 0x1u; /* RW0C */
+}
+
+extern void riscv_cpu_set_mcounteren_writable(CPUState *cs, bool writable);
+
+static void ot_ibex_wrapper_write_mcounteren_writable(
+    OtIbexWrapperState *s, unsigned reg, uint32_t val)
+{
+    if (!s->regs.mcounteren_writable_regwen) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
+                      __func__, s->ot_id, REG_NAME(s, reg));
+        return;
+    }
+    s->regs.mcounteren_writable = val & 0xfu;
+    riscv_cpu_set_mcounteren_writable(s->cpu, s->regs.mcounteren_writable ==
+                                                  OT_MULTIBITBOOL4_TRUE);
+}
+
 static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
 {
     uint32_t *regs;
@@ -1376,7 +1419,13 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     CREATE_NAME_REG_AT(s, R32_DYN_POS(s, err_status), ERR_STATUS);
     CREATE_NAME_REG_AT(s, R32_DYN_POS(s, rnd_data), RND_DATA);
     CREATE_NAME_REG_AT(s, R32_DYN_POS(s, rnd_status), RND_STATUS);
+    CREATE_NAME_REG_AT(s, R32_DYN_POS(s, cheriot_ena), CHERIOT_ENA);
+    CREATE_NAME_REG_AT(s, R32_DYN_POS(s, cheriot_lock), CHERIOT_LOCK);
     CREATE_NAME_REG_AT(s, R32_DYN_POS(s, fpga_info), FPGA_INFO);
+    CREATE_NAME_REG_AT(s, R32_DYN_POS(s, mcounteren_writable_regwen),
+                       MCOUNT_WRITABLE_REGWEN);
+    CREATE_NAME_REG_AT(s, R32_DYN_POS(s, mcounteren_writable),
+                       MCOUNTEREN_WRITABLE);
     CREATE_NAME_REG_AT(s,
                        s->remap_reg_count + R32_POS(dv_sim_win[DV_SIM_STATUS]),
                        DV_SIM_STATUS);
@@ -1402,6 +1451,8 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_read_rnd_data;
     s->access_table[R32_DYN_POS(s, rnd_status)].read =
         &ot_ibex_wrapper_read_rnd_status;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].read =
+        &ot_ibex_wrapper_read_zero;
     s->access_table[R32_DYN_POS(s, dv_sim_win[0u])].read =
         &ot_ibex_wrapper_read_zero;
 
@@ -1437,6 +1488,12 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_write_dv_sim_status;
     s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].write =
         &ot_ibex_wrapper_write_dv_sim_log;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].write =
+        &ot_ibex_wrapper_update_cheriot_lock;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].write =
+        &ot_ibex_wrapper_write_mcounteren_regwen;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable)].write =
+        &ot_ibex_wrapper_write_mcounteren_writable;
 
     s->access_table[R32_DYN_POS(s, alert_test)].mask = ALERT_MASK;
     s->access_table[R32_DYN_POS(s, alert_test)].permit = 0x1u;
@@ -1453,6 +1510,42 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, err_status)].mask = ERR_STATUS_MASK;
     s->access_table[R32_DYN_POS(s, err_status)].permit = 0x3u;
     s->access_table[R32_DYN_POS(s, rnd_status)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, cheriot_ena)].mask = 0xfu;
+    s->access_table[R32_DYN_POS(s, cheriot_ena)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].mask = 0xfu;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].mask = 0x1u;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable)].mask = 0xfu;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = 0x1u;
+
+    if (s->version < 2u) {
+        /*
+         * Earlgrey v1 layout:
+         * 0x60 (cheriot_ena slot) is FPGA_INFO (RO, permit 0xfu),
+         * and 0x64..0x7F (cheriot_lock.._reserved) are unmapped (permit 0u).
+         */
+        unsigned v1_fpga_pos = R32_DYN_POS(s, cheriot_ena);
+        CREATE_NAME_REG_AT(s, v1_fpga_pos, FPGA_INFO);
+        s->access_regs[v1_fpga_pos] = &s->regs.fpga_info;
+        s->access_table[v1_fpga_pos].write = &ot_ibex_wrapper_write_ro;
+        s->access_table[v1_fpga_pos].mask = UINT32_MAX;
+        s->access_table[v1_fpga_pos].permit = 0xfu;
+        for (rix = R32_DYN_POS(s, cheriot_lock);
+             rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
+            s->access_table[rix].permit = 0u;
+        }
+    } else {
+        /*
+         * Earlgrey v2 layout:
+         * DV_SIM_WINDOW (0x80..0x9F) is wired to u_sim_win_rsp (tlul_err_resp),
+         * unconditionally returning d_error = 1 on read and write.
+         */
+        for (rix = R32_DYN_POS(s, dv_sim_win[0]);
+             rix < R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix++) {
+            s->access_table[rix].permit = 0u;
+        }
+    }
 
     unsigned base = FIRST_REMAP_REG_POS;
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
@@ -1502,6 +1595,7 @@ static const Property ot_ibex_wrapper_properties[] = {
     DEFINE_PROP_BOOL("dv-sim-status-exit", OtIbexWrapperState,
                      dv_sim_status_exit, true),
     DEFINE_PROP_UINT8("qemu_version", OtIbexWrapperState, qemu_version, 0),
+    DEFINE_PROP_UINT8("version", OtIbexWrapperState, version, 1u),
     DEFINE_PROP_STRING("lc-ignore-ids", OtIbexWrapperState, lc_ignore_ids),
     DEFINE_PROP_CHR("logdev", OtIbexWrapperState, chr),
 };
@@ -1558,6 +1652,12 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     memset(&s->regs, 0, offsetof(OtIbexWrapperRegs, remap));
     s->regs.sw_recov_err = OT_MULTIBITBOOL4_FALSE;
     s->regs.sw_fatal_err = OT_MULTIBITBOOL4_FALSE;
+    s->regs.cheriot_ena = 0x9;
+    s->regs.cheriot_lock = 0x9;
+    s->regs.mcounteren_writable_regwen = 0x1u;
+    s->regs.mcounteren_writable = OT_MULTIBITBOOL4_TRUE;
+    riscv_cpu_set_mcounteren_writable(s->cpu, true);
+    qemu_set_irq(s->cheriot_ena_out, 0x9);
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
         memset(s->regs.remap[aix], 0,
                (size_t)s->num_regions * sizeof(OtIbexRemap));
@@ -1658,6 +1758,9 @@ static void ot_ibex_wrapper_init(Object *obj)
                             OT_IBEX_WRAPPER_WDOG_BARK, 1);
 
     s->log_engine = g_new0(OtIbexTestLogEngine, 1u);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->cheriot_ena_out, "cheriot-ena",
+                             1);
 }
 
 static void ot_ibex_wrapper_class_init(ObjectClass *klass, const void *data)

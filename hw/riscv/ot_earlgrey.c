@@ -25,7 +25,9 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/config-file.h"
 #include "qemu/error-report.h"
+#include "qemu/option.h"
 #include "qemu/typedefs.h"
 #include "qapi/error.h"
 #include "qom/object.h"
@@ -44,6 +46,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_aon_timer.h"
 #include "hw/opentitan/ot_ast_eg.h"
+#include "hw/opentitan/ot_cheriot.h"
 #include "hw/opentitan/ot_clkmgr.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_csrng.h"
@@ -57,6 +60,7 @@
 #include "hw/opentitan/ot_i2c.h"
 #include "hw/opentitan/ot_ibex_wrapper.h"
 #include "hw/opentitan/ot_keymgr.h"
+#include "hw/opentitan/ot_keymgr_dpe.h"
 #include "hw/opentitan/ot_kmac.h"
 #include "hw/opentitan/ot_lc_ctrl.h"
 #include "hw/opentitan/ot_otbn.h"
@@ -69,6 +73,7 @@
 #include "hw/opentitan/ot_pwm.h"
 #include "hw/opentitan/ot_pwrmgr.h"
 #include "hw/opentitan/ot_rom_ctrl.h"
+#include "hw/opentitan/ot_rram_ctrl.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sensor_eg.h"
 #include "hw/opentitan/ot_spi_device.h"
@@ -191,6 +196,12 @@ enum OtEGSocDevice {
     OT_EG_SOC_SPLITTER_LC_ESCALATE,
     OT_EG_SOC_SPLITTER_LC_SEED_HW_RD,
     OT_EG_SOC_SPLITTER_LC_CREATOR_SEED_SW_RW,
+    /* Earlgrey v2 devices */
+    OT_EG_SOC_DEV_RRAM_MACRO,
+    OT_EG_SOC_DEV_SRAM_SEC_CTRL,
+    OT_EG_SOC_DEV_SRAM_META_CTRL,
+    OT_EG_SOC_DEV_CHERIOT,
+    OT_EG_SOC_DEV_COUNT,
 };
 
 enum OtEgResetRequest {
@@ -266,6 +277,27 @@ static const uint32_t ot_eg_pmp_addrs[] = {
     IBEX_PMP_ADDR(0x00000000),
     IBEX_PMP_ADDR(0x00000000),
     IBEX_PMP_ADDR(0x000083fc), /* rgn 2 [ROM: base=0x0000_8000 sz (2KiB)] */
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x40000000), /* rgn 10 [MMIO: lo=0x4000_0000] */
+    IBEX_PMP_ADDR(0x42010000), /* rgn 11 [MMIO: hi=0x4201_0000] */
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x000107fc), /* rgn 13 [DV_ROM: base=0x0001_0000 sz (4KiB)] */
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000)
+    /* clang-format on */
+};
+
+static const uint32_t ot_eg_v2_pmp_addrs[] = {
+    /* clang-format off */
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x00000000),
+    IBEX_PMP_ADDR(0x000403fc), /* rgn 2 [ROM: base=0x0004_0000 sz (2KiB)] */
     IBEX_PMP_ADDR(0x00000000),
     IBEX_PMP_ADDR(0x00000000),
     IBEX_PMP_ADDR(0x00000000),
@@ -1704,6 +1736,7 @@ struct OtEGSoCState {
     BusState *ot_bus; /* private OpenTitan bus */
 
     DeviceState **devices;
+    uint8_t version;
 };
 
 struct OtEGBoardState {
@@ -1805,9 +1838,12 @@ static void ot_eg_soc_hart_configure(DeviceState *dev, const IbexDeviceDef *def,
     }
     qdev_prop_set_array(dev, "pmp_cfg", pmp_cfg);
 
+    OtEGSoCState *soc = RISCV_OT_EG_SOC(parent);
+    const uint32_t *addrs =
+        (soc->version == 2u) ? ot_eg_v2_pmp_addrs : ot_eg_pmp_addrs;
     pmp_addr = qlist_new();
     for (unsigned ix = 0; ix < ARRAY_SIZE(ot_eg_pmp_addrs); ix++) {
-        qlist_append_int(pmp_addr, ot_eg_pmp_addrs[ix]);
+        qlist_append_int(pmp_addr, addrs[ix]);
     }
     qdev_prop_set_array(dev, "pmp_addr", pmp_addr);
 
@@ -1956,6 +1992,10 @@ static void ot_eg_soc_reset_hold(Object *obj, ResetType type)
         c->parent_phases.hold(obj, type);
     }
 
+    if (!s->devices) {
+        return;
+    }
+
     /*
      * This function is called after all children have been reset_hold,
      * before any child has been reset_exit.
@@ -1976,15 +2016,311 @@ static void ot_eg_soc_reset_exit(Object *obj, ResetType type)
         c->parent_phases.exit(obj, type);
     }
 
+    if (!s->devices) {
+        return;
+    }
+
     /* Kick off ROM check and boot */
     object_property_set_bool(OBJECT(s->devices[OT_EG_SOC_DEV_ROM_CTRL]), "load",
                              true, &error_fatal);
+}
+
+static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
+    /* clang-format off */
+    [OT_EG_SOC_DEV_HART] = {
+        .type = TYPE_RISCV_CPU_LOWRISC_OPENTITAN,
+        .cfg = &ot_eg_soc_hart_configure,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("resetvec", 0x40080u),
+            IBEX_DEV_UINT_PROP("mtvec", 0x40001u),
+            IBEX_DEV_UINT_PROP("dmhaltvec", PULP_DM_BASE +
+                PULP_RV_DM_ROM_BASE + PULP_RV_DM_HALT_OFFSET),
+            IBEX_DEV_UINT_PROP("dmexcpvec", PULP_DM_BASE +
+                PULP_RV_DM_ROM_BASE + PULP_RV_DM_EXCEPTION_OFFSET),
+            IBEX_DEV_BOOL_PROP("start-powered-off", true)
+        ),
+    },
+    [OT_EG_SOC_DEV_GPIO] = {
+        .type = TYPE_OT_GPIO_EG,
+        .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("pinmux", PINMUX),
+            OT_EG_SOC_DEVLINK("spi-host1", SPI_HOST1),
+            OT_EG_SOC_DEVLINK("sysrst-ctrl", SYSRST_CTRL),
+            OT_EG_SOC_DEVLINK("i2c0", I2C0),
+            OT_EG_SOC_DEVLINK("i2c1", I2C1),
+            OT_EG_SOC_DEVLINK("i2c2", I2C2)
+        ),
+    },
+    [OT_EG_SOC_DEV_ALERT_HANDLER] = {
+        .type = TYPE_OT_ALERT,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("n_alerts", 66u),
+            IBEX_DEV_UINT_PROP("n_classes", 4u),
+            IBEX_DEV_UINT_PROP("n_lpg", 22u),
+            IBEX_DEV_UINT_PROP("edn-ep", 4u),
+            IBEX_DEV_STRING_PROP("clock-name", "secure.io_div4"),
+            IBEX_DEV_STRING_PROP("clock-name-edn", "secure.main")
+        ),
+    },
+    [OT_EG_SOC_DEV_PLIC] = {
+        .type = TYPE_SIFIVE_PLIC,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP("hart-config", "M"),
+            IBEX_DEV_UINT_PROP("hartid-base", 0u),
+            IBEX_DEV_UINT_PROP("num-sources", 184u),
+            IBEX_DEV_UINT_PROP("num-priorities", 3u),
+            IBEX_DEV_UINT_PROP("priority-base", 0x0u),
+            IBEX_DEV_UINT_PROP("pending-base", 0x1000u),
+            IBEX_DEV_UINT_PROP("enable-base", 0x2000u),
+            IBEX_DEV_UINT_PROP("enable-stride", 32u),
+            IBEX_DEV_UINT_PROP("context-base", 0x200000u),
+            IBEX_DEV_UINT_PROP("context-stride", 8u),
+            IBEX_DEV_UINT_PROP("aperture-size", 0x4000000u)
+        ),
+    },
+    [OT_EG_SOC_DEV_ROM_CTRL] = {
+        .type = TYPE_OT_ROM_CTRL,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x411e0000u },
+            { .base = 0x00040000u }
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "rom"),
+            IBEX_DEV_UINT_PROP("size", 0x30000u),
+            IBEX_DEV_UINT_PROP("kmac-app", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_FLASH_CTRL] = {
+        .type = TYPE_OT_RRAM_CTRL,
+        .cfg = &ot_eg_soc_flash_ctrl_configure,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x41010000u },
+            { .base = 0x30000000u }
+        ),
+    },
+    [OT_EG_SOC_DEV_KEYMGR] = {
+        .type = TYPE_OT_KEYMGR_DPE,
+        .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("aes", AES),
+            OT_EG_SOC_DEVLINK("edn", EDN0),
+            OT_EG_SOC_DEVLINK("kmac", KMAC),
+            OT_EG_SOC_DEVLINK("lc-ctrl", LC_CTRL),
+            OT_EG_SOC_DEVLINK("otbn", OTBN),
+            OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
+            OT_EG_SOC_DEVLINK("rom0", ROM_CTRL)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("edn-ep", 0u),
+            IBEX_DEV_UINT_PROP("kmac-app", 0u)
+        ),
+    },
+    [OT_EG_SOC_DEV_ENTROPY_SRC] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("version", 3u)
+        ),
+    },
+    [OT_EG_SOC_DEV_AST] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("num-regs-a", 54u)
+        ),
+    },
+    [OT_EG_SOC_DEV_IBEX_WRAPPER] = {
+        .type = TYPE_OT_IBEX_WRAPPER,
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_ALERT(0, 60),
+            OT_EG_SOC_GPIO_ALERT(1, 61),
+            OT_EG_SOC_GPIO_ALERT(2, 62),
+            OT_EG_SOC_GPIO_ALERT(3, 63),
+            OT_EG_SOC_SIGNAL(OT_CHERIOT_ENA, 0, CHERIOT, OT_CHERIOT_ENA, 0)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("edn-ep", 7u),
+            IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_RRAM_MACRO] = {
+        .type = TYPE_OT_UNIMP,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x41018000u }
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "rram_macro"),
+            IBEX_DEV_UINT_PROP("size", 0x2000u),
+            IBEX_DEV_BOOL_PROP("warn-once", true)
+        ),
+    },
+    [OT_EG_SOC_DEV_SRAM_SEC_CTRL] = {
+        .type = TYPE_OT_SRAM_CTRL,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x411d0000u },
+            { .base = 0x10020000u }
+        ),
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_ALERT(0, 58)
+        ),
+        .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
+            OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("size", 0x10000u),
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "ram_sec"),
+            IBEX_DEV_BOOL_PROP("ifetch", true)
+        ),
+    },
+    [OT_EG_SOC_DEV_SRAM_META_CTRL] = {
+        .type = TYPE_OT_SRAM_CTRL,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x411a0000u }
+        ),
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_ALERT(0, 65)
+        ),
+        .link = IBEXDEVICELINKDEFS(
+            OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
+            OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("size", 0x9800u),
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "ram_meta"),
+            IBEX_DEV_BOOL_PROP("ifetch", false)
+        ),
+    },
+    [OT_EG_SOC_DEV_CHERIOT] = {
+        .type = TYPE_OT_CHERIOT,
+        .memmap = MEMMAPENTRIES(
+            { .base = 0x411b0000u },
+            { .base = 0x11000000u }
+        ),
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_EG_SOC_GPIO_ALERT(0, 64)
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "cheriot"),
+            IBEX_DEV_UINT_PROP("revbm-size", 3072u)
+        ),
+    },
+    /* clang-format on */
+};
+
+static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
+{
+    static IbexDeviceDef v2_devs[OT_EG_SOC_DEV_COUNT];
+    static bool initialized;
+
+    if (!initialized) {
+        memcpy(v2_devs, ot_eg_soc_devices, sizeof(ot_eg_soc_devices));
+
+        /* Shift PLIC IRQs (>= 124 -> -2) and Alert IDs for v2 topology */
+        for (size_t i = 0; i < ARRAY_SIZE(ot_eg_soc_devices); i++) {
+            if (!v2_devs[i].gpio) {
+                continue;
+            }
+            size_t n = 0;
+            while (v2_devs[i].gpio[n].out.num >= 0 &&
+                   v2_devs[i].gpio[n].in.num >= 0) {
+                n++;
+            }
+            IbexGpioConnDef *g = g_new0(IbexGpioConnDef, n + 1);
+            memcpy(g, v2_devs[i].gpio, (n + 1) * sizeof(IbexGpioConnDef));
+            for (size_t j = 0; j < n; j++) {
+                unsigned target_idx = IBEX_GPIO_GET_IDX(g[j].in.index);
+                if (target_idx == OT_EG_SOC_DEV_KEYMGR && g[j].in.name &&
+                    !strcmp(g[j].in.name, OT_KEYMGR_ENABLE)) {
+                    g[j].in.name = OT_KEYMGR_DPE_ENABLE;
+                } else if (target_idx == OT_EG_SOC_DEV_PLIC &&
+                           g[j].in.num >= 124) {
+                    g[j].in.num -= 2;
+                } else if (target_idx == OT_EG_SOC_DEV_ALERT_HANDLER &&
+                           g[j].in.name &&
+                           !strcmp(g[j].in.name, OT_DEVICE_ALERT)) {
+                    int a = g[j].in.num;
+                    if (a >= 10 && a <= 28) {
+                        g[j].in.num = a - 1;
+                    } else if (a >= 30 && a <= 59) {
+                        g[j].in.num = a - 2;
+                    } else if (a >= 60 && a <= 64) {
+                        g[j].in.num = a - 1;
+                    }
+                }
+            }
+            v2_devs[i].gpio = g;
+        }
+
+        /* Remove PATTGEN and PWM in Earlgrey v2 */
+        v2_devs[OT_EG_SOC_DEV_PATTGEN].type = NULL;
+        v2_devs[OT_EG_SOC_DEV_PWM].type = NULL;
+
+        /* Apply static file-scope overrides */
+        v2_devs[OT_EG_SOC_DEV_HART].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_HART].prop;
+        v2_devs[OT_EG_SOC_DEV_GPIO].link =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_GPIO].link;
+        v2_devs[OT_EG_SOC_DEV_ALERT_HANDLER].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ALERT_HANDLER].prop;
+        v2_devs[OT_EG_SOC_DEV_PLIC].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PLIC].prop;
+        v2_devs[OT_EG_SOC_DEV_ROM_CTRL].memmap =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ROM_CTRL].memmap;
+        v2_devs[OT_EG_SOC_DEV_ROM_CTRL].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ROM_CTRL].prop;
+        v2_devs[OT_EG_SOC_DEV_AST].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_AST].prop;
+        v2_devs[OT_EG_SOC_DEV_ENTROPY_SRC].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ENTROPY_SRC].prop;
+
+        v2_devs[OT_EG_SOC_DEV_FLASH_CTRL].type = TYPE_OT_RRAM_CTRL;
+        v2_devs[OT_EG_SOC_DEV_FLASH_CTRL].cfg = &ot_eg_soc_flash_ctrl_configure;
+        v2_devs[OT_EG_SOC_DEV_FLASH_CTRL].memmap =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_FLASH_CTRL].memmap;
+        v2_devs[OT_EG_SOC_DEV_FLASH_CTRL].link = NULL;
+        v2_devs[OT_EG_SOC_DEV_FLASH_CTRL].prop = NULL;
+
+        v2_devs[OT_EG_SOC_DEV_KEYMGR].type = TYPE_OT_KEYMGR_DPE;
+        v2_devs[OT_EG_SOC_DEV_KEYMGR].link =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_KEYMGR].link;
+        v2_devs[OT_EG_SOC_DEV_KEYMGR].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_KEYMGR].prop;
+
+        v2_devs[OT_EG_SOC_DEV_IBEX_WRAPPER].gpio =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_IBEX_WRAPPER].gpio;
+        v2_devs[OT_EG_SOC_DEV_IBEX_WRAPPER].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_IBEX_WRAPPER].prop;
+
+        v2_devs[OT_EG_SOC_DEV_RRAM_MACRO] =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_RRAM_MACRO];
+        v2_devs[OT_EG_SOC_DEV_SRAM_SEC_CTRL] =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SRAM_SEC_CTRL];
+        v2_devs[OT_EG_SOC_DEV_SRAM_META_CTRL] =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SRAM_META_CTRL];
+        v2_devs[OT_EG_SOC_DEV_CHERIOT] =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_CHERIOT];
+
+        initialized = true;
+    }
+
+    *count = ARRAY_SIZE(v2_devs);
+    return v2_devs;
 }
 
 static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
 {
     OtEGSoCState *s = RISCV_OT_EG_SOC(dev);
     (void)errp;
+
+    if (!s->version) {
+        QemuOptsList *optlist = qemu_find_opts("ot_device");
+        s->version =
+            (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) ? 2u : 1u;
+    }
+
+    size_t dev_count = ARRAY_SIZE(ot_eg_soc_devices);
+    const IbexDeviceDef *defs =
+        (s->version == 2u) ? ot_eg_soc_get_v2_devices(&dev_count) :
+                             ot_eg_soc_devices;
+
+    s->devices = ibex_create_devices(defs, dev_count, DEVICE(s));
 
     CPUState *cpu = CPU(s->devices[OT_EG_SOC_DEV_HART]);
     cpu->memory = get_system_memory();
@@ -1997,8 +2333,7 @@ static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
 
     /* Link, define properties and realize devices, then connect GPIOs */
     ot_common_configure_devices_with_id(s->devices, s->ot_bus, "soc", false,
-                                        ot_eg_soc_devices,
-                                        ARRAY_SIZE(ot_eg_soc_devices));
+                                        defs, dev_count);
 
     MemoryRegion *lc_ctrl_tap_mr = g_new0(MemoryRegion, 1u);
     memory_region_init(lc_ctrl_tap_mr, OBJECT(dev), OT_EG_LC_CTRL_TAP_XBAR,
@@ -2008,8 +2343,7 @@ static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
         [OT_EG_DEFAULT_MEMORY_REGION] = get_system_memory(),
         [OT_EG_LC_CTRL_TAP_MEMORY_REGION] = lc_ctrl_tap_mr,
     };
-    ibex_map_devices_mask(s->devices, mrs, ot_eg_soc_devices,
-                          ARRAY_SIZE(ot_eg_soc_devices),
+    ibex_map_devices_mask(s->devices, mrs, defs, dev_count,
                           IBEX_MEMMAP_MAKE_REG_MASK(
                               OT_EG_DEFAULT_MEMORY_REGION) |
                               IBEX_MEMMAP_MAKE_REG_MASK(
@@ -2034,14 +2368,13 @@ static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
 
 static void ot_eg_soc_init(Object *obj)
 {
-    OtEGSoCState *s = RISCV_OT_EG_SOC(obj);
-
-    s->devices = ibex_create_devices(ot_eg_soc_devices,
-                                     ARRAY_SIZE(ot_eg_soc_devices), DEVICE(s));
-
     qdev_init_gpio_in_named(DEVICE(obj), &ot_eg_soc_hw_reset, OT_EG_SOC_RST_REQ,
                             1);
 }
+
+static const Property ot_eg_soc_properties[] = {
+    DEFINE_PROP_UINT8("version", OtEGSoCState, version, 0u),
+};
 
 static void ot_eg_soc_class_init(ObjectClass *oc, const void *data)
 {
@@ -2055,6 +2388,7 @@ static void ot_eg_soc_class_init(ObjectClass *oc, const void *data)
                                        &sc->parent_phases);
     rc->child_foreach = &ot_eg_soc_reset_child_foreach;
     dc->realize = &ot_eg_soc_realize;
+    device_class_set_props(dc, ot_eg_soc_properties);
     dc->user_creatable = false;
 }
 

@@ -1120,7 +1120,9 @@ ot_entropy_src_push_bypass_entropy(OtEntropySrcState *s, uint32_t word)
 
 static bool ot_entropy_src_is_entropy_data_enabled(const OtEntropySrcState *s)
 {
-    return REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE);
+    return (s->version < 3) ?
+               REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE) :
+               REG_MB4_IS_TRUE(s, hi, CONF, V3_ENTROPY_DATA_REG_ENABLE);
 }
 
 static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
@@ -1157,6 +1159,9 @@ static void
 ot_entropy_src_update_watermark(OtEntropySrcState *s, unsigned reg, bool bypass,
                                 uint16_t val, bool low_watermark)
 {
+    if (s->version >= 3) {
+        return;
+    }
     unsigned shift = bypass ? 16u : 0u;
     uint16_t cur = (uint16_t)((s->regs_hi[reg] >> shift) & 0xffffu);
     uint16_t next = low_watermark ? MIN(cur, val) : MAX(cur, val);
@@ -1180,8 +1185,10 @@ static bool
 ot_entropy_src_eval_health_tests(OtEntropySrcState *s, unsigned window_symbols)
 {
     bool bypass = ot_entropy_src_is_bypass_mode(s);
-    unsigned shift = bypass ? 16u : 0u;
-    bool scope = REG_MB4_IS_TRUE(s, hi, CONF, V2_THRESHOLD_SCOPE);
+    unsigned shift = (s->version < 3 && bypass) ? 16u : 0u;
+    bool scope = (s->version < 3) ?
+                     REG_MB4_IS_TRUE(s, hi, CONF, V2_THRESHOLD_SCOPE) :
+                     REG_MB4_IS_TRUE(s, hi, CONF, V3_THRESHOLD_SCOPE);
 
     uint16_t repcnt_hi = (uint16_t)(s->regs_hi[R_REPCNT_THRESHOLDS] >> shift);
     uint16_t repcnts_hi = (uint16_t)(s->regs_hi[R_REPCNTS_THRESHOLDS] >> shift);
@@ -1482,36 +1489,38 @@ static uint32_t ot_entropy_src_get_entropy_data(OtEntropySrcState *s)
 static bool ot_entropy_src_fill_noise(OtEntropySrcState *s)
 {
     unsigned count = ot_fifo32_num_free(&s->input_fifo);
-    if (count < OT_ENTROPY_SRC_FILL_WORD_COUNT) {
-        /* no room left, should be resheduled */
-        return false;
+    if (count >= OT_ENTROPY_SRC_FILL_WORD_COUNT) {
+        uint32_t buffer[OT_ENTROPY_SRC_FILL_WORD_COUNT];
+        /* synchronous read */
+        OtNoiseSrcIfClass *nsc = OT_NOISE_SRC_IF_GET_CLASS(s->noise_src);
+        OtNoiseSrcIf *nsi = OT_NOISE_SRC_IF(s->noise_src);
+        nsc->get_noise(nsi, (uint8_t *)buffer, sizeof(buffer));
+
+        /* push the whole entropy buffer into the input FIFO */
+        unsigned pos = 0;
+        while (!ot_fifo32_is_full(&s->input_fifo) && pos < ARRAY_SIZE(buffer)) {
+            ot_fifo32_push(&s->input_fifo, buffer[pos++]);
+        }
+
+        trace_ot_entropy_src_fill_noise(s->ot_id, count,
+                                        ot_fifo32_num_used(&s->input_fifo));
     }
 
-    uint32_t buffer[OT_ENTROPY_SRC_FILL_WORD_COUNT];
-    /* synchronous read */
-    OtNoiseSrcIfClass *nsc = OT_NOISE_SRC_IF_GET_CLASS(s->noise_src);
-    OtNoiseSrcIf *nsi = OT_NOISE_SRC_IF(s->noise_src);
-    nsc->get_noise(nsi, (uint8_t *)buffer, sizeof(buffer));
-
-    /* push the whole entropy buffer into the input FIFO */
-    unsigned pos = 0;
-    while (!ot_fifo32_is_full(&s->input_fifo) && pos < ARRAY_SIZE(buffer)) {
-        ot_fifo32_push(&s->input_fifo, buffer[pos++]);
-    }
-
-    trace_ot_entropy_src_fill_noise(s->ot_id, count,
-                                    ot_fifo32_num_used(&s->input_fifo));
-
+    unsigned consumed = 0;
     for (unsigned ix = 0;
          ix < ES_WORD_COUNT && !ot_fifo32_is_empty(&s->input_fifo); ix++) {
-        if (!ot_entropy_src_consume_entropy(s, ot_fifo32_pop(&s->input_fifo))) {
+        uint32_t n = 1;
+        const uint32_t *p = ot_fifo32_peek_buf(&s->input_fifo, 1, &n);
+        if (!ot_entropy_src_consume_entropy(s, *p)) {
             break;
         }
+        ot_fifo32_pop(&s->input_fifo);
+        consumed++;
     }
 
     ot_entropy_src_update_irqs(s);
 
-    return true;
+    return (count >= OT_ENTROPY_SRC_FILL_WORD_COUNT) || (consumed > 0);
 }
 
 static void ot_entropy_src_noise_refill(void *opaque)
@@ -1664,6 +1673,37 @@ ot_entropy_src_rev_regs_read(void *opaque, hwaddr addr, unsigned size)
     return (uint64_t)val32;
 }
 
+static hwaddr ot_entropy_src_hi_reg_map(const OtEntropySrcState *s, hwaddr reg)
+{
+    if (s->version < 3) {
+        return reg;
+    }
+    if (reg <= R_HEALTH_TEST_WINDOWS) {
+        return reg;
+    }
+    if (reg == 5u) {
+        /* THRESHOLD_ONEWAY in v3 (reuses R_REPCNT_HI_WATERMARKS slot) */
+        return R_REPCNT_HI_WATERMARKS;
+    }
+    if (reg >= 6u && reg <= 14u) {
+        /* REPCNT_THRESHOLD .. EXTHT_LO_THRESHOLD */
+        return reg - 1u;
+    }
+    if (reg == 15u) {
+        /* HT_WATERMARK_NUM (reuses R_REPCNTS_HI_WATERMARKS slot) */
+        return R_REPCNTS_HI_WATERMARKS;
+    }
+    if (reg == 16u) {
+        /* HT_WATERMARK (reuses R_ADAPTP_HI_WATERMARKS slot) */
+        return R_ADAPTP_HI_WATERMARKS;
+    }
+    if (reg >= 17u) {
+        /* REPCNT_TOTAL_FAILS .. ERR_CODE_TEST */
+        return reg + 6u;
+    }
+    return reg;
+}
+
 static uint64_t
 ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1671,7 +1711,7 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     uint32_t val32;
 
-    hwaddr reg = R32_OFF(addr);
+    hwaddr reg = ot_entropy_src_hi_reg_map(s, R32_OFF(addr));
 
     switch (reg) {
     case R_MODULE_ENABLE:
@@ -1925,11 +1965,24 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     (void)size;
     uint32_t val32 = (uint32_t)val64;
 
-    hwaddr reg = R32_OFF(addr);
+    hwaddr reg = ot_entropy_src_hi_reg_map(s, R32_OFF(addr));
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_entropy_src_io_write(s->ot_id, ot_entropy_src_hi_reg_addr(s, addr),
                                   REG_HI_NAME(reg), val32, pc);
+
+    if (s->version >= 3 && R32_OFF(addr) == 5u) {
+        /* THRESHOLD_ONEWAY (RW1S, 4-bit mubi) */
+        s->regs_hi[R_REPCNT_HI_WATERMARKS] |= (val32 & 0xfu);
+        return;
+    }
+    if (s->version >= 3 && R32_OFF(addr) == 15u) {
+        /* HT_WATERMARK_NUM */
+        if (s->regs_lo[R_REGWEN]) {
+            s->regs_hi[R_REPCNTS_HI_WATERMARKS] = val32 & 0xfu;
+        }
+        return;
+    }
 
     switch (reg) {
     case R_MODULE_ENABLE:
@@ -1960,15 +2013,19 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                 s->regs_hi[R_MARKOV_LO_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_HI_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_LO_TOTAL_FAILS] = 0u;
-                s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_REPCNTS_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
-                s->regs_hi[R_EXTHT_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
-                s->regs_hi[R_BUCKET_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_MARKOV_HI_WATERMARKS] = 0u;
-                s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
+                if (s->version < 3) {
+                    s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_REPCNTS_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
+                    s->regs_hi[R_EXTHT_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
+                    s->regs_hi[R_BUCKET_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_MARKOV_HI_WATERMARKS] = 0u;
+                    s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
+                } else {
+                    s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
+                }
 
                 s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
                 if (ot_entropy_src_is_fw_ov_mode(s) &&
@@ -2041,13 +2098,21 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_HI_THRESHOLDS:
     case R_EXTHT_HI_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
-            uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
-            uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
-            uint16_t wr_hi = (uint16_t)(val32 >> 16u);
-            uint16_t new_lo = MIN(cur_lo, wr_lo);
-            uint16_t new_hi = MIN(cur_hi, wr_hi);
-            s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+            if (s->version >= 3) {
+                uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
+                uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+                bool oneway = (s->regs_hi[R_REPCNT_HI_WATERMARKS] == 0x6u);
+                s->regs_hi[reg] =
+                    oneway ? (uint32_t)MIN(cur_lo, wr_lo) : (uint32_t)wr_lo;
+            } else {
+                uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
+                uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
+                uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+                uint16_t wr_hi = (uint16_t)(val32 >> 16u);
+                uint16_t new_lo = MIN(cur_lo, wr_lo);
+                uint16_t new_hi = MIN(cur_hi, wr_hi);
+                s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+            }
             ot_entropy_src_update_alerts(s);
         }
         break;
@@ -2055,13 +2120,21 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_LO_THRESHOLDS:
     case R_EXTHT_LO_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
-            uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
-            uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
-            uint16_t wr_hi = (uint16_t)(val32 >> 16u);
-            uint16_t new_lo = MAX(cur_lo, wr_lo);
-            uint16_t new_hi = MAX(cur_hi, wr_hi);
-            s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+            if (s->version >= 3) {
+                uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
+                uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+                bool oneway = (s->regs_hi[R_REPCNT_HI_WATERMARKS] == 0x6u);
+                s->regs_hi[reg] =
+                    oneway ? (uint32_t)MAX(cur_lo, wr_lo) : (uint32_t)wr_lo;
+            } else {
+                uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
+                uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
+                uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+                uint16_t wr_hi = (uint16_t)(val32 >> 16u);
+                uint16_t new_lo = MAX(cur_lo, wr_lo);
+                uint16_t new_hi = MAX(cur_hi, wr_hi);
+                s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+            }
             ot_entropy_src_update_alerts(s);
         }
         break;
@@ -2325,15 +2398,25 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
 
     s->regs_hi[R_MODULE_ENABLE] = 0x9u;
     s->regs_hi[R_ENTROPY_CONTROL] = 0x99u;
-    s->regs_hi[R_REPCNT_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_REPCNTS_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_BUCKET_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_MARKOV_HI_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_EXTHT_HI_THRESHOLDS] = 0xffffffffu;
-    s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
-    s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
-    s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
+    if (s->version >= 3) {
+        s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0x9u; /* THRESHOLD_ONEWAY */
+        s->regs_hi[R_REPCNT_THRESHOLDS] = 0xffffu;
+        s->regs_hi[R_REPCNTS_THRESHOLDS] = 0xffffu;
+        s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = 0xffffu;
+        s->regs_hi[R_BUCKET_THRESHOLDS] = 0xffffu;
+        s->regs_hi[R_MARKOV_HI_THRESHOLDS] = 0xffffu;
+        s->regs_hi[R_EXTHT_HI_THRESHOLDS] = 0xffffu;
+    } else {
+        s->regs_hi[R_REPCNT_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_REPCNTS_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_BUCKET_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_MARKOV_HI_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_EXTHT_HI_THRESHOLDS] = 0xffffffffu;
+        s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
+        s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
+        s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
+    }
     s->regs_hi[R_ALERT_THRESHOLD] = 0xfffd0002u;
     s->regs_hi[R_FW_OV_CONTROL] = 0x99u;
     s->regs_hi[R_FW_OV_SHA3_START] = 0x9u;

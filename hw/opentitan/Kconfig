@@ -29,6 +29,9 @@ config OT_AST_EG
     select OT_NOISE_SRC
     bool
 
+config OT_CHERIOT
+    bool
+
 config OT_CLKMGR
     select IBEX_CLOCK_SRC
     bool
@@ -193,6 +196,9 @@ config OT_ROM_CTRL
     bool
     select OT_COMMON
     select OT_PRINCE
+
+config OT_RRAM_CTRL
+    bool
 
 config OT_RSTMGR
     bool

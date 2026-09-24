@@ -1135,6 +1135,7 @@ static void ot_vmapper_realize(DeviceState *dev, Error **errp)
     if (s->cpu_idx == UINT8_MAX) {
         CPUState *cs = ot_vmapper_retrieve_cpu(s);
         if (cs) {
+            s->cpu = cs;
             s->cpu_idx = cs->cpu_index;
         }
     }

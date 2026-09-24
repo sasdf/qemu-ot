@@ -85,6 +85,22 @@ REG32(REGA35, 0x8cu)
 REG32(REGA36, 0x90u)
 REG32(REGA37, 0x94u)
 REG32(REGAL, 0x98u)
+REG32(REGA38, 0x98u)
+REG32(REGA39, 0x9cu)
+REG32(REGA40, 0xa0u)
+REG32(REGA41, 0xa4u)
+REG32(REGA42, 0xa8u)
+REG32(REGA43, 0xacu)
+REG32(REGA44, 0xb0u)
+REG32(REGA45, 0xb4u)
+REG32(REGA46, 0xb8u)
+REG32(REGA47, 0xbcu)
+REG32(REGA48, 0xc0u)
+REG32(REGA49, 0xc4u)
+REG32(REGA50, 0xc8u)
+REG32(REGA51, 0xccu)
+REG32(REGA52, 0xd0u)
+REG32(REGAL_V2, 0xd4u)
 REG32(REGB0, 0x200u)
 REG32(REGB1, 0x204u)
 REG32(REGB2, 0x208u)
@@ -94,11 +110,16 @@ REG32(REGB4, 0x210u)
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
-#define RA_LAST_REG (R_REGAL)
-#define REGSA_COUNT (RA_LAST_REG + 1u)
-#define REGSA_SIZE  (REGSA_COUNT * sizeof(uint32_t))
-#define REGA_NAME(_reg_) \
-    ((((_reg_) < REGSA_COUNT) && REGA_NAMES[_reg_]) ? REGA_NAMES[_reg_] : "?")
+#define RA_V1_LAST_REG (R_REGAL)
+#define REGSA_V1_COUNT (RA_V1_LAST_REG + 1u)
+#define RA_LAST_REG    (R_REGAL_V2)
+#define REGSA_COUNT    (RA_LAST_REG + 1u)
+#define REGSA_SIZE     (REGSA_COUNT * sizeof(uint32_t))
+#define REGA_NAME(_s_, _reg_) \
+    (((_reg_) == ((_s_)->num_regs_a - 1u)) ? \
+         "REGAL" : \
+         ((((_reg_) < REGSA_COUNT) && REGA_NAMES[_reg_]) ? REGA_NAMES[_reg_] : \
+                                                           "?"))
 
 #define RB_LAST_REG (R_REGB4)
 #define REGSB_COUNT (RB_LAST_REG + 1u)
@@ -107,8 +128,9 @@ REG32(REGB4, 0x210u)
     ((((_reg_) < REGSB_COUNT) && REGB_NAMES[_reg_]) ? REGB_NAMES[_reg_] : "?")
 
 #define REGS_SIZE (A_REGB4 + sizeof(uint32_t))
-#define REG_NAME(_reg_) \
-    ((_reg_) >= R_REGB0 ? REGB_NAME((_reg_) - (R_REGB0)) : REGA_NAME(_reg_))
+#define REG_NAME(_s_, _reg_) \
+    ((_reg_) >= R_REGB0 ? REGB_NAME((_reg_) - (R_REGB0)) : \
+                          REGA_NAME(_s_, _reg_))
 
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
 static const char REGA_NAMES[REGSA_COUNT][8U] = {
@@ -124,7 +146,12 @@ static const char REGA_NAMES[REGSA_COUNT][8U] = {
     REG_NAME_ENTRY(REGA27), REG_NAME_ENTRY(REGA28), REG_NAME_ENTRY(REGA29),
     REG_NAME_ENTRY(REGA30), REG_NAME_ENTRY(REGA31), REG_NAME_ENTRY(REGA32),
     REG_NAME_ENTRY(REGA33), REG_NAME_ENTRY(REGA34), REG_NAME_ENTRY(REGA35),
-    REG_NAME_ENTRY(REGA36), REG_NAME_ENTRY(REGA37), REG_NAME_ENTRY(REGAL),
+    REG_NAME_ENTRY(REGA36), REG_NAME_ENTRY(REGA37), REG_NAME_ENTRY(REGA38),
+    REG_NAME_ENTRY(REGA39), REG_NAME_ENTRY(REGA40), REG_NAME_ENTRY(REGA41),
+    REG_NAME_ENTRY(REGA42), REG_NAME_ENTRY(REGA43), REG_NAME_ENTRY(REGA44),
+    REG_NAME_ENTRY(REGA45), REG_NAME_ENTRY(REGA46), REG_NAME_ENTRY(REGA47),
+    REG_NAME_ENTRY(REGA48), REG_NAME_ENTRY(REGA49), REG_NAME_ENTRY(REGA50),
+    REG_NAME_ENTRY(REGA51), REG_NAME_ENTRY(REGA52),
 };
 
 static const char REGB_NAMES[REGSB_COUNT][6U] = {
@@ -157,6 +184,7 @@ struct OtASTEgState {
 
     char *cfg_topclocks;
     char *cfg_aonclocks;
+    uint32_t num_regs_a;
 };
 
 struct OtASTEgClass {
@@ -332,10 +360,10 @@ static void ot_ast_eg_parse_clocks(OtASTEgState *s, Error **errp)
 static bool ot_ast_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                    bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtASTEgState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    return (reg <= R_REGAL || (reg >= R_REGB0 && reg <= R_REGB4)) &&
+    return (reg < s->num_regs_a || (reg >= R_REGB0 && reg <= R_REGB4)) &&
            (!is_write || size == 4u);
 }
 
@@ -347,68 +375,22 @@ static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
 
     hwaddr reg = R32_OFF(addr);
 
-    switch (reg) {
-    case R_REGA0:
-    case R_REGA1:
-    case R_REGA2:
-    case R_REGA3:
-    case R_REGA4:
-    case R_REGA5:
-    case R_REGA6:
-    case R_REGA7:
-    case R_REGA8:
-    case R_REGA9:
-    case R_REGA10:
-    case R_REGA11:
-    case R_REGA12:
-    case R_REGA13:
-    case R_REGA14:
-    case R_REGA15:
-    case R_REGA16:
-    case R_REGA17:
-    case R_REGA18:
-    case R_REGA19:
-    case R_REGA20:
-    case R_REGA21:
-    case R_REGA22:
-    case R_REGA23:
-    case R_REGA24:
-    case R_REGA25:
-    case R_REGA26:
-    case R_REGA27:
-    case R_REGA28:
-    case R_REGA29:
-    case R_REGA30:
-    case R_REGA31:
-    case R_REGA32:
-    case R_REGA33:
-    case R_REGA34:
-    case R_REGA35:
-    case R_REGA36:
-    case R_REGA37:
+    if (reg < s->num_regs_a - 1u) {
         val32 = s->regsa[reg];
-        break;
-    case R_REGAL:
+    } else if (reg == s->num_regs_a - 1u) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s is write-only\n", __func__,
-                      REG_NAME(reg));
+                      REG_NAME(s, reg));
         val32 = 0;
-        break;
-    case R_REGB0:
-    case R_REGB1:
-    case R_REGB2:
-    case R_REGB3:
-    case R_REGB4:
+    } else if (reg >= R_REGB0 && reg <= R_REGB4) {
         val32 = s->regsb[reg - R_REGB0];
-        break;
-    default:
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
         val32 = 0;
-        break;
     }
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_ast_io_read_out((uint32_t)addr, REG_NAME(reg), val32, pc);
+    trace_ot_ast_io_read_out((uint32_t)addr, REG_NAME(s, reg), val32, pc);
 
     return (uint64_t)val32;
 };
@@ -423,74 +405,29 @@ static void ot_ast_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     hwaddr reg = R32_OFF(addr);
 
     uint32_t pc = ibex_get_current_pc();
-    trace_ot_ast_io_write((uint32_t)addr, REG_NAME(reg), val32, pc);
+    trace_ot_ast_io_write((uint32_t)addr, REG_NAME(s, reg), val32, pc);
 
-    switch (reg) {
-    case R_REGA0:
-    case R_REGA1:
-    case R_REGA28:
+    if (reg == R_REGA0 || reg == R_REGA1 || reg == R_REGA28) {
         /*
          * ROM startup (sw/device/silicon_creator/rom/rom_start.S) bulk-copies
          * CREATOR_SW_CFG_AST_CFG across the contiguous REGA0..REGAL range via
          * crt_section_copy when AST_INIT_EN is enabled; ignore writes to these
          * read-only registers without logging guest errors.
          */
-        break;
-    case R_REGA2:
-    case R_REGA3:
-    case R_REGA4:
-    case R_REGA5:
-    case R_REGA6:
-    case R_REGA7:
-    case R_REGA8:
-    case R_REGA9:
-    case R_REGA10:
-    case R_REGA11:
-    case R_REGA12:
-    case R_REGA13:
-    case R_REGA14:
-    case R_REGA15:
-    case R_REGA16:
-    case R_REGA17:
-    case R_REGA18:
-    case R_REGA19:
-    case R_REGA20:
-    case R_REGA21:
-    case R_REGA22:
-    case R_REGA23:
-    case R_REGA24:
-    case R_REGA25:
-    case R_REGA26:
-    case R_REGA27:
-    case R_REGA29:
-    case R_REGA30:
-    case R_REGA31:
-    case R_REGA32:
-    case R_REGA33:
-    case R_REGA34:
-    case R_REGA35:
-    case R_REGA36:
-    case R_REGA37:
-    case R_REGAL:
+    } else if (reg < s->num_regs_a) {
         s->regsa[reg] = val32;
-        break;
-    case R_REGB0:
-    case R_REGB1:
-    case R_REGB2:
-    case R_REGB3:
-    case R_REGB4:
+    } else if (reg >= R_REGB0 && reg <= R_REGB4) {
         s->regsb[reg - R_REGB0] = val32;
-        break;
-    default:
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        break;
     }
 };
 
 static const Property ot_ast_eg_properties[] = {
     DEFINE_PROP_STRING("topclocks", OtASTEgState, cfg_topclocks),
     DEFINE_PROP_STRING("aonclocks", OtASTEgState, cfg_aonclocks),
+    DEFINE_PROP_UINT32("num-regs-a", OtASTEgState, num_regs_a, REGSA_V1_COUNT),
 };
 
 static const MemoryRegionOps ot_ast_eg_regs_ops = {
@@ -514,44 +451,9 @@ static void ot_ast_eg_reset_enter(Object *obj, ResetType type)
     memset(s->regsa, 0, REGSA_SIZE);
     memset(s->regsb, 0, REGSB_SIZE);
 
-    s->regsa[R_REGA1] = 0x1u;
-    s->regsa[R_REGA2] = 0x2u;
-    s->regsa[R_REGA3] = 0x3u;
-    s->regsa[R_REGA4] = 0x4u;
-    s->regsa[R_REGA5] = 0x5u;
-    s->regsa[R_REGA6] = 0x6u;
-    s->regsa[R_REGA7] = 0x7u;
-    s->regsa[R_REGA8] = 0x8u;
-    s->regsa[R_REGA9] = 0x9u;
-    s->regsa[R_REGA10] = 0xau;
-    s->regsa[R_REGA11] = 0xbu;
-    s->regsa[R_REGA12] = 0xcu;
-    s->regsa[R_REGA13] = 0xdu;
-    s->regsa[R_REGA14] = 0xeu;
-    s->regsa[R_REGA15] = 0xfu;
-    s->regsa[R_REGA16] = 0x10u;
-    s->regsa[R_REGA17] = 0x11u;
-    s->regsa[R_REGA18] = 0x12u;
-    s->regsa[R_REGA19] = 0x13u;
-    s->regsa[R_REGA20] = 0x14u;
-    s->regsa[R_REGA21] = 0x15u;
-    s->regsa[R_REGA22] = 0x16u;
-    s->regsa[R_REGA23] = 0x17u;
-    s->regsa[R_REGA24] = 0x18u;
-    s->regsa[R_REGA25] = 0x19u;
-    s->regsa[R_REGA26] = 0x1au;
-    s->regsa[R_REGA27] = 0x1bu;
-    s->regsa[R_REGA28] = 0x1cu;
-    s->regsa[R_REGA29] = 0x1du;
-    s->regsa[R_REGA30] = 0x1eu;
-    s->regsa[R_REGA31] = 0x1fu;
-    s->regsa[R_REGA32] = 0x20u;
-    s->regsa[R_REGA33] = 0x21u;
-    s->regsa[R_REGA34] = 0x22u;
-    s->regsa[R_REGA35] = 0x23u;
-    s->regsa[R_REGA36] = 0x24u;
-    s->regsa[R_REGA37] = 0x25u;
-    s->regsa[R_REGAL] = 0x26u;
+    for (uint32_t i = 1u; i < s->num_regs_a && i < REGSA_COUNT; i++) {
+        s->regsa[i] = i;
+    }
 
     g_list_foreach(s->clocks, ot_ast_eg_reset_clock, s);
 }

@@ -82,6 +82,7 @@ config OT_EARLGREY
     select OT_ALERT
     select OT_AON_TIMER
     select OT_AST_EG
+    select OT_CHERIOT
     select OT_CLKMGR
     select OT_CSRNG
     select OT_EDN
@@ -94,6 +95,7 @@ config OT_EARLGREY
     select OT_I2C_HOST_PROXY
     select OT_IBEX_WRAPPER
     select OT_KEYMGR
+    select OT_KEYMGR_DPE
     select OT_KMAC
     select OT_LC_CTRL
     select OT_OTBN
@@ -106,6 +108,7 @@ config OT_EARLGREY
     select OT_PWM
     select OT_PWRMGR
     select OT_ROM_CTRL
+    select OT_RRAM_CTRL
     select OT_RSTMGR
     select OT_SENSOR_EG
     select OT_SPI_DEVICE

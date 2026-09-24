@@ -528,8 +528,8 @@ static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
     }
     ot_alert_set_dump_bits(dump, 204u, 7u, loc_cause);
 
-    /* alert_cause[0..64]: 65 bits at bit 211..275 */
-    for (unsigned i = 0; i < s->n_alerts && i < 65u; i++) {
+    /* alert_cause[0..65]: up to 66 bits at bit 211..276 */
+    for (unsigned i = 0; i < s->n_alerts && i < 66u; i++) {
         uint32_t cause =
             (DVAL(s->regs.alerts.cause[i]) & ALERT_CAUSE_EN_MASK) ? 1u : 0u;
         ot_alert_set_dump_bits(dump, 211u + i, 1u, cause);

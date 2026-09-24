@@ -510,6 +510,7 @@ struct CPUArchState {
     target_ulong cpuctrlsts;
     target_ulong secureseed;
     uint32_t ic_scr_key_inval_cnt;
+    bool mcounteren_writable_disabled;
 #endif
 
     bool sync_exc_seen;
