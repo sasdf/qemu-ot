@@ -2236,6 +2236,7 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_ALERT_TEST:
     case R_AVOUTBUFFER:
     case R_AVSETUPBUFFER:
+    case R_RXENABLE_OUT:
     case R_WAKE_CONTROL:
     case R_FIFO_CTRL:
     default:
