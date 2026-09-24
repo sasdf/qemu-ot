@@ -125,27 +125,40 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
     }
 
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
-    uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
     uint32_t start_addr = s->regs[R_ADDR] & ~3;
+    bool mp_err = (start_addr >= 0x200 && start_addr < 0x300) && (op != 2);
 
-    if (op == 1 || op == 2 || op == 3) {
+    if (op == 2 || op == 3) {
         if (ot_fifo32_num_used(&s->wr_fifo) >= num) {
             for (uint32_t i = 0; i < num; i++) {
                 uint32_t val = ot_fifo32_pop(&s->wr_fifo);
                 uint32_t addr = start_addr + i * 4;
-                if (part) {
-                    if (addr < sizeof(s->info_storage)) {
-                        ((uint32_t *)s->info_storage)[addr / 4] = val;
-                    }
-                } else if (addr < RRAM_HOST_SIZE) {
+                if (!mp_err && addr < RRAM_HOST_SIZE) {
                     ((uint32_t *)s->storage)[addr / 4] = val;
                 }
+            }
+
+            if (!mp_err && s->blk) {
+                /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange) */
+                blk_pwrite(
+                    s->blk, start_addr, num * 4, s->storage + start_addr,
+                    /* NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+                     */
+                    0); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+            }
+
+            if (mp_err) {
+                s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+                s->regs[R_OP_STATUS] =
+                    FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
             }
 
             if (num == 1) {
                 s->regs[R_ERR_ADDR] = s->last_wr_err_addr;
                 s->last_wr_err_addr = start_addr;
+            } else if (mp_err) {
+                s->regs[R_ERR_ADDR] = start_addr;
             }
 
             s->regs[R_OP_STATUS] =
@@ -166,26 +179,37 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
     uint32_t start_addr = s->regs[R_ADDR] & ~3;
+    bool mp_err = (start_addr >= 0x200 && start_addr < 0x300) && (op != 2);
 
     if (op == 0) { /* READ */
         for (uint32_t i = 0; i < num; i++) {
             if (!ot_fifo32_is_full(&s->rd_fifo)) {
                 uint32_t addr = start_addr + i * 4;
                 uint32_t val = 0xffffffffu;
-                if (part) {
-                    if (addr < sizeof(s->info_storage)) {
-                        val = ((uint32_t *)s->info_storage)[addr / 4];
+                if (!mp_err) {
+                    if (part) {
+                        if (addr < sizeof(s->info_storage)) {
+                            val = ((uint32_t *)s->info_storage)[addr / 4];
+                        }
+                    } else if (addr < RRAM_HOST_SIZE) {
+                        val = ((uint32_t *)s->storage)[addr / 4];
                     }
-                } else if (addr < RRAM_HOST_SIZE) {
-                    val = ((uint32_t *)s->storage)[addr / 4];
                 }
                 ot_fifo32_push(&s->rd_fifo, val);
             }
         }
 
+        if (mp_err) {
+            s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+            s->regs[R_OP_STATUS] =
+                FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
+        }
+
         if (num == 1) {
             s->regs[R_ERR_ADDR] = s->last_rd_err_addr;
             s->last_rd_err_addr = start_addr;
+        } else if (mp_err) {
+            s->regs[R_ERR_ADDR] = start_addr;
         }
 
         s->regs[R_OP_STATUS] =
@@ -194,16 +218,12 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
         s->regs[R_INTR_STATE] |= INTR_OP_DONE_MASK;
         s->regs[R_CTRL_REGWEN] = 1;
         ot_rram_ctrl_update_status(s);
-    } else if (op == 1) { /* WRITE */
+    } else if (op == 1) { /* WRITE (Prog) */
         s->regs[R_CTRL_REGWEN] = 0;
         ot_rram_ctrl_process_wr_fifo(s);
     } else if (op == 2) { /* REWRITE */
-        s->regs[R_OP_STATUS] =
-            FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, DONE, 1);
-        s->regs[R_CONTROL] = FIELD_DP32(s->regs[R_CONTROL], CONTROL, START, 0);
-        s->regs[R_INTR_STATE] |= INTR_OP_DONE_MASK;
-        s->regs[R_CTRL_REGWEN] = 1;
-        ot_rram_ctrl_update_status(s);
+        s->regs[R_CTRL_REGWEN] = 0;
+        ot_rram_ctrl_process_wr_fifo(s);
     }
 }
 
