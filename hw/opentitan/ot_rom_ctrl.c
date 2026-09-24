@@ -594,7 +594,7 @@ static void ot_rom_ctrl_load_elf(OtRomCtrlState *s, const OtRomImg *ri)
 
     uintptr_t hostptr = (uintptr_t)memory_region_get_ram_ptr(&s->mem);
 
-    unsigned load_size = s->size * 2u;
+    unsigned load_size = (1u << (32 - __builtin_clz(s->size - 1))) * 2u;
     uintptr_t tmpptr = (uintptr_t)qemu_memalign(sizeof(uint64_t), load_size);
     ot_rom_ctrl_scramble(s, (const uint32_t *)hostptr, (uint64_t *)tmpptr);
 
@@ -635,7 +635,7 @@ static void ot_rom_ctrl_load_binary(OtRomCtrlState *s, const OtRomImg *ri)
 
     memory_region_set_dirty(&s->mem, 0, ri->raw_size);
 
-    unsigned load_size = s->size * 2u;
+    unsigned load_size = (1u << (32 - __builtin_clz(s->size - 1))) * 2u;
     uintptr_t tmpptr = (uintptr_t)qemu_memalign(sizeof(uint64_t), load_size);
     ot_rom_ctrl_scramble(s, (const uint32_t *)hostptr, (uint64_t *)tmpptr);
 
@@ -696,7 +696,7 @@ static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
          * stage where clear data are copied back to the device memory region
          * and ECC data are discarded once used.
          */
-        load_size = s->size * 2u;
+        load_size = (1u << (32 - __builtin_clz(s->size - 1))) * 2u;
         baseptr = (uintptr_t)qemu_memalign(sizeof(uint64_t), load_size);
     }
 
@@ -788,7 +788,7 @@ static void ot_rom_ctrl_load_vmem(OtRomCtrlState *s, const OtRomImg *ri,
         /* hash completion discard temporary baseptr */
         scrptr = (uintptr_t)logbuf;
     } else {
-        load_size = s->size * 2u;
+        load_size = (1u << (32 - __builtin_clz(s->size - 1))) * 2u;
         uintptr_t tmpptr =
             (uintptr_t)qemu_memalign(sizeof(uint64_t), load_size);
         ot_rom_ctrl_scramble(s, (const uint32_t *)baseptr, (uint64_t *)tmpptr);
@@ -817,7 +817,7 @@ static void ot_rom_ctrl_load_hex(OtRomCtrlState *s, const OtRomImg *ri)
      * stage where clear data are copied back to the device memory region
      * and ECC data are discarded once used.
      */
-    unsigned load_size = s->size * 2u;
+    unsigned load_size = (1u << (32 - __builtin_clz(s->size - 1))) * 2u;
     uintptr_t baseptr = (uintptr_t)qemu_memalign(sizeof(uint64_t), load_size);
     uintptr_t lastptr = baseptr + load_size;
     uintptr_t memptr = baseptr;
