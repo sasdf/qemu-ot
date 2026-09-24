@@ -116,6 +116,7 @@ REG32(STATUS, 0x84u)
     FIELD(STATUS, INPUT_READY, 4u, 1u)
     FIELD(STATUS, ALERT_RECOV_CTRL_UPDATE_ERR, 5u, 1u)
     FIELD(STATUS, ALERT_FATAL_FAULT, 6u, 1u)
+REG32(CTRL_GCM_SHADOWED, 0x88u)
 /* clang-format on */
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
@@ -143,7 +144,7 @@ static_assert(OT_AES_KEY_SIZE == (PARAM_NUM_REGS_KEY * sizeof(uint32_t)),
 /* size of the debug buffer: hex key + NUL + extra */
 #define AES_DEBUG_HEXBUF_SIZE (OT_AES_DATA_SIZE * 2u + 4u)
 
-#define R_LAST_REG (R_STATUS)
+#define R_LAST_REG (R_CTRL_GCM_SHADOWED)
 #define REGS_COUNT (R_LAST_REG + 1u)
 #define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
 #define REG_NAME(_reg_) \
@@ -185,6 +186,7 @@ static const char *REG_NAMES[REGS_COUNT] = {
     REG_NAME_ENTRY(CTRL_AUX_REGWEN),
     REG_NAME_ENTRY(TRIGGER),
     REG_NAME_ENTRY(STATUS),
+    REG_NAME_ENTRY(CTRL_GCM_SHADOWED),
 };
 #undef REG_NAME_ENTRY
 
@@ -287,6 +289,7 @@ struct OtAESState {
     char *ot_id;
     char *clock_name;
     DeviceState *clock_src;
+    uint8_t version;
 };
 
 struct OtAESClass {
@@ -377,23 +380,25 @@ static void ot_aes_update_alert(OtAESState *s)
     }
 }
 
-static uint32_t ot_aes_sanitize_ctrl(uint32_t val)
+static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
 {
     uint32_t op = FIELD_EX32(val, CTRL_SHADOWED, OPERATION);
     if (op != 0x1u && op != 0x2u) {
         op = 0x1u;
     }
     uint32_t mode = FIELD_EX32(val, CTRL_SHADOWED, MODE);
+    uint32_t none_mode = (s->version >= 2u) ? 0x3fu : 0x20u;
     switch (mode) {
     case 0x01u:
     case 0x02u:
     case 0x04u:
     case 0x08u:
     case 0x10u:
-    case 0x20u:
         break;
+    case 0x20u:
+    case 0x3fu:
     default:
-        mode = 0x20u;
+        mode = none_mode;
         break;
     }
     uint32_t key_len = FIELD_EX32(val, CTRL_SHADOWED, KEY_LEN);
@@ -1275,6 +1280,9 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
             val32 |= R_STATUS_STALL_MASK;
         }
         break;
+    case R_CTRL_GCM_SHADOWED:
+        val32 = 0x00000401u;
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
@@ -1400,7 +1408,7 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         if (!ot_aes_is_idle(s)) {
             break;
         }
-        val32 = ot_aes_sanitize_ctrl(val32);
+        val32 = ot_aes_sanitize_ctrl(s, val32);
         OtAESMode prev_mode = ot_aes_get_mode(s->regs);
         r->status &= ~(R_STATUS_OUTPUT_LOST_MASK | R_STATUS_OUTPUT_VALID_MASK);
         bitmap_zero(r->data_in_bm, PARAM_NUM_REGS_DATA);
@@ -1461,6 +1469,8 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         r->trigger |= val32;
         ot_aes_handle_trigger(s);
         break;
+    case R_CTRL_GCM_SHADOWED:
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
                       s->ot_id, (uint32_t)addr);
@@ -1471,15 +1481,18 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
 static bool ot_aes_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                 bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    OtAESState *s = opaque;
     (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (s->version < 2u && reg == R_CTRL_GCM_SHADOWED) {
+        return false;
+    }
     if (!is_write) {
         return true;
     }
-    hwaddr reg = R32_OFF(addr);
     uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
     uint32_t permit =
-        (reg == R_CTRL_SHADOWED) ?
+        (reg == R_CTRL_SHADOWED || reg == R_CTRL_GCM_SHADOWED) ?
             0x3u :
             ((reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) ? 0xfu : 0x1u);
     return (permit & ~be) == 0u;
@@ -1492,6 +1505,7 @@ static const Property ot_aes_properties[] = {
                      DeviceState *),
     DEFINE_PROP_LINK("edn", OtAESState, edn.device, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_UINT8("edn-ep", OtAESState, edn.ep, UINT8_MAX),
+    DEFINE_PROP_UINT8("version", OtAESState, version, 1u),
     /*
      * some time-sensitive OT tests requires vCPU to be scheduled before AES
      * round is executed, in which case this property should be reset. In most
@@ -1526,7 +1540,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     memset(r, 0, sizeof(*r));
     memset(s->sl_key, 0, sizeof(*s->sl_key));
 
-    ot_shadow_reg_init(&r->ctrl, 0x1181u);
+    ot_shadow_reg_init(&r->ctrl, (s->version >= 2u) ? 0x11fdu : 0x1181u);
     ot_shadow_reg_init(&r->ctrl_aux, 1u);
     r->ctrl_aux_regwen = 1u;
     r->trigger = 0xeu;
