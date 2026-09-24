@@ -876,6 +876,9 @@ static void ot_edn_handle_disable(OtEDNState *s)
 
     g_assert(ot_edn_get_last_csrng_command(s) != OT_CSRNG_CMD_UNINSTANTIATE);
 
+    uint32_t rem_boot_packets =
+        (s->state == EDN_BOOT_GEN_ACK_WAIT) ? c->rem_packet_count : 0u;
+
     c->no_fips = false;
     c->prev_bits_valid = false;
     c->rem_packet_count = 0;
@@ -900,6 +903,18 @@ static void ot_edn_handle_disable(OtEDNState *s)
     /* signal CSRNG that EDN is no longer ready to receive entropy */
     ot_edn_update_genbits_ready(s);
 
+    if (rem_boot_packets > 0u) {
+        /*
+         * In RTL (edn_core.sv / csrng_cmd_stage.sv), disabling EDN clears the
+         * EDN packer FIFOs but does not uninstantiate CSRNG or cancel an
+         * in-progress BOOT_GEN_CMD in CSRNG. Retain rem_boot_packets so that
+         * re-enabling EDN in boot_req_mode resumes consuming the active CSRNG
+         * generate stream.
+         */
+        c->rem_packet_count = rem_boot_packets;
+        return;
+    }
+
     /* disconnect */
     qemu_irq rdy;
     rdy = c->csrng->connect_hw_app(c->device, c->appid, NULL, NULL, NULL);
@@ -921,6 +936,7 @@ static void ot_edn_clean_up(OtEDNState *s, bool discard_requests)
     if (discard_requests) {
         c->hw_boot_mode = false;
         c->hw_auto_mode = false;
+        c->rem_packet_count = 0;
     }
     c->hw_cmd_status = CSRNG_STATUS_SUCCESS;
     c->sw_cmd_status = CSRNG_STATUS_SUCCESS;
@@ -945,9 +961,11 @@ static void ot_edn_clean_up(OtEDNState *s, bool discard_requests)
         s->endpoints[epix].fips = false;
     }
 
-    bool accept_entropy = ot_edn_update_genbits_ready(s);
-    g_assert(!accept_entropy);
-    c->genbits_ready = NULL;
+    if (discard_requests || c->rem_packet_count == 0u) {
+        bool accept_entropy = ot_edn_update_genbits_ready(s);
+        g_assert(!accept_entropy);
+        c->genbits_ready = NULL;
+    }
 }
 
 static bool ot_edn_update_mode(OtEDNState *s)
@@ -975,18 +993,40 @@ static bool ot_edn_update_mode(OtEDNState *s)
     if (s->state == EDN_IDLE) {
         if (ot_edn_is_boot_req_mode(s)) {
             trace_ot_edn_enable(c->appid, "boot mode");
+            if (c->rem_packet_count > 0u && c->genbits_ready != NULL) {
+                uint32_t prev_rem = c->rem_packet_count;
+                c->hw_boot_mode = true;
+                c->hw_cmd_type = (uint8_t)OT_CSRNG_CMD_GENERATE;
+                ot_edn_change_state(s, EDN_BOOT_GEN_ACK_WAIT);
+                ot_edn_update_genbits_ready(s);
+                if (c->rem_packet_count < prev_rem) {
+                    return true;
+                }
+                c->rem_packet_count = 0u;
+                c->genbits_ready = NULL;
+            }
             ot_edn_change_state(s, EDN_BOOT_LOAD_INS);
             ot_edn_send_boot_req(s, R_BOOT_INS_CMD);
-        } else if (ot_edn_is_auto_req_mode(s)) {
-            trace_ot_edn_enable(c->appid, "auto mode");
-            s->sw_cmd_ready = true;
-            ot_edn_change_state(s, EDN_AUTO_LOAD_INS);
         } else {
-            trace_ot_edn_enable(c->appid, "sw mode");
-            s->sw_cmd_ready = true;
-            s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
-            ot_edn_reset_replay_fifos(s);
-            ot_edn_change_state(s, EDN_SW_PORT_MODE);
+            if (c->rem_packet_count > 0u || c->genbits_ready != NULL) {
+                c->rem_packet_count = 0u;
+                ot_edn_update_genbits_ready(s);
+                qemu_irq rdy = c->csrng->connect_hw_app(c->device, c->appid,
+                                                        NULL, NULL, NULL);
+                g_assert(!rdy);
+                c->genbits_ready = NULL;
+            }
+            if (ot_edn_is_auto_req_mode(s)) {
+                trace_ot_edn_enable(c->appid, "auto mode");
+                s->sw_cmd_ready = true;
+                ot_edn_change_state(s, EDN_AUTO_LOAD_INS);
+            } else {
+                trace_ot_edn_enable(c->appid, "sw mode");
+                s->sw_cmd_ready = true;
+                s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
+                ot_edn_reset_replay_fifos(s);
+                ot_edn_change_state(s, EDN_SW_PORT_MODE);
+            }
         }
         return true;
     }
