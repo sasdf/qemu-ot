@@ -2122,6 +2122,7 @@ static uint8_t ot_usbdev_reg_permit(hwaddr reg)
     case R_EP_OUT_ENABLE:
     case R_EP_IN_ENABLE:
     case R_RXENABLE_SETUP:
+    case R_RXENABLE_OUT:
     case R_SET_NAK_OUT:
     case R_IN_SENT:
     case R_OUT_STALL:
@@ -2181,6 +2182,7 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_EP_OUT_ENABLE:
     case R_EP_IN_ENABLE:
     case R_RXENABLE_SETUP:
+    case R_RXENABLE_OUT:
     case R_SET_NAK_OUT:
     case R_IN_SENT:
     case R_OUT_STALL:
