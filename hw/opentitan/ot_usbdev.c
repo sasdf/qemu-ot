@@ -2063,6 +2063,12 @@ static void ot_usbdev_update_ep_xfers(OtUsbdevState *s, bool dir_in,
 static void
 ot_usbdev_update_ep_enabled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
 {
+    if (reg == R_RXENABLE_OUT) {
+        uint32_t preserve = (val32 >> 16) & USBDEV_ALL_EP_MASK;
+        uint32_t current = s->regs[reg];
+        uint32_t updated = val32 & USBDEV_ALL_EP_MASK;
+        val32 = (current & preserve) | (updated & ~preserve);
+    }
     uint32_t changed_ep = (s->regs[reg] ^ val32) & USBDEV_ALL_EP_MASK;
     s->regs[reg] = val32 & USBDEV_ALL_EP_MASK;
 
@@ -2116,7 +2122,6 @@ static uint8_t ot_usbdev_reg_permit(hwaddr reg)
     case R_EP_OUT_ENABLE:
     case R_EP_IN_ENABLE:
     case R_RXENABLE_SETUP:
-    case R_RXENABLE_OUT:
     case R_SET_NAK_OUT:
     case R_IN_SENT:
     case R_OUT_STALL:
@@ -2125,6 +2130,7 @@ static uint8_t ot_usbdev_reg_permit(hwaddr reg)
     case R_IN_ISO:
     case R_WAKE_EVENTS:
         return 0x3u;
+    case R_RXENABLE_OUT:
     case R_USBSTAT:
     case R_CONFIGIN_0 ... R_CONFIGIN_11:
     case R_OUT_DATA_TOGGLE:
@@ -2175,7 +2181,6 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
     case R_EP_OUT_ENABLE:
     case R_EP_IN_ENABLE:
     case R_RXENABLE_SETUP:
-    case R_RXENABLE_OUT:
     case R_SET_NAK_OUT:
     case R_IN_SENT:
     case R_OUT_STALL:
