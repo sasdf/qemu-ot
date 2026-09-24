@@ -2380,16 +2380,12 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_WAKE_CONTROL:
         if (val32 & R_WAKE_CONTROL_SUSPEND_REQ_MASK) {
-            if (!s->aon_cdc_dst_qs) {
-                s->aon_cdc_dst_qs = 1u;
-                if (!(s->regs[R_WAKE_EVENTS] &
-                      R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
-                    bool dp_pullup, dn_pullup;
-                    ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
-                    s->aon_dppullup_en = dp_pullup;
-                    s->aon_dnpullup_en = dn_pullup;
-                    s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_MODULE_ACTIVE_MASK;
-                }
+            if (!(s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
+                bool dp_pullup, dn_pullup;
+                ot_usbdev_get_pullups(s, &dp_pullup, &dn_pullup);
+                s->aon_dppullup_en = dp_pullup;
+                s->aon_dnpullup_en = dn_pullup;
+                s->regs[R_WAKE_EVENTS] |= R_WAKE_EVENTS_MODULE_ACTIVE_MASK;
             }
             ot_usbdev_update_aon_wake(s);
         } else if (val32 & R_WAKE_CONTROL_WAKE_ACK_MASK) {
