@@ -603,7 +603,7 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         if (!s->in_low_power) {
             OtFlashState *flash = (OtFlashState *)
                 object_resolve_path_type("", TYPE_OT_FLASH, NULL);
-            void *otp = object_resolve_path_type("", "ot-otp_engine", NULL);
+            void *otp = object_resolve_path_type("", "ot-otp-eg", NULL);
             bool otp_idle = !otp || ot_otp_engine_is_idle(otp);
             if ((flash && !ot_flash_is_idle(flash)) || !otp_idle) {
                 /* FastPwrStateNvmIdleChk: abort low power entry if flash busy
