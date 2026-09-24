@@ -36,6 +36,7 @@ OBJECT_DECLARE_TYPE(OtClkMgrState, OtClkMgrClass, OT_CLKMGR)
 /* Supported ClockManager versions */
 typedef enum {
     OT_CLKMGR_VERSION_EG_1_0_0,
+    OT_CLKMGR_VERSION_EG_2_0_0,
     OT_CLKMGR_VERSION_DJ,
     OT_CLKMGR_VERSION_COUNT,
 } OtClkMgrVersion;

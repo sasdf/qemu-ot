@@ -1230,13 +1230,20 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] &= val32;
         break;
     case R_JITTER_ENABLE:
-        /*
-         * In clkmgr_reg_top.sv (u_jitter_enable), .we is jitter_enable_we
-         * (not gated by jitter_regwen) and .wd is hardwired to
-         * prim_mubi_pkg::MuBi4True (0x6). Any write latches JITTER_ENABLE to
-         * MuBi4True until reset.
-         */
-        s->regs[reg] = OT_MULTIBITBOOL4_TRUE;
+        if (s->version == OT_CLKMGR_VERSION_EG_1_0_0) {
+            /*
+             * In Earlgrey v1 clkmgr_reg_top.sv (u_jitter_enable), .we is
+             * jitter_enable_we (not gated by jitter_regwen) and .wd is
+             * hardwired to prim_mubi_pkg::MuBi4True (0x6). Any write latches
+             * JITTER_ENABLE to MuBi4True until reset.
+             */
+            s->regs[reg] = OT_MULTIBITBOOL4_TRUE;
+        } else if (s->regs[R_JITTER_REGWEN]) {
+            s->regs[reg] = val32 & R_JITTER_ENABLE_VAL_MASK;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: JITTER_ENABLE protected w/ REGWEN\n", __func__);
+        }
         break;
     case R_CLK_ENABLES: {
         uint32_t prev = s->regs[reg];

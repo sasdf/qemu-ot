@@ -162,6 +162,8 @@ struct OtRomCtrlState {
     uint64_t addr_nonce;
     uint64_t data_nonce;
     unsigned addr_width; /* bit count */
+    unsigned chunk_addr_width; /* bit count for subst/perm chunk */
+    unsigned num_chunks; /* count of power-of-two chunks */
     unsigned data_nonce_width; /* bit count */
     OtRomCtrlScrambled scrambled;
     unsigned recovered_error_count;
@@ -292,8 +294,21 @@ static uint64_t ot_rom_ctrl_subst_perm_enc(uint64_t in, uint64_t key,
 
 static unsigned ot_rom_ctrl_addr_sp_enc(const OtRomCtrlState *s, unsigned addr)
 {
-    return ot_rom_ctrl_subst_perm_enc(addr, s->addr_nonce, s->addr_width,
-                                      OT_ROM_CTRL_NUM_ADDR_SUBST_PERM_ROUNDS);
+    if (s->num_chunks <= 1u) {
+        return ot_rom_ctrl_subst_perm_enc(
+            addr, s->addr_nonce, s->addr_width,
+            OT_ROM_CTRL_NUM_ADDR_SUBST_PERM_ROUNDS);
+    }
+    unsigned sp_mask = (1u << s->chunk_addr_width) - 1u;
+    unsigned sp_addr = addr & sp_mask;
+    unsigned sp_nonce = (unsigned)s->addr_nonce & sp_mask;
+    unsigned sp_enc = (unsigned)
+        ot_rom_ctrl_subst_perm_enc(sp_addr, sp_nonce, s->chunk_addr_width,
+                                   OT_ROM_CTRL_NUM_ADDR_SUBST_PERM_ROUNDS);
+    unsigned off_addr = addr >> s->chunk_addr_width;
+    unsigned off_nonce = (unsigned)(s->addr_nonce >> s->chunk_addr_width);
+    unsigned off_enc = (off_addr + off_nonce) % s->num_chunks;
+    return (off_enc << s->chunk_addr_width) | sp_enc;
 }
 
 static uint64_t
@@ -1295,8 +1310,11 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
     memory_region_rom_device_set_romd(&s->mem, false);
 
     size_t wsize = (size_t)s->size / sizeof(uint32_t);
-    unsigned addrbits = 32 - clz32(wsize - 1);
-    g_assert(addrbits > 0 && addrbits < 64);
+    g_assert(wsize > 1u);
+    unsigned chunk_addrbits = ctz32(wsize);
+    unsigned addrbits = 32u - clz32(wsize - 1u);
+    g_assert(addrbits > 0u && addrbits < 64u);
+    g_assert(is_power_of_2(wsize) || (wsize % 4096u == 0u));
 
     uint8_t *bytes;
 
@@ -1317,6 +1335,8 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
     }
 
     s->addr_width = addrbits;
+    s->chunk_addr_width = chunk_addrbits;
+    s->num_chunks = (unsigned)(wsize >> chunk_addrbits);
 }
 
 static void ot_rom_ctrl_init(Object *obj)
