@@ -1915,7 +1915,7 @@ static void ot_usbdev_write_usbctrl(OtUsbdevState *s, uint32_t val32)
     s->regs[R_USBCTRL] = val32 & USBDEV_USBCTRL_R_MASK;
 
     bool enable = ot_usbdev_is_enabled(s);
-    if (!enable) {
+    if (!old_enable || !enable) {
         s->regs[R_USBCTRL] =
             FIELD_DP32(s->regs[R_USBCTRL], USBCTRL, DEVICE_ADDRESS, 0u);
     }
