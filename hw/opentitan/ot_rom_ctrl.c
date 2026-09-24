@@ -1295,8 +1295,8 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
     memory_region_rom_device_set_romd(&s->mem, false);
 
     size_t wsize = (size_t)s->size / sizeof(uint32_t);
-    unsigned addrbits = ctz32(wsize);
-    g_assert((wsize & ~(1ull << addrbits)) == 0ull);
+    unsigned addrbits = 32 - clz32(wsize - 1);
+    g_assert(addrbits > 0 && addrbits < 64);
 
     uint8_t *bytes;
 
