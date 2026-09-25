@@ -148,6 +148,7 @@ impl Executer {
                 rnd,
                 key,
                 registers.ctrl.clone(),
+                registers.insn_count.clone(),
             ),
             imem,
             dmem,

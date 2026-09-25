@@ -6,7 +6,7 @@
 use std::convert::TryInto;
 use std::fmt;
 use std::mem::size_of;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use ethnum::{u256, AsU256, U256};
@@ -95,6 +95,7 @@ impl HartState {
         rnd: Arc<random::Rnd>,
         key: Arc<key::Key>,
         ctrl: Arc<AtomicU32>,
+        insn_count: Arc<AtomicUsize>,
     ) -> Self {
         HartState {
             registers: [0; 32],
@@ -104,7 +105,7 @@ impl HartState {
             hwstack: Vec::with_capacity(8),
             updated: StateTracker::default(),
             x1_read: false,
-            csr_set: csrs::CSRSet::new(urnd, rnd, key, ctrl),
+            csr_set: csrs::CSRSet::new(urnd, rnd, key, ctrl, insn_count),
         }
     }
 
@@ -175,63 +176,6 @@ impl HartState {
 
         if let Err(exc) = csr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(csr_addr)));
-        }
-        // MAI Trigger Hook
-        if csr_addr == 0x7E0 {
-            let start = (data & 0x1) != 0;
-            let op = (data >> 1) & 0x1F;
-            if start {
-                let in0_s0 = self.csr_set.get_wsr(12 /* mai_in0_s0 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
-                let in0_s1 = self.csr_set.get_wsr(13 /* mai_in0_s1 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
-                let in1_s0 = self.csr_set.get_wsr(14 /* mai_in1_s0 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
-                let in1_s1 = self.csr_set.get_wsr(15 /* mai_in1_s1 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
-                let wmod = self.csr_set.get_wsr(0 /* mod */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
-                
-                let mut res_s0 = ethnum::U256::ZERO;
-                let res_s1 = ethnum::U256::ZERO;
-                
-                for i in 0..8 {
-                    let w_in0_s0 = (in0_s0 >> (i * 32) as u32).as_u32();
-                    let w_in0_s1 = (in0_s1 >> (i * 32) as u32).as_u32();
-                    let w_in1_s0 = (in1_s0 >> (i * 32) as u32).as_u32();
-                    let w_in1_s1 = (in1_s1 >> (i * 32) as u32).as_u32();
-                    let w_mod = (wmod >> (i * 32) as u32).as_u32();
-                    
-                    let a = w_in0_s0 ^ w_in0_s1;
-                    let b = w_in1_s0 ^ w_in1_s1;
-                    
-                    let w_res = match op {
-                        0x17 => { // SecAdd
-                            a.wrapping_add(b)
-                        }
-                        0x1b => { // SecAddMod
-                            let sum = a.wrapping_add(b);
-                            let mod_neg = 0_u32.wrapping_sub(w_mod);
-                            let truesum = sum.wrapping_sub(mod_neg);
-                            if truesum >= w_mod { truesum - w_mod } else { truesum }
-                        }
-                        0x0b => { // ArithToBool
-                            // in0_i is an arithmetic sharing (a0, a1) where a = a0 + a1 mod mod_i.
-                            // result_o is a Boolean sharing (b0, b1) where b = b0 XOR b1 = a.
-                            let (sum, _over) = w_in0_s0.overflowing_add(w_in0_s1); // actually it's modulo mod_i?
-                            // the rtl says "where a = a0 + a1 mod mod_i" "result = a"
-                            let mut a_val = sum; 
-                            if a_val >= w_mod { a_val = a_val.wrapping_sub(w_mod); }
-                            a_val
-                        }
-                        0x10 => { // BoolToArith
-                            // in0_i is a Boolean sharing (a0, a1) where a = a0 XOR a1.
-                            // result_o is an arithmetic sharing (b0, b1) where b = b0 + b1 mod mod_i = a.
-                            a
-                        }
-                        _ => 0, // Should be caught by EMaiSoftwareError
-                    };
-                    res_s0 |= ethnum::U256::from(w_res) << (i * 32) as u32;
-                }
-                
-                let _ = self.csr_set.get_wsr_mut(10 /* mai_res_s0 */).unwrap().write(res_s0);
-                let _ = self.csr_set.get_wsr_mut(11 /* mai_res_s1 */).unwrap().write(res_s1);
-            }
         }
 
         self.updated.csr = Some((false, csr_addr));
