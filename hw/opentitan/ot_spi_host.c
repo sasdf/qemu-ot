@@ -518,21 +518,6 @@ static uint32_t cmdfifo_num_used(const CmdFifo *fifo)
 /* Helpers */
 /* ------------------------------------------------------------------------ */
 
-static uint32_t ot_spi_host_convert_from_c2_command(uint32_t eg_cmd)
-{
-    uint32_t csaat = FIELD_EX32(eg_cmd, COMMAND, V2_CSAAT);
-    uint32_t speed = FIELD_EX32(eg_cmd, COMMAND, V2_SPEED);
-    uint32_t direction = FIELD_EX32(eg_cmd, COMMAND, V2_DIRECTION);
-    uint32_t len = FIELD_EX32(eg_cmd, COMMAND, V2_LEN);
-
-    /* EG 1.0.0 has a narrower length field, so this conversion is safe. */
-    uint32_t cmd = 0;
-    cmd = FIELD_DP32(cmd, COMMAND, CSAAT, csaat);
-    cmd = FIELD_DP32(cmd, COMMAND, SPEED, speed);
-    cmd = FIELD_DP32(cmd, COMMAND, DIRECTION, direction);
-    cmd = FIELD_DP32(cmd, COMMAND, LEN, len);
-    return cmd;
-}
 
 static bool ot_spi_host_is_rx(uint32_t command)
 {
@@ -594,12 +579,6 @@ static inline bool ot_spi_host_passthrough_active(const OtSPIHostState *s)
     return ot_spi_host_supports_passthrough(s) && s->passthrough_en;
 }
 
-static bool ot_spi_host_is_csb_switch(const OtSPIHostState *s)
-{
-    unsigned last_clkdiv = (s->last_clkdiv == UINT32_MAX) ? 0u : s->last_clkdiv;
-    return !s->fsm.transaction &&
-           FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) != last_clkdiv;
-}
 
 static bool ot_spi_host_update_stall(OtSPIHostState *s)
 {
@@ -612,8 +591,13 @@ static bool ot_spi_host_update_stall(OtSPIHostState *s)
 
     bool resume = true;
 
-    if (write && txfifo_is_empty(s->tx_fifo) &&
-        !(s->active.size == 0u && ot_spi_host_is_csb_switch(s))) {
+    unsigned clkdiv = FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV);
+    bool needs_csb_switch = !s->fsm.transaction && (clkdiv != s->last_clkdiv);
+    qemu_log("DEBUG: update_stall clkdiv=0x%x last_clkdiv=0x%x "
+             "needs_csb_switch=%d\n",
+             clkdiv, s->last_clkdiv, needs_csb_switch);
+
+    if (write && txfifo_is_empty(s->tx_fifo) && !needs_csb_switch) {
         trace_ot_spi_host_stall(s->ot_id, "TX", length);
         s->fsm.tx_stall = true;
         resume = false;
@@ -689,9 +673,33 @@ static uint32_t ot_spi_host_get_status(OtSPIHostState *s)
                         (uint32_t)txfifo_is_empty(s->tx_fifo));
     status = FIELD_DP32(status, STATUS, TXFULL,
                         (uint32_t)txfifo_is_full(s->tx_fifo));
-    status = FIELD_DP32(status, STATUS, TXSTALL, s->fsm.tx_stall);
+    bool combinational_txstall = false;
+    unsigned latest_clkdiv = s->last_clkdiv;
+    if (s->active.state != CMD_NONE) {
+        if (ot_spi_host_is_tx(s->active.cmd.command) &&
+            txfifo_is_empty(s->tx_fifo)) {
+            if (FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) ==
+                    latest_clkdiv ||
+                s->fsm.transaction) {
+                combinational_txstall = true;
+            }
+        }
+    } else if (!cmdfifo_is_empty(s->cmd_fifo)) {
+        if (ot_spi_host_is_tx(s->cmd_fifo->data[s->cmd_fifo->head].command) &&
+            txfifo_is_empty(s->tx_fifo)) {
+            if (FIELD_EX32(s->cmd_fifo->data[s->cmd_fifo->head].opts,
+                           CONFIGOPTS, CLKDIV) == latest_clkdiv ||
+                s->fsm.transaction) {
+                combinational_txstall = true;
+            }
+        }
+    }
+    if (timer_pending(s->fsm_delay)) {
+        combinational_txstall = false;
+    }
+    status = FIELD_DP32(status, STATUS, TXSTALL,
+                        combinational_txstall || s->fsm.tx_stall);
 
-    /* CMD */
     bool stalled_in_idle = ot_spi_host_is_stalled_in_idle(s);
     uint32_t cmdqd =
         cmdfifo_num_used(s->cmd_fifo) + (stalled_in_idle ? 1u : 0u);
@@ -958,7 +966,7 @@ static void ot_spi_host_internal_reset(OtSPIHostState *s)
 
     s->total_transfer = 0;
     s->last_command_id = 0;
-    s->last_clkdiv = UINT32_MAX;
+    s->last_clkdiv = 0;
 
     ot_spi_host_update_regs(s);
     ot_spi_host_update_alert(s);
@@ -1417,11 +1425,13 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_COMMAND: {
-        /* Convert command for back-compat with v2 fields */
-        if (s->version == 2u) {
-            val32 = ot_spi_host_convert_from_c2_command(val32);
-        }
+        /* No conversion needed, Earlgrey uses V3 command format natively */
         val32 &= R_COMMAND_MASK;
+
+        if (REG_GET(s, CONTROL, SW_RST)) {
+            ot_spi_host_update_regs(s);
+            break;
+        }
 
         if (!ot_spi_host_is_ready(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: busy (cmd_fifo full)\n",
@@ -1448,11 +1458,6 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
                           __func__, s->ot_id, csid);
             ot_spi_host_raise_error(s, R_ERROR_STATUS_CSIDINVAL_MASK);
             csid = 0;
-        }
-
-        if (REG_GET(s, CONTROL, SW_RST)) {
-            ot_spi_host_update_regs(s);
-            break;
         }
 
         CmdFifoSlot slot = {
@@ -1644,10 +1649,7 @@ static bool ot_spi_host_accepts(void *opaque, hwaddr addr, unsigned size,
         return false;
     }
     if (is_write && reg != R_TXDATA) {
-        uint8_t cmd_permit = (s->version >= 3u) ? 0xfu : 0x3u;
-        uint8_t permit = (reg >= R_CONTROL && reg <= R_CSID) ?
-                             0xfu :
-                             (reg == R_COMMAND ? cmd_permit : 0x1u);
+        uint8_t permit = (reg >= R_CONTROL && reg <= R_COMMAND) ? 0xfu : 0x1u;
         uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
         return (permit & ~reg_be) == 0u;
     }
