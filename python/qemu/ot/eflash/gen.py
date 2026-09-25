@@ -359,6 +359,36 @@ class FlashGen:
         self._store_debug_info(ename, elfpath)
 
     def store_ot_files(self, otdescs: list[str]) -> None:
+        max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
+        for otdesc in otdescs:
+            parts = otdesc.split('@', 1)
+            if len(parts) == 2 and isfile(parts[0]):
+                try:
+                    address = int(parts[1], 16)
+                except ValueError:
+                    continue
+                with open(parts[0], 'rb') as bfp:
+                    raw_data = bfp.read()
+                max_end = max(address + len(raw_data),
+                              address + len(raw_data.rstrip(b'\xff')))
+                if max_offset < max_end <= 2 * max_offset:
+                    # pylint: disable=invalid-name
+                    self.PAGES_PER_BANK = 512
+                    self.BYTES_PER_BANK = 1048576
+                    max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
+                    tfmt = ''.join(self.DEBUG_TRAILER_FORMAT.values())
+                    trailer_size = scalc(tfmt)
+                    bank_sz = self.BYTES_PER_BANK + self.info_part_size()
+                    self._image_size = (bank_sz * self.NUM_BANKS +
+                                        self._header_size + trailer_size)
+                    if self._ffp:
+                        path = self._ffp.name
+                        self._ffp.truncate(0)
+                        self._ffp.close()
+                        self._ffp = None
+                        self.open(path)
+                    break
+
         for otdesc in otdescs:
             # @TODO: add back support for ELFs for convenience debug symbols
             # when the flash debug trailer format is changed to support
@@ -374,31 +404,12 @@ class FlashGen:
                 address = int(parts[1], 16)
             except ValueError as exc:
                 raise ValueError('Invalid address in OT descriptor') from exc
-            max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
             if not 0 <= address < max_offset:
                 raise ValueError(f'Invalid address 0x{address:x} for bin '
                                  f'{basename(bin_filename)}')
             with open(bin_filename, 'rb') as bfp:
-                raw_data = bfp.read()
-            raw_end = address + len(raw_data)
-            data = raw_data.rstrip(b'\xff')
+                data = bfp.read().rstrip(b'\xff')
             address_end = address + len(data)
-            max_end = max(raw_end, address_end)
-            if max_offset < max_end <= 2 * max_offset:
-                self.PAGES_PER_BANK = 512  # pylint: disable=invalid-name
-                self.BYTES_PER_BANK = 1048576  # pylint: disable=invalid-name
-                max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
-                tfmt = ''.join(self.DEBUG_TRAILER_FORMAT.values())
-                trailer_size = scalc(tfmt)
-                bank_sz = self.BYTES_PER_BANK + self.info_part_size()
-                self._image_size = (bank_sz * self.NUM_BANKS +
-                                    self._header_size + trailer_size)
-                if self._ffp:
-                    path = self._ffp.name
-                    self._ffp.truncate(0)
-                    self._ffp.close()
-                    self._ffp = None
-                    self.open(path)
             if not 0 <= address_end <= max_offset:
                 raise ValueError(f'Binary {basename(bin_filename)} at '
                                  f'0x{address:x}:0x{address_end:x} does not '

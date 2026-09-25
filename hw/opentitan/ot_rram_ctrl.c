@@ -117,6 +117,22 @@ static void ot_rram_ctrl_update_status(OtRramCtrlState *s)
     ot_rram_ctrl_update_irqs(s);
 }
 
+static bool ot_rram_ctrl_is_mp_err(OtRramCtrlState *s, uint32_t op,
+                                   uint32_t part, uint32_t start_addr)
+{
+    if (op == 2u) {
+        return false;
+    }
+    if (part && start_addr >= 0x200u && start_addr < 0x400u) {
+        uint32_t cfg = s->regs[(0xc4 / 4) + (start_addr / 0x200u)];
+        bool en = (cfg & 0xfu) == 0x6u;
+        bool perm = (op == 0u) ? (((cfg >> 4u) & 0xfu) == 0x6u) :
+                                 (((cfg >> 8u) & 0xfu) == 0x6u);
+        return !(en && perm);
+    }
+    return false;
+}
+
 /* Process WR FIFO */
 static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
 {
@@ -125,21 +141,31 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
     }
 
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
+    uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
     uint32_t start_addr = s->regs[R_ADDR] & ~3;
-    bool mp_err = (start_addr >= 0x200 && start_addr < 0x300) && (op != 2);
+    bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
-    if (op == 2 || op == 3) {
+    if (op == 1 || op == 2 || op == 3) {
+        if (mp_err && ot_fifo32_num_used(&s->wr_fifo) >= 1) {
+            s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+            s->regs[R_OP_STATUS] =
+                FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
+        }
         if (ot_fifo32_num_used(&s->wr_fifo) >= num) {
             for (uint32_t i = 0; i < num; i++) {
                 uint32_t val = ot_fifo32_pop(&s->wr_fifo);
                 uint32_t addr = start_addr + i * 4;
-                if (!mp_err && addr < RRAM_HOST_SIZE) {
+                if (part) {
+                    if (!mp_err && addr < sizeof(s->info_storage)) {
+                        ((uint32_t *)s->info_storage)[addr / 4] = val;
+                    }
+                } else if (!mp_err && addr < RRAM_HOST_SIZE) {
                     ((uint32_t *)s->storage)[addr / 4] = val;
                 }
             }
 
-            if (!mp_err && s->blk) {
+            if (!part && !mp_err && s->blk) {
                 /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange) */
                 blk_pwrite(
                     s->blk, start_addr, num * 4, s->storage + start_addr,
@@ -152,6 +178,8 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
                 s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
                 s->regs[R_OP_STATUS] =
                     FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
+                ibex_irq_set(&s->alerts[0], 1);
+                ibex_irq_set(&s->alerts[0], 0);
             }
 
             if (num == 1) {
@@ -179,7 +207,7 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
     uint32_t start_addr = s->regs[R_ADDR] & ~3;
-    bool mp_err = (start_addr >= 0x200 && start_addr < 0x300) && (op != 2);
+    bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
     if (op == 0) { /* READ */
         for (uint32_t i = 0; i < num; i++) {
@@ -203,6 +231,8 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
             s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
             s->regs[R_OP_STATUS] =
                 FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
+            ibex_irq_set(&s->alerts[0], 1);
+            ibex_irq_set(&s->alerts[0], 0);
         }
 
         if (num == 1) {
