@@ -313,12 +313,12 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
         }
         0b011 | 0b100 => {
             let is_mod = dec_insn.funct3 == 0b100;
-            let is_upper = (dec_insn.funct7 & 0b000_0100) != 0;
-            match (is_mod, is_upper) {
-                (false, false) => Some(processor.process_bn_mulvl(dec_insn)),
-                (false, true) => Some(processor.process_bn_mulv(dec_insn)),
-                (true, false) => Some(processor.process_bn_mulvml(dec_insn)),
-                (true, true) => Some(processor.process_bn_mulvm(dec_insn)),
+            let is_lane = (dec_insn.funct7 & 0b000_0100) != 0;
+            match (is_mod, is_lane) {
+                (false, false) => Some(processor.process_bn_mulv(dec_insn)),
+                (false, true) => Some(processor.process_bn_mulvl(dec_insn)),
+                (true, false) => Some(processor.process_bn_mulvm(dec_insn)),
+                (true, true) => Some(processor.process_bn_mulvml(dec_insn)),
             }
         }
         0b101 => {

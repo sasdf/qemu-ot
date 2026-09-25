@@ -1502,7 +1502,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_trn1(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let elen_bits = match (dec_insn.funct7 >> 4) & 0b11 {
+        let elen_bits = match (dec_insn.funct7) & 0b11 {
             0 => 32,
             1 => 64,
             2 => 128,
@@ -1525,7 +1525,7 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_trn2(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let elen_bits = match (dec_insn.funct7 >> 4) & 0b11 {
+        let elen_bits = match (dec_insn.funct7) & 0b11 {
             0 => 32,
             1 => 64,
             2 => 128,
@@ -1548,10 +1548,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_mulvl(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let is_lane = (dec_insn.funct7 & 0b0000_0100) != 0;
+        let lane_idx = (dec_insn.funct7 >> 3) & 0b111;
         let mut res = ethnum::U256::ZERO;
         for i in 0..8 {
             let wa = (a >> (i * 32) as u32).as_u32();
-            let wb = (b >> (i * 32) as u32).as_u32();
+            let wb = if is_lane { (b >> (lane_idx * 32) as u32).as_u32() } else { (b >> (i * 32) as u32).as_u32() };
             let prod = (wa as u64) * (wb as u64);
             res |= ethnum::U256::from(prod as u32) << (i * 32) as u32;
         }
@@ -1562,10 +1564,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_mulv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let is_lane = (dec_insn.funct7 & 0b0000_0100) != 0;
+        let lane_idx = (dec_insn.funct7 >> 3) & 0b111;
         let mut res = ethnum::U256::ZERO;
         for i in 0..8 {
             let wa = (a >> (i * 32) as u32).as_u32();
-            let wb = (b >> (i * 32) as u32).as_u32();
+            let wb = if is_lane { (b >> (lane_idx * 32) as u32).as_u32() } else { (b >> (i * 32) as u32).as_u32() };
             let prod = (wa as u64) * (wb as u64);
             res |= ethnum::U256::from((prod >> 32) as u32) << (i * 32) as u32;
         }
@@ -1573,12 +1577,36 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         Ok(false)
     }
 
-    // TODO bn.mulvm
-    fn process_bn_mulvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
-        self.process_bn_mulv(dec_insn)
-    }
     fn process_bn_mulvml(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
-        self.process_bn_mulvl(dec_insn)
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
+        
+        let q = (m & 0xFFFFFFFF).as_u32() as u64;
+        let mu = ((m >> 32_usize) & 0xFFFFFFFF).as_u32() as u64;
+        
+        let is_lane = (dec_insn.funct7 & 0b0000_0100) != 0;
+        let lane_idx = (dec_insn.funct7 >> 3) & 0b111;
+        let mut res = ethnum::U256::ZERO;
+        
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32() as u64;
+            let wb = if is_lane { (b >> (lane_idx * 32) as u32).as_u32() } else { (b >> (i * 32) as u32).as_u32() };
+            let wb = wb as u64;
+            
+            let z = (wa as u128) * (wb as u128);
+            let m_val = (z.wrapping_mul(mu as u128)) & 0xFFFFFFFF;
+            let res_128 = z.wrapping_add(m_val * (q as u128));
+            let final_res_64 = (res_128 >> 32) as u64;
+            
+            res |= ethnum::U256::from(final_res_64 as u32) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_mulvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        self.process_bn_mulvml(dec_insn)
     }
 
 }
