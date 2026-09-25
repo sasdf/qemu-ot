@@ -143,7 +143,6 @@ struct OtAonTimerState {
     char *ot_id;
     char *clock_names[OT_AON_TIMER_CLOCK_SRC_COUNT];
     DeviceState *clock_src;
-    uint8_t version;
 };
 
 struct OtAonTimerClass {
@@ -284,8 +283,7 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s)
             if (!was_continuous_high) {
                 s->regs[R_INTR_STATE] |= INTR_WKUP_TIMER_EXPIRED_MASK;
             }
-            if ((new_count - 1u) == threshold &&
-                s->prescale_count == 0u) {
+            if ((new_count - 1u) == threshold && s->prescale_count == 0u) {
                 s->wkup_cause_pending = true;
             } else {
                 s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
@@ -465,9 +463,10 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     }
 
     uint64_t needed_clks = UINT64_MAX;
-    bool bark_done = (s->wdog_bark_level ||
-                      (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
-                     (s->version < 2u || (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK));
+    bool bark_done =
+        (s->wdog_bark_level ||
+         (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
+        (s->version < 2u || (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK));
     if (!bark_done) {
         uint64_t bark_clks = (count >= bark_threshold) ?
                                  1u :
@@ -597,8 +596,7 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_WKUP_COUNT_LO:
         val32 = s->regs[reg];
-        if (ot_aon_timer_is_wkup_enabled(s) &&
-            s->regs[R_WKUP_COUNT_HI] == 0u &&
+        if (ot_aon_timer_is_wkup_enabled(s) && s->regs[R_WKUP_COUNT_HI] == 0u &&
             FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER) == 0u &&
             val32 >= 2u && val32 <= 4u) {
             val32 = 1u;
@@ -606,8 +604,7 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_WDOG_COUNT:
         val32 = s->regs[reg];
-        if (ot_aon_timer_is_wdog_enabled(s) &&
-            val32 >= 2u && val32 <= 4u) {
+        if (ot_aon_timer_is_wdog_enabled(s) && val32 >= 2u && val32 <= 4u) {
             val32 = 1u;
         }
         break;
@@ -746,7 +743,6 @@ static const Property ot_aon_timer_properties[] = {
                        clock_names[OT_AON_TIMER_CLOCK_SRC_AON]),
     DEFINE_PROP_LINK("clock-src", OtAonTimerState, clock_src, TYPE_DEVICE,
                      DeviceState *),
-    DEFINE_PROP_UINT8("version", OtAonTimerState, version, 1u),
 };
 
 void ot_aon_timer_set_sleep_mode(OtAonTimerState *s, bool sleep_mode)
