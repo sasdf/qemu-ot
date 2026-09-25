@@ -61,7 +61,7 @@ REG32(COMPARE_UPPER0_0, 0x11cu)
 
 #define R_LAST_REG (R_COMPARE_UPPER0_0)
 #define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
+#define REGS_SIZE  0x200u /* BlockAw = 9 in rv_timer_reg_pkg.sv */
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -362,9 +362,16 @@ static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
                 /* save current mtime */
                 int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
                 uint64_t mtime = ot_timer_get_mtime(s, now);
+                uint64_t mtimecmp =
+                    s->regs[R_COMPARE_LOWER0_0] |
+                    ((uint64_t)s->regs[R_COMPARE_UPPER0_0] << 32u);
+                if (mtime >= mtimecmp) {
+                    s->regs[R_INTR_STATE0] |= INTR_CMP0_MASK;
+                }
                 s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
                 s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
                 s->origin_ns = now;
+                ot_timer_update_irqs(s);
             }
         }
         break;
@@ -428,6 +435,11 @@ static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         if (ot_timer_is_active(s)) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             uint64_t mtime = ot_timer_get_mtime(s, now);
+            uint64_t mtimecmp = s->regs[R_COMPARE_LOWER0_0] |
+                                ((uint64_t)s->regs[R_COMPARE_UPPER0_0] << 32u);
+            if (mtime >= mtimecmp) {
+                s->regs[R_INTR_STATE0] |= INTR_CMP0_MASK;
+            }
             s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
         }
         s->regs[R_TIMER_V_LOWER0] = val32;
@@ -437,6 +449,11 @@ static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         if (ot_timer_is_active(s)) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             uint64_t mtime = ot_timer_get_mtime(s, now);
+            uint64_t mtimecmp = s->regs[R_COMPARE_LOWER0_0] |
+                                ((uint64_t)s->regs[R_COMPARE_UPPER0_0] << 32u);
+            if (mtime >= mtimecmp) {
+                s->regs[R_INTR_STATE0] |= INTR_CMP0_MASK;
+            }
             s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
         }
         s->regs[R_TIMER_V_UPPER0] = val32;
