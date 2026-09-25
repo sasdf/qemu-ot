@@ -1437,11 +1437,6 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
             val32 &= R_COMMAND_MASK;
         }
 
-        if (REG_GET(s, CONTROL, SW_RST)) {
-            ot_spi_host_update_regs(s);
-            break;
-        }
-
         if (!ot_spi_host_is_ready(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: busy (cmd_fifo full)\n",
                           __func__, s->ot_id);
@@ -1467,6 +1462,11 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
                           __func__, s->ot_id, csid);
             ot_spi_host_raise_error(s, R_ERROR_STATUS_CSIDINVAL_MASK);
             csid = 0;
+        }
+
+        if (REG_GET(s, CONTROL, SW_RST)) {
+            ot_spi_host_update_regs(s);
+            break;
         }
 
         CmdFifoSlot slot = {
