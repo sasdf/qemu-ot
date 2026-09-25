@@ -1730,7 +1730,8 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
                     s->lc_tcount;
         break;
     case R_LC_STATE:
-        val32 = LC_ENCODE_STATE(s->lc_state);
+        val32 = is_terminal_fsm ? LC_ENCODE_STATE(LC_STATE_INVALID) :
+                                  LC_ENCODE_STATE(s->lc_state);
         break;
     case R_OTP_VENDOR_TEST_STATUS:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) &&
