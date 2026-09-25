@@ -172,11 +172,14 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
             for (uint32_t i = 0; i < num; i++) {
                 uint32_t val = ot_fifo32_pop(&s->wr_fifo);
                 uint32_t addr = start_addr + i * 4;
+                bool full_rram_word = ((i | 3u) < num);
                 if (part) {
-                    if (!mp_err && addr < sizeof(s->info_storage)) {
+                    if (!mp_err && full_rram_word &&
+                        addr < sizeof(s->info_storage)) {
                         ((uint32_t *)s->info_storage)[addr / 4] = val;
                     }
-                } else if (!mp_err && addr < RRAM_HOST_SIZE) {
+                } else if (!mp_err && full_rram_word &&
+                           addr < RRAM_HOST_SIZE) {
                     ((uint32_t *)s->storage)[addr / 4] = val;
                 }
             }
