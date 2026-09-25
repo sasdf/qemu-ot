@@ -1310,7 +1310,7 @@ static void ot_otp_eg_init(Object *obj)
      *     offset SW_CFG_WINDOW_OFFSET, size SW_CFG_WINDOW_SIZE
      */
     memory_region_init(&s->mmio.ctrl, obj, TYPE_OT_OTP_EG "-ctrl",
-                       SW_CFG_WINDOW_OFFSET + SW_CFG_WINDOW_SIZE);
+                       0x1000u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
     uint64_t regs_size = (es->part_descs == OT_OTP_PART_DESCS_V2) ?

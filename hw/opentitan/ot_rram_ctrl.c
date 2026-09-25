@@ -711,7 +711,7 @@ static void ot_rram_macro_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case 0x04:
         if (s->csr0_regwen) {
-            s->csr1 = val;
+            s->csr1 = val & 0x1fffu;
         }
         break;
     case 0x08:
