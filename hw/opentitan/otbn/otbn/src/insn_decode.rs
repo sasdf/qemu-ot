@@ -279,6 +279,8 @@ pub fn decoder<T: insn_proc::InstructionProcessor>(
         // OP32
         // this one is suspicious, should not it be custom-2 (0b10_110_11) instead?
         0b011_1011 => process_opcode_op32(processor, insn_bits),
+        // custom-2 / BignumVec
+        0b101_1011 => process_opcode_bignum_vec(processor, insn_bits),
         // BRANCH
         0b110_0011 => process_opcode_branch(processor, insn_bits),
         // JALR
@@ -289,6 +291,53 @@ pub fn decoder<T: insn_proc::InstructionProcessor>(
         0b111_0011 => process_opcode_system(processor, insn_bits),
         // custom-3
         0b111_1011 => process_opcode_custom3(processor, insn_bits),
+        _ => None,
+    }
+}
+
+fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
+    processor: &mut T,
+    insn_bits: u32,
+) -> Option<T::InstructionResult> {
+    let dec_insn = insn_format::RType::new(insn_bits);
+    match dec_insn.funct3 {
+        0b000 => {
+            let is_sub = (dec_insn.funct7 & 0b010_0000) != 0;
+            let is_mod = (dec_insn.funct7 & 0b000_1000) != 0;
+            match (is_sub, is_mod) {
+                (false, false) => Some(processor.process_bn_addv(dec_insn)),
+                (false, true) => Some(processor.process_bn_addvm(dec_insn)),
+                (true, false) => Some(processor.process_bn_subv(dec_insn)),
+                (true, true) => Some(processor.process_bn_subvm(dec_insn)),
+            }
+        }
+        0b011 | 0b100 => {
+            let is_mod = dec_insn.funct3 == 0b100;
+            let is_upper = (dec_insn.funct7 & 0b000_0100) != 0;
+            match (is_mod, is_upper) {
+                (false, false) => Some(processor.process_bn_mulvl(dec_insn)),
+                (false, true) => Some(processor.process_bn_mulv(dec_insn)),
+                (true, false) => Some(processor.process_bn_mulvml(dec_insn)),
+                (true, true) => Some(processor.process_bn_mulvm(dec_insn)),
+            }
+        }
+        0b101 => {
+            let is_trn2 = (dec_insn.funct7 & 0b010_0000) != 0;
+            if is_trn2 {
+                Some(processor.process_bn_trn2(dec_insn))
+            } else {
+                Some(processor.process_bn_trn1(dec_insn))
+            }
+        }
+        0b110 => {
+            let is_unpk = (dec_insn.funct7 & 0b010_0000) == 0;
+            if is_unpk {
+                Some(processor.process_bn_unpk(dec_insn))
+            } else {
+                Some(processor.process_bn_pack(dec_insn))
+            }
+        }
+        0b111 => Some(processor.process_bn_shv(dec_insn)),
         _ => None,
     }
 }

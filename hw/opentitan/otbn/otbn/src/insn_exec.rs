@@ -172,9 +172,68 @@ impl HartState {
                 Some(csr_addr),
             ))?;
 
+
         if let Err(exc) = csr.write(data) {
             return Err(InstructionTrap::Exception(exc, Some(csr_addr)));
         }
+        // MAI Trigger Hook
+        if csr_addr == 0x7E0 {
+            let start = (data & 0x1) != 0;
+            let op = (data >> 1) & 0x1F;
+            if start {
+                let in0_s0 = self.csr_set.get_wsr(12 /* mai_in0_s0 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
+                let in0_s1 = self.csr_set.get_wsr(13 /* mai_in0_s1 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
+                let in1_s0 = self.csr_set.get_wsr(14 /* mai_in1_s0 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
+                let in1_s1 = self.csr_set.get_wsr(15 /* mai_in1_s1 */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
+                let wmod = self.csr_set.get_wsr(0 /* mod */).unwrap().read().unwrap_or(ethnum::U256::ZERO);
+                
+                let mut res_s0 = ethnum::U256::ZERO;
+                let res_s1 = ethnum::U256::ZERO;
+                
+                for i in 0..8 {
+                    let w_in0_s0 = (in0_s0 >> (i * 32) as u32).as_u32();
+                    let w_in0_s1 = (in0_s1 >> (i * 32) as u32).as_u32();
+                    let w_in1_s0 = (in1_s0 >> (i * 32) as u32).as_u32();
+                    let w_in1_s1 = (in1_s1 >> (i * 32) as u32).as_u32();
+                    let w_mod = (wmod >> (i * 32) as u32).as_u32();
+                    
+                    let a = w_in0_s0 ^ w_in0_s1;
+                    let b = w_in1_s0 ^ w_in1_s1;
+                    
+                    let w_res = match op {
+                        0x17 => { // SecAdd
+                            a.wrapping_add(b)
+                        }
+                        0x1b => { // SecAddMod
+                            let sum = a.wrapping_add(b);
+                            let mod_neg = 0_u32.wrapping_sub(w_mod);
+                            let truesum = sum.wrapping_sub(mod_neg);
+                            if truesum >= w_mod { truesum - w_mod } else { truesum }
+                        }
+                        0x0b => { // ArithToBool
+                            // in0_i is an arithmetic sharing (a0, a1) where a = a0 + a1 mod mod_i.
+                            // result_o is a Boolean sharing (b0, b1) where b = b0 XOR b1 = a.
+                            let (sum, _over) = w_in0_s0.overflowing_add(w_in0_s1); // actually it's modulo mod_i?
+                            // the rtl says "where a = a0 + a1 mod mod_i" "result = a"
+                            let mut a_val = sum; 
+                            if a_val >= w_mod { a_val = a_val.wrapping_sub(w_mod); }
+                            a_val
+                        }
+                        0x10 => { // BoolToArith
+                            // in0_i is a Boolean sharing (a0, a1) where a = a0 XOR a1.
+                            // result_o is an arithmetic sharing (b0, b1) where b = b0 + b1 mod mod_i = a.
+                            a
+                        }
+                        _ => 0, // Should be caught by EMaiSoftwareError
+                    };
+                    res_s0 |= ethnum::U256::from(w_res) << (i * 32) as u32;
+                }
+                
+                let _ = self.csr_set.get_wsr_mut(10 /* mai_res_s0 */).unwrap().write(res_s0);
+                let _ = self.csr_set.get_wsr_mut(11 /* mai_res_s1 */).unwrap().write(res_s1);
+            }
+        }
+
         self.updated.csr = Some((false, csr_addr));
         Ok(())
     }
@@ -1394,4 +1453,188 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
 
         Ok(false)
     }
+
+    fn process_bn_addv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let word_a = (a >> (i * 32) as u32).as_u32();
+            let word_b = (b >> (i * 32) as u32).as_u32();
+            let word_res = word_a.wrapping_add(word_b);
+            res |= ethnum::U256::from(word_res) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_addvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            let wm = (m >> (i * 32) as u32).as_u32();
+            let (wres, over) = wa.overflowing_add(wb);
+            let wres2 = if over || wres >= wm { wres.wrapping_sub(wm) } else { wres };
+            res |= ethnum::U256::from(wres2) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_subv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let word_a = (a >> (i * 32) as u32).as_u32();
+            let word_b = (b >> (i * 32) as u32).as_u32();
+            let word_res = word_a.wrapping_sub(word_b);
+            res |= ethnum::U256::from(word_res) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_subvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            let wm = (m >> (i * 32) as u32).as_u32();
+            let (wres, over) = wa.overflowing_sub(wb);
+            let wres2 = if over { wres.wrapping_add(wm) } else { wres };
+            res |= ethnum::U256::from(wres2) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_shv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let shift_amt = dec_insn.rs1 as u32; // rs1 is the shift amount
+        let res = a.wrapping_shr(shift_amt);
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_pack(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            // In Verilog, {A, B} means A is in the upper bits, B is in the lower bits.
+            // A is rs1 (wa), B is rs2 (wb).
+            let wres = (wb & 0xFFFF) | ((wa & 0xFFFF) << 16);
+            res |= ethnum::U256::from(wres) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_unpk(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            // {A, B} where A = wa[31:16] to upper, B = wb[31:16] to lower
+            let wres = (wb >> 16) | (wa & 0xFFFF0000);
+            res |= ethnum::U256::from(wres) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_trn1(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let elen_bits = match (dec_insn.funct7 >> 4) & 0b11 {
+            0 => 32,
+            1 => 64,
+            2 => 128,
+            _ => 32, // Unknown
+        };
+        let mut res = ethnum::U256::ZERO;
+        let mut i = 0;
+        let mask = (ethnum::U256::ONE << elen_bits) - ethnum::U256::ONE;
+        while i < 256 {
+            let chunk_a = (a >> i) & mask;
+            let chunk_b = (b >> i) & mask;
+            res |= chunk_a << i;
+            res |= chunk_b << (i + elen_bits);
+            i += elen_bits * 2;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_trn2(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let elen_bits = match (dec_insn.funct7 >> 4) & 0b11 {
+            0 => 32,
+            1 => 64,
+            2 => 128,
+            _ => 32, // Unknown
+        };
+        let mut res = ethnum::U256::ZERO;
+        let mut i = 0;
+        let mask = (ethnum::U256::ONE << elen_bits) - ethnum::U256::ONE;
+        while i < 256 {
+            let chunk_a = (a >> (i + elen_bits)) & mask;
+            let chunk_b = (b >> (i + elen_bits)) & mask;
+            res |= chunk_a << i;
+            res |= chunk_b << (i + elen_bits);
+            i += elen_bits * 2;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_mulvl(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            let prod = (wa as u64) * (wb as u64);
+            res |= ethnum::U256::from(prod as u32) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    fn process_bn_mulv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
+        let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
+        let mut res = ethnum::U256::ZERO;
+        for i in 0..8 {
+            let wa = (a >> (i * 32) as u32).as_u32();
+            let wb = (b >> (i * 32) as u32).as_u32();
+            let prod = (wa as u64) * (wb as u64);
+            res |= ethnum::U256::from((prod >> 32) as u32) << (i * 32) as u32;
+        }
+        self.hart_state.write_wide_register(dec_insn.rd, res)?;
+        Ok(false)
+    }
+
+    // TODO bn.mulvm
+    fn process_bn_mulvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        self.process_bn_mulv(dec_insn)
+    }
+    fn process_bn_mulvml(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
+        self.process_bn_mulvl(dec_insn)
+    }
+
 }

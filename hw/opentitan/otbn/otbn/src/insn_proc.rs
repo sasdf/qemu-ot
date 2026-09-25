@@ -74,6 +74,21 @@ pub trait InstructionProcessor {
     fn process_bn_subm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
     fn process_bn_subi(&mut self, dec_insn: insn_format::IType) -> Self::InstructionResult;
 
+    fn process_bn_addv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_addvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_subv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_subvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_mulv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_mulvl(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_mulvm(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_mulvml(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_trn1(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_trn2(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_pack(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_unpk(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+    fn process_bn_shv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
+
+
     // op-32
     fn process_bn_mulqacc(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;
     fn process_bn_mulqacc_wo(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult;

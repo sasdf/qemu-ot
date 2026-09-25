@@ -341,7 +341,7 @@ impl Executer {
                     ExceptionCause::EBadDataAddr => (false, ErrBits::BAD_DATA_ADDR.bits()),
                     ExceptionCause::EBadInsnAddr => (false, ErrBits::BAD_INSN_ADDR.bits()),
                     ExceptionCause::ECallStack => (false, ErrBits::CALL_STACK.bits()),
-                    ExceptionCause::EIllegalInsn => (false, ErrBits::ILLEGAL_INSN.bits()),
+                    ExceptionCause::EIllegalInsn => { println!("Illegal Insn: {:#010x}", val.unwrap_or(0)); (false, ErrBits::ILLEGAL_INSN.bits()) },
                     ExceptionCause::ELoop => (false, ErrBits::LOOP.bits()),
                     ExceptionCause::EKeyInvalid => (false, ErrBits::KEY_INVALID.bits()),
                     ExceptionCause::ERndRepChkFail => (false, ErrBits::RND_REP_CHK_FAIL.bits()),

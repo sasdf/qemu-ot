@@ -479,4 +479,19 @@ impl insn_proc::InstructionProcessor for InstructionStringOutputter {
             dec_insn.rd, dec_insn.rs1, dec_insn.rs2, shimm
         )
     }
+
+    fn process_bn_addv(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.addv".to_string() }
+    fn process_bn_addvm(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.addvm".to_string() }
+    fn process_bn_subv(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.subv".to_string() }
+    fn process_bn_subvm(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.subvm".to_string() }
+    fn process_bn_mulv(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.mulv".to_string() }
+    fn process_bn_mulvl(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.mulvl".to_string() }
+    fn process_bn_mulvm(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.mulvm".to_string() }
+    fn process_bn_mulvml(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.mulvml".to_string() }
+    fn process_bn_trn1(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.trn1".to_string() }
+    fn process_bn_trn2(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.trn2".to_string() }
+    fn process_bn_pack(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.pack".to_string() }
+    fn process_bn_unpk(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.unpk".to_string() }
+    fn process_bn_shv(&mut self, _dec_insn: insn_format::RType) -> Self::InstructionResult { "bn.shv".to_string() }
+
 }
