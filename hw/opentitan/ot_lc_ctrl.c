@@ -1506,22 +1506,25 @@ static inline size_t ot_lc_ctrl_get_keccak_rate_bytes(size_t kstrength)
 
 static void ot_lc_ctrl_compute_predefined_tokens(OtLcCtrlState *s)
 {
-    if (!s->raw_unlock_token_xstr) {
+    static const char DEFAULT_RAW_UNLOCK_TOKEN_XSTR[] =
+        "e4225dc332ea1fda63b4c524556ed4d4";
+    const char *raw_unlock_xstr = s->raw_unlock_token_xstr;
+    if (!raw_unlock_xstr) {
         trace_ot_lc_ctrl_token_missing(s->ot_id, "raw_unlock_token");
-        return;
+        raw_unlock_xstr = DEFAULT_RAW_UNLOCK_TOKEN_XSTR;
     }
 
     uint8_t all_zero_token[sizeof(OtOTPTokenValue)];
     uint8_t raw_unlock_token[sizeof(OtOTPTokenValue)];
 
-    size_t len = strlen(s->raw_unlock_token_xstr);
+    size_t len = strlen(raw_unlock_xstr);
     if (len != sizeof(OtOTPTokenValue) * 2u) {
         error_setg(&error_fatal, "%s: %s invalid raw_unlock_token length\n",
                    __func__, s->ot_id);
         return;
     }
 
-    if (ot_common_parse_hexa_str(raw_unlock_token, s->raw_unlock_token_xstr,
+    if (ot_common_parse_hexa_str(raw_unlock_token, raw_unlock_xstr,
                                  sizeof(OtOTPTokenValue), true, false)) {
         error_setg(&error_fatal, "%s: %s unable to parse raw_unlock_token\n",
                    __func__, s->ot_id);
