@@ -390,6 +390,10 @@ PWRMGR_RESET_DISPATCH[OT_PWRMGR_VERSION_COUNT][PWRMGR_RST_REQ_MAX] = {
         [0] = OT_RSTMGR_RESET_AON_TIMER,
         [1] = OT_RSTMGR_RESET_SOC_PROXY,
     },
+    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+        [0] = OT_RSTMGR_RESET_SYSCTRL,
+        [1] = OT_RSTMGR_RESET_AON_TIMER,
+    },
 };
 
 static const char *
@@ -410,6 +414,14 @@ PWRMGR_WAKEUP_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_WAKEUP_MAX] = {
         [4] = "SOC_PROXY_INT",
         [5] = "SOC_PROXY_EXT",
     },
+    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+        [0] = "SYSRST",
+        [1] = "ADC_CTRL",
+        [2] = "PINMUX",
+        [3] = "USBDEV",
+        [4] = "AON_TIMER",
+        [5] = "SENSOR",
+    },
 };
 
 static const char *
@@ -421,7 +433,11 @@ PWRMGR_RST_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_RST_REQ_MAX] = {
     [OT_PWRMGR_VERSION_DJ] = {
         [0] = "AON_TIMER",
         [1] = "SOC_PROXY",
-    }
+    },
+    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+        [0] = "SYSRST",
+        [1] = "AON_TIMER",
+    },
 };
 /* clang-format on */
 
