@@ -243,6 +243,25 @@ static void ot_gpio_eg_update_intr_edge(OtGpioEgState *s, uint32_t prev)
     s->regs[R_INTR_STATE] |= intr_state;
 }
 
+static uint32_t
+ot_gpio_eg_normalize_outsel(const OtGpioEgState *s, uint32_t outsel)
+{
+    if (s->version >= 2u) {
+        if (outsel == 49u || outsel == 50u) {
+            /* Earlgrey v2: SpiHost1Sck (49) / SpiHost1Csb (50) -> v1 (53/54) */
+            return outsel + 4u;
+        }
+        if (outsel >= 61u && outsel <= 66u) {
+            /*
+             * Earlgrey v2: SysrstCtrlBatDisable..Z3Wakeup (61..66) ->
+             * v1 (72..77)
+             */
+            return outsel + 11u;
+        }
+    }
+    return outsel;
+}
+
 static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
 {
     uint32_t periph_out_v = s->data_out ^ s->invert;
@@ -260,7 +279,8 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
         int level = 0;
 
         if (s->pinmux) {
-            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            uint32_t outsel = ot_gpio_eg_normalize_outsel(
+                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, p));
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
             unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
                               (unsigned)g_pull :
@@ -282,7 +302,9 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                     driven_by_dev = true;
                     level = (int)((periph_out_v >> g) & 1u);
                 }
-            } else if (outsel >= 35u && outsel <= 42u && s->sysrst_ctrl) {
+            } else if (((outsel >= 35u && outsel <= 42u) ||
+                        (outsel >= 72u && outsel <= 77u)) &&
+                       s->sysrst_ctrl) {
                 driven_by_dev = true;
                 level = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
             } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
@@ -332,7 +354,9 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
     if (pad_in_dis) {
         return pad_inv ? 1 : 0;
     }
-    uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+    uint32_t outsel =
+        ot_gpio_eg_normalize_outsel(s, ot_pinmux_eg_get_mio_outsel(s->pinmux,
+                                                                   mio_pad));
     if (outsel == 0u) {
         return 0;
     }
@@ -814,8 +838,8 @@ static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
         return false;
     }
     for (unsigned bit = 0; bit < s->bb_npins; bit++) {
-        uint32_t outsel =
-            ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]);
+        uint32_t outsel = ot_gpio_eg_normalize_outsel(
+            s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]));
         if (outsel == 41u || outsel == 42u || outsel == 53u || outsel == 54u) {
             return true;
         }
@@ -833,7 +857,8 @@ static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
             break;
         }
         if (s->pinmux) {
-            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+            uint32_t outsel = ot_gpio_eg_normalize_outsel(
+                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad));
             if (outsel >= 35u && outsel <= 40u) {
                 has_i2c_pad = true;
                 break;
@@ -889,7 +914,10 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         }
     }
     if (s->pinmux) {
-        uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+        uint32_t outsel =
+            ot_gpio_eg_normalize_outsel(s,
+                                        ot_pinmux_eg_get_gpio_outsel(s->pinmux,
+                                                                     pad));
         if (outsel == 0u) {
             return false;
         }
@@ -1378,7 +1406,8 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
                 }
                 continue;
             }
-            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            uint32_t outsel = ot_gpio_eg_normalize_outsel(
+                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, p));
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
             unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
                               (unsigned)g_pull :
