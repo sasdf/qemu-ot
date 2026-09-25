@@ -612,11 +612,20 @@ void helper_wfi(CPURISCVState *env)
     } else {
         if (!unlikely(env->debugger || env->debug_cs)) {
             env->wfi_pc = env->pc - 4;
-            uint32_t insn = cpu_ldl_code(env, env->wfi_pc - 4);
-            if ((insn & 0x7f) == 0x23) {
-                int32_t imm = (((int32_t)insn >> 25) << 5) |
-                              ((insn >> 7) & 0x1f);
-                env->last_data_addr = env->gpr[(insn >> 15) & 0x1f] + imm;
+            uint16_t insn16 = cpu_lduw_code(env, env->wfi_pc - 2);
+            if ((insn16 & 0xe003u) == 0xc000u) {
+                uint32_t rs1 = ((insn16 >> 7u) & 0x7u) + 8u;
+                uint32_t uimm = (((insn16 >> 10u) & 0x7u) << 3u) |
+                                (((insn16 >> 6u) & 0x1u) << 2u) |
+                                (((insn16 >> 5u) & 0x1u) << 6u);
+                env->last_data_addr = env->gpr[rs1] + uimm;
+            } else {
+                uint32_t insn = cpu_ldl_code(env, env->wfi_pc - 4);
+                if ((insn & 0x7f) == 0x23) {
+                    int32_t imm = (((int32_t)insn >> 25) << 5) |
+                                  ((insn >> 7) & 0x1f);
+                    env->last_data_addr = env->gpr[(insn >> 15) & 0x1f] + imm;
+                }
             }
             cs->halted = 1;
             cs->exception_index = EXCP_HLT;

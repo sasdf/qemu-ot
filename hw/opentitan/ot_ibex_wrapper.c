@@ -238,6 +238,8 @@ struct OtIbexWrapperState {
     uint32_t rnd_inval_reads;
     uint64_t rnd_inval_until_ns;
     bool esc_rx;
+    bool cheriot_locked;
+    bool cheriot_switch_error;
     uint32_t nmi_in;
 
     qemu_irq cheriot_ena_out;
@@ -308,9 +310,10 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
     if (s->regs.sw_recov_err != OT_MULTIBITBOOL4_FALSE) {
         level |= ALERT_RECOV_SW_MASK;
     }
-    if (s->regs.err_status &
-        (ERR_STATUS_REG_INTG_MASK | ERR_STATUS_FATAL_INTG_MASK |
-         ERR_STATUS_FATAL_CORE_MASK)) {
+    if ((s->regs.err_status &
+         (ERR_STATUS_REG_INTG_MASK | ERR_STATUS_FATAL_INTG_MASK |
+          ERR_STATUS_FATAL_CORE_MASK)) ||
+        s->cheriot_switch_error) {
         level |= ALERT_FATAL_HW_MASK;
     }
 
@@ -1128,8 +1131,12 @@ static void ot_ibex_wrapper_write_sw_fatal_err(OtIbexWrapperState *s,
         if (value > 127u) {
             value = 127u;
         }
-        qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
-                                               (int)value);
+        ot_ibex_wrapper_status_report(s, value == 0 ? TEST_STATUS_PASSED :
+                                                      TEST_STATUS_FAILED);
+        if (s->dv_sim_status_exit) {
+            qemu_system_shutdown_request_with_code(
+                SHUTDOWN_CAUSE_GUEST_SHUTDOWN, (int)value);
+        }
     }
 
     /* real HW */
@@ -1341,37 +1348,25 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
     (*s->access_table[reg].write)(s, reg, val32);
 };
 
-static void ot_ibex_wrapper_update_cheriot_ena(OtIbexWrapperState *s,
-                                               unsigned reg, uint32_t val32)
-{
-    (void)reg;
-    /*
-     * In rv_core_ibex_cfg_reg_top.sv:1310-1335,1745, CHERIOT_ENA has no regwen
-     * input, so cheriot_ena_qs (s->regs.cheriot_ena) always updates on writes
-     * even after u_cheriot_switch has locked cheriot_ena_o (cheriot_ena_out).
-     */
-    s->regs.cheriot_ena = val32;
-}
-
 static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
                                                 unsigned reg, uint32_t val32)
 {
     (void)reg;
-    if (s->regs.cheriot_lock == 0x6) {
-        return; // Ignore all writes if already locked (erratum behavior)
-    }
-
-    if ((val32 != 0x9 && val32 != 0x6) ||
-        (val32 == 0x6 && s->regs.cheriot_ena != 0x9 &&
-         s->regs.cheriot_ena != 0x6)) {
-        s->regs.err_status |= ERR_STATUS_FATAL_CORE_MASK;
-        ot_ibex_wrapper_update_alerts(s);
-    }
-
     s->regs.cheriot_lock = val32;
-    if (val32 == 0x6) {
-        int ena = (s->regs.cheriot_ena == 0x6) ? 0x6 : 0x9;
-        qemu_set_irq(s->cheriot_ena_out, ena);
+    if (s->cheriot_locked) {
+        return;
+    }
+    s->cheriot_locked = true;
+    if (val32 == OT_MULTIBITBOOL4_TRUE &&
+        s->regs.cheriot_ena == OT_MULTIBITBOOL4_TRUE) {
+        qemu_set_irq(s->cheriot_ena_out, OT_MULTIBITBOOL4_TRUE);
+    } else if (val32 == OT_MULTIBITBOOL4_TRUE &&
+               s->regs.cheriot_ena == OT_MULTIBITBOOL4_FALSE) {
+        qemu_set_irq(s->cheriot_ena_out, OT_MULTIBITBOOL4_FALSE);
+    } else {
+        s->cheriot_switch_error = true;
+        qemu_set_irq(s->cheriot_ena_out, 0);
+        ot_ibex_wrapper_update_alerts(s);
     }
 }
 
@@ -1515,8 +1510,6 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_write_dv_sim_status;
     s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].write =
         &ot_ibex_wrapper_write_dv_sim_log;
-    s->access_table[R32_DYN_POS(s, cheriot_ena)].write =
-        &ot_ibex_wrapper_update_cheriot_ena;
     s->access_table[R32_DYN_POS(s, cheriot_lock)].write =
         &ot_ibex_wrapper_update_cheriot_lock;
     s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].write =
@@ -1683,6 +1676,8 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->regs.sw_fatal_err = OT_MULTIBITBOOL4_FALSE;
     s->regs.cheriot_ena = 0x9;
     s->regs.cheriot_lock = 0x9;
+    s->cheriot_locked = false;
+    s->cheriot_switch_error = false;
     s->regs.mcounteren_writable_regwen = 0x1u;
     s->regs.mcounteren_writable = OT_MULTIBITBOOL4_TRUE;
     riscv_cpu_set_mcounteren_writable(s->cpu, true);

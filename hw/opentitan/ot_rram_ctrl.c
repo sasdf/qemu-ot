@@ -146,7 +146,7 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
-    uint32_t start_addr = s->regs[R_ADDR] & ~3;
+    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) & ~3u;
     bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
     if (op == 1 || op == 2 || op == 3) {
@@ -166,6 +166,9 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
                 } else if (!mp_err && addr < RRAM_HOST_SIZE) {
                     ((uint32_t *)s->storage)[addr / 4] = val;
                 }
+            }
+            if (!part && start_addr < RRAM_HOST_SIZE) {
+                memory_region_set_dirty(&s->host_iomem, start_addr, num * 4);
             }
 
             if (!part && !mp_err && s->blk) {
@@ -210,7 +213,7 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
     uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
-    uint32_t start_addr = s->regs[R_ADDR] & ~3;
+    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) & ~3u;
     bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
     if (op == 0) { /* READ */
@@ -360,7 +363,7 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         break;
 
     case R_ADDR * 4:
-        s->regs[R_ADDR] = val32 & ~3;
+        s->regs[R_ADDR] = val32 & (RRAM_HOST_SIZE - 1u) & ~3u;
         break;
 
     case 0x1c: /* CTRL_REGWEN (rw0c) */
@@ -471,7 +474,7 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
     s->regs[R_DIS] = 0x9u;
     s->regs[R_EXEC] = 0x9u;
     s->regs[R_STATUS] = 0x1au;
-    s->regs[R_PHY_STATUS] = 0x1u;
+    s->regs[R_PHY_STATUS] = 0x2u;
     s->regs[R_CTRL_REGWEN] = 1u;
     for (int i = 0; i < 10; i++) {
         s->regs[(0x28 / 4) + i] = 1u;

@@ -104,10 +104,10 @@ REG32(LOAD_CHECKSUM, 0x28u)
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
-#define OT_OTBN_REGS_BASE    0x0u
-#define OT_OTBN_SCRATCH_BASE 0x2000u
-#define OT_OTBN_IMEM_BASE    0x4000u
-#define OT_OTBN_DMEM_BASE    0x8000u
+#define OT_OTBN_REGS_BASE     0x0u
+#define OT_OTBN_SCRATCH_BASE  0x2000u
+#define OT_OTBN_IMEM_BASE     0x4000u
+#define OT_OTBN_DMEM_BASE     0x8000u
 #define OT_OTBN_SCRATCH_COUNT 4u
 #define OT_OTBN_SCRATCH_SIZE  (OT_OTBN_SCRATCH_COUNT * sizeof(uint32_t))
 
@@ -477,9 +477,10 @@ static void ot_otbn_handle_command(OtOTBNState *s, unsigned command)
     if (s->version == 2u && command == (unsigned)OT_OTBN_CMD_RESUME) {
         if (s->lc_escalated ||
             ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_PAUSED) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "%s: %s: cannot execute RESUME from a non-PAUSED state\n",
-                          __func__, s->ot_id);
+            qemu_log_mask(
+                LOG_GUEST_ERROR,
+                "%s: %s: cannot execute RESUME from a non-PAUSED state\n",
+                __func__, s->ot_id);
             return;
         }
         if (s->last_cmd != OT_OTBN_CMD_NONE) {
@@ -666,8 +667,7 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
             break;
         }
         val32 = ot_otbn_sync_proxy(s);
-        if ((val32 == OT_OTBN_STATUS_IDLE ||
-             val32 == OT_OTBN_STATUS_PAUSED ||
+        if ((val32 == OT_OTBN_STATUS_IDLE || val32 == OT_OTBN_STATUS_PAUSED ||
              val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) &&
             (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
              s->last_cmd == OT_OTBN_CMD_RESUME ||
