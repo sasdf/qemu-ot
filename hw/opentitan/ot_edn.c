@@ -225,7 +225,7 @@ typedef struct {
     bool sw_ack; /* last SW command has been completed */
     bool instantiated; /* instantiated state, not yet uninstantiated */
     bool no_fips; /* true if 1+ rcv entropy packets were no FIPS-compliant */
-    uint32_t prev_bits[OT_CSRNG_PACKET_WORD_COUNT];
+    uint32_t prev_bits[2]; /* 64-bit cs_rdata_capt_q (packer_cs_rdata[63:0]) */
     bool prev_bits_valid;
 } OtEDNCSRNG;
 
@@ -836,7 +836,7 @@ static void ot_edn_send_auto_generate_cmd(OtEDNState *s)
     xtrace_ot_edn_xinfo(c->appid, "COMMAND", c->buffer[0]);
 
     ot_edn_update_genbits_ready(s);
-    ot_edn_change_state(s, EDN_AUTO_SEND_RESEED_CMD);
+    ot_edn_change_state(s, EDN_AUTO_SEND_GEN_CMD);
 
     for (unsigned epix = 0; epix < ARRAY_SIZE(s->endpoints); epix++) {
         s->endpoints[epix].gen_count = 0;
@@ -1286,8 +1286,9 @@ static void ot_edn_handle_ep_request(void *opaque)
                     pkt[ix] = ot_fifo32_pop(&c->bits_fifo);
                 }
                 /*
-                 * In hw/ip/edn/rtl/edn_core.sv, csrng_fips_prev is a 128-bit
-                 * register comparing consecutive CSRNG packets across commands.
+                 * In hw/ip/edn/rtl/edn_core.sv:209,927,936, cs_rdata_capt_q is
+                 * a 64-bit register (packer_cs_rdata[63:0]) comparing the lower
+                 * 64 bits of consecutive CSRNG packets.
                  */
                 if (c->prev_bits_valid &&
                     memcmp(c->prev_bits, pkt, sizeof(c->prev_bits)) == 0) {
@@ -1418,6 +1419,7 @@ static void ot_edn_csrng_ack_irq(void *opaque, int n, int level)
     case EDN_BOOT_UNI_ACK_WAIT:
         c->hw_cmd_status = cmd_status;
         c->hw_ack = true;
+        s->max_reqs_cnt = s->regs[R_MAX_NUM_REQS_BETWEEN_RESEEDS];
         ot_edn_reset_replay_fifos(s);
         ot_edn_change_state(s, EDN_IDLE);
         ot_edn_update_mode(s);
