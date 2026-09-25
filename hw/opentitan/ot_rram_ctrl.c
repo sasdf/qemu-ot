@@ -106,15 +106,27 @@ static void ot_rram_ctrl_update_status(OtRramCtrlState *s)
         FIELD_DP32(status, STATUS, WR_EMPTY, ot_fifo32_is_empty(&s->wr_fifo));
     s->regs[R_STATUS] = status;
 
-    uint32_t cur_lvl = 0;
-    cur_lvl |= (ot_fifo32_num_used(&s->rd_fifo) & 0x1fu) << 8;
-    cur_lvl |= ot_fifo32_num_used(&s->wr_fifo) & 0x1fu;
-    s->regs[R_CURR_FIFO_LVL] = cur_lvl;
+    uint32_t wr_used = ot_fifo32_num_used(&s->wr_fifo) & 0x1fu;
+    uint32_t rd_used = ot_fifo32_num_used(&s->rd_fifo) & 0x1fu;
+    s->regs[R_CURR_FIFO_LVL] = (rd_used << 8) | wr_used;
 
-    /* Basic thresholds */
+    uint32_t wr_lvl = s->regs[R_FIFO_LVL] & 0x1fu;
+    uint32_t rd_lvl = (s->regs[R_FIFO_LVL] >> 8) & 0x1fu;
+    uint32_t status_irqs = 0;
     if (ot_fifo32_is_empty(&s->wr_fifo)) {
-        s->regs[R_INTR_STATE] |= INTR_WR_EMPTY_MASK;
+        status_irqs |= INTR_WR_EMPTY_MASK;
     }
+    if (wr_used <= wr_lvl) {
+        status_irqs |= INTR_WR_LVL_MASK;
+    }
+    if (ot_fifo32_is_full(&s->rd_fifo)) {
+        status_irqs |= INTR_RD_FULL_MASK;
+    }
+    if (rd_used >= rd_lvl) {
+        status_irqs |= INTR_RD_LVL_MASK;
+    }
+    s->regs[R_INTR_STATE] = (s->regs[R_INTR_STATE] & 0x30u) | status_irqs |
+                            (s->regs[R_INTR_TEST] & 0xfu);
     ot_rram_ctrl_update_irqs(s);
 }
 
@@ -337,16 +349,21 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         break;
 
     case R_INTR_STATE * 4:
-        s->regs[R_INTR_STATE] &= ~val32;
-        ot_rram_ctrl_update_irqs(s);
+        s->regs[R_INTR_STATE] &= ~(val32 & 0x30u);
+        ot_rram_ctrl_update_status(s);
         break;
     case R_INTR_ENABLE * 4:
-        s->regs[R_INTR_ENABLE] = val32;
+        s->regs[R_INTR_ENABLE] = val32 & 0x3fu;
         ot_rram_ctrl_update_irqs(s);
         break;
     case R_INTR_TEST * 4:
-        s->regs[R_INTR_STATE] |= val32;
-        ot_rram_ctrl_update_irqs(s);
+        s->regs[R_INTR_TEST] = val32 & 0xfu;
+        s->regs[R_INTR_STATE] |= val32 & 0x30u;
+        ot_rram_ctrl_update_status(s);
+        break;
+    case R_FIFO_LVL * 4:
+        s->regs[R_FIFO_LVL] = val32 & 0x1f1fu;
+        ot_rram_ctrl_update_status(s);
         break;
     case R_ALERT_TEST * 4:
         for (int i = 0; i < 5; i++) {
@@ -485,6 +502,7 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
     s->regs[R_EXEC] = 0x9u;
     s->regs[R_STATUS] = 0x1au;
     s->regs[R_PHY_STATUS] = 0x2u;
+    s->regs[R_FIFO_LVL] = 0x0f0fu;
     s->regs[R_CTRL_REGWEN] = 1u;
     for (int i = 0; i < 10; i++) {
         s->regs[(0x28 / 4) + i] = 1u;
