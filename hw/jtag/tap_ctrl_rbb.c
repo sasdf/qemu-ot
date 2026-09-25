@@ -287,8 +287,12 @@ static void tap_ctrl_rbb_capture_dr(TapCtrlRbbState *tap)
     if (!tdh) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Unknown IR 0x%02x\n", __func__,
                       (unsigned)tap->ir_hold);
-        tap->dr = 0;
-        return;
+        /* Fallback to BYPASS instruction */
+        tdh = tap_ctrl_rbb_get_data_handler(tap, TAP_CTRL_BYPASS_INST);
+        if (!tdh) {
+            /* Should never happen as BYPASS is always registered */
+            tdh = (TapDataHandler *)&TAP_CTRL_RBB_BYPASS;
+        }
     }
 
     if (tdh != prev) {
