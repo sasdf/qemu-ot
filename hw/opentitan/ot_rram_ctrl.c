@@ -448,10 +448,73 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
     s->last_wr_err_addr = 0;
     s->last_rd_err_addr = 0;
 
+    /* rram_macro_prim_reg_top.sv: CSR0_REGWEN=1 (rw0c), CSR1=0 (rw), CSR2=0
+     * (w1c) */
+    s->prim_regs[0] = 1u;
+    s->prim_regs[1] = 0u;
+    s->prim_regs[2] = 0u;
+
     ot_fifo32_reset(&s->wr_fifo);
     ot_fifo32_reset(&s->rd_fifo);
     ot_rram_ctrl_update_status(s);
 }
+
+static MemTxResult rram_ctrl_prim_read(void *opaque, hwaddr addr, uint64_t *val,
+                                       unsigned size, MemTxAttrs attrs)
+{
+    (void)size;
+    (void)attrs;
+    OtRramCtrlState *s = opaque;
+    if (addr >= 0x0cu || (addr & 0x3u) != 0u) {
+        return MEMTX_ERROR;
+    }
+    *val = s->prim_regs[addr >> 2u];
+    return MEMTX_OK;
+}
+
+static MemTxResult rram_ctrl_prim_write(void *opaque, hwaddr addr, uint64_t val,
+                                        unsigned size, MemTxAttrs attrs)
+{
+    (void)attrs;
+    OtRramCtrlState *s = opaque;
+    uint32_t v32 = (uint32_t)val;
+    if (addr >= 0x0cu || (addr & 0x3u) != 0u) {
+        return MEMTX_ERROR;
+    }
+    /* RRAM_MACRO_PRIM_PERMIT = '{4'b0001, 4'b0011, 4'b0001} */
+    if ((addr == 0x0u || addr == 0x8u) && size != 1u && size != 4u) {
+        /* Subword byte mask > permit triggers reg_error if upper bytes touched;
+         * standard 32-bit word accesses have size == 4 and are permitted. */
+    }
+    switch (addr) {
+    case 0x0u: /* CSR0_REGWEN (rw0c, 1 bit) */
+        if ((v32 & 1u) == 0u) {
+            s->prim_regs[0] = 0u;
+        }
+        break;
+    case 0x4u: /* CSR1 (rw, [12:0], gated by CSR0_REGWEN) */
+        if (s->prim_regs[0] & 1u) {
+            s->prim_regs[1] = v32 & 0x1fffu;
+        }
+        break;
+    case 0x8u: /* CSR2 (w1c, [7:0]) */
+        s->prim_regs[2] &= ~(v32 & 0xffu);
+        break;
+    default:
+        return MEMTX_ERROR;
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps rram_ctrl_prim_ops = {
+    .read_with_attrs = &rram_ctrl_prim_read,
+    .write_with_attrs = &rram_ctrl_prim_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl = {
+        .min_access_size = 1u,
+        .max_access_size = 4u,
+    },
+};
 
 static void ot_rram_ctrl_lc_broadcast(void *opaque, int n, int level)
 {
@@ -484,6 +547,10 @@ static void ot_rram_ctrl_realize(DeviceState *dev, Error **errp)
                                         &s->otp_iomem, 1);
 
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->host_iomem);
+
+    memory_region_init_io(&s->prim_iomem, OBJECT(dev), &rram_ctrl_prim_ops, s,
+                          TYPE_OT_RRAM_CTRL ".prim", 0x2000u);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->prim_iomem);
 
     for (int i = 0; i < 6; i++) {
         ibex_sysbus_init_irq(OBJECT(s), &s->irqs[i]);

@@ -2121,7 +2121,17 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         .cfg = &ot_eg_soc_flash_ctrl_configure,
         .memmap = MEMMAPENTRIES(
             { .base = 0x41010000u },
-            { .base = 0x30000000u }
+            { .base = 0x30000000u },
+            { .base = 0x41018000u }
+        ),
+    },
+    [OT_EG_SOC_DEV_LC_CTRL] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("silicon_creator_id", 0x4001u),
+            IBEX_DEV_UINT_PROP("product_id", 0x0010u),
+            IBEX_DEV_UINT_PROP("revision_id", 0x01u),
+            IBEX_DEV_BOOL_PROP("volatile_raw_unlock", false),
+            IBEX_DEV_UINT_PROP("kmac-app", 1u)
         ),
     },
     [OT_EG_SOC_DEV_KEYMGR] = {
@@ -2209,15 +2219,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
     },
     [OT_EG_SOC_DEV_RRAM_MACRO] = {
-        .type = TYPE_OT_UNIMP,
-        .memmap = MEMMAPENTRIES(
-            { .base = 0x41018000u }
-        ),
-        .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "rram_macro"),
-            IBEX_DEV_UINT_PROP("size", 0x2000u),
-            IBEX_DEV_BOOL_PROP("warn-once", true)
-        ),
+        .type = NULL,
     },
     [OT_EG_SOC_DEV_SRAM_SEC_CTRL] = {
         .type = TYPE_OT_SRAM_CTRL,

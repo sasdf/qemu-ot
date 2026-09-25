@@ -752,6 +752,12 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
             c->dai_write(s);
         } else if (FIELD_EX32(val32, OT_OTP_DIRECT_ACCESS_CMD, DIGEST)) {
             c->dai_digest(s);
+        } else if ((s->part_descs == OT_OTP_PART_DESCS_V2) && (val32 & 0x8u)) {
+            s->regs[R_DIRECT_ACCESS_RDATA_0] = 0u;
+            s->regs[R_DIRECT_ACCESS_RDATA_1] = 0u;
+            c->set_error(s, OTP_ENTRY_DAI, OT_OTP_ACCESS_ERROR);
+            s->regs[R_INTR_STATE] |= INTR_OTP_OPERATION_DONE_MASK;
+            c->update_irqs(s);
         }
         break;
     case R_DIRECT_ACCESS_ADDRESS:
@@ -1238,15 +1244,51 @@ static void ot_otp_eg_reset_enter(Object *obj, ResetType type)
     }
 }
 
+static int ot_otp_eg_check_global_v2(void *opaque, QemuOpts *opts, Error **errp)
+{
+    (void)errp;
+    bool *is_v2 = opaque;
+    const char *driver = qemu_opt_get(opts, "driver");
+    const char *prop = qemu_opt_get(opts, "property");
+    const char *val = qemu_opt_get(opts, "value");
+    if (driver && prop && val && !strcmp(driver, "ot-earlgrey-soc") &&
+        !strcmp(prop, "version") && !strcmp(val, "2")) {
+        *is_v2 = true;
+    }
+    return 0;
+}
+
 static void ot_otp_eg_init(Object *obj)
 {
     OtOTPEgState *s = OT_OTP_EG(obj);
     OtOTPEngineState *es = OT_OTP_ENGINE(obj);
 
     /* note: device realization is implemented in OtOTPEngineState */
+    bool is_v2 = false;
     QemuOptsList *optlist = qemu_find_opts("ot_device");
     if (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) {
+        is_v2 = true;
+    }
+    QemuOptsList *globlist = qemu_find_opts("global");
+    if (globlist) {
+        qemu_opts_foreach(globlist, &ot_otp_eg_check_global_v2, &is_v2, NULL);
+    }
+    if (is_v2) {
         es->part_descs = OT_OTP_PART_DESCS_V2;
+        for (unsigned part_ix = 0; part_ix < es->part_count; part_ix++) {
+            if (!es->part_descs[part_ix].buffered) {
+                continue;
+            }
+            size_t part_words =
+                (es->part_descs[part_ix].size -
+                 (es->part_descs[part_ix].hw_digest ||
+                          es->part_descs[part_ix].sw_digest ?
+                      sizeof(uint64_t) :
+                      0u)) /
+                sizeof(uint32_t);
+            g_free(es->part_ctrls[part_ix].buffer.data);
+            es->part_ctrls[part_ix].buffer.data = g_new0(uint32_t, part_words);
+        }
     }
 
     es->regs = g_new0(uint32_t, REGS_COUNT);

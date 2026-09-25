@@ -25,6 +25,7 @@ struct OtRramCtrlState {
     MemoryRegion core_iomem;
     MemoryRegion host_iomem;
     MemoryRegion otp_iomem;
+    MemoryRegion prim_iomem;
 
     char *ot_id;
     BlockBackend *blk;
@@ -41,6 +42,7 @@ struct OtRramCtrlState {
     uint32_t last_rd_err_addr;
 
     uint32_t regs[0x200 / 4];
+    uint32_t prim_regs[3];
 };
 
 #endif /* HW_OPENTITAN_OT_RRAM_CTRL_H */
