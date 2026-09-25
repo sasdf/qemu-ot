@@ -593,9 +593,6 @@ static bool ot_spi_host_update_stall(OtSPIHostState *s)
 
     unsigned clkdiv = FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV);
     bool needs_csb_switch = !s->fsm.transaction && (clkdiv != s->last_clkdiv);
-    qemu_log("DEBUG: update_stall clkdiv=0x%x last_clkdiv=0x%x "
-             "needs_csb_switch=%d\n",
-             clkdiv, s->last_clkdiv, needs_csb_switch);
 
     if (write && txfifo_is_empty(s->tx_fifo) && !needs_csb_switch) {
         trace_ot_spi_host_stall(s->ot_id, "TX", length);
@@ -1425,8 +1422,20 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_COMMAND: {
-        /* No conversion needed, Earlgrey uses V3 command format natively */
-        val32 &= R_COMMAND_MASK;
+        if (s->version < 3u) {
+            /*
+             * Earlgrey v1 (v2 IP) uses 14-bit COMMAND layout:
+             *   LEN[8:0], CSAAT[9], SPEED[11:10], DIRECTION[13:12]
+             * Convert to canonical v3 layout:
+             *   CSAAT[0], SPEED[2:1], DIRECTION[4:3], LEN[24:5]
+             */
+            val32 &= 0x3fffu;
+            val32 = ((val32 & 0x1ffu) << 5u) | (((val32 >> 9u) & 0x1u) << 0u) |
+                    (((val32 >> 10u) & 0x3u) << 1u) |
+                    (((val32 >> 12u) & 0x3u) << 3u);
+        } else {
+            val32 &= R_COMMAND_MASK;
+        }
 
         if (REG_GET(s, CONTROL, SW_RST)) {
             ot_spi_host_update_regs(s);
@@ -1649,7 +1658,14 @@ static bool ot_spi_host_accepts(void *opaque, hwaddr addr, unsigned size,
         return false;
     }
     if (is_write && reg != R_TXDATA) {
-        uint8_t permit = (reg >= R_CONTROL && reg <= R_COMMAND) ? 0xfu : 0x1u;
+        uint8_t permit;
+        if (reg == R_COMMAND) {
+            permit = (s->version >= 3u) ? 0xfu : 0x3u;
+        } else if (reg >= R_CONTROL && reg < R_COMMAND) {
+            permit = 0xfu;
+        } else {
+            permit = 0x1u;
+        }
         uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
         return (permit & ~reg_be) == 0u;
     }

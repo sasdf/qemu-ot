@@ -343,6 +343,7 @@ struct OtI2CState {
     uint32_t regs[REGS_COUNT];
     IbexIRQ irqs[OT_I2C_IRQ_NUM];
     IbexIRQ alert;
+    uint8_t version;
 
     /*
      * FMT: Scheduled operations for host mode.
@@ -525,8 +526,18 @@ static uint32_t ot_i2c_get_tx_threshold(const OtI2CState *s)
 
 static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
 {
-    uint32_t cycles = FIELD_EX32(s->regs[R_TIMING0], TIMING0, THIGH) +
-                      FIELD_EX32(s->regs[R_TIMING0], TIMING0, TLOW);
+    uint32_t thigh = FIELD_EX32(s->regs[R_TIMING0], TIMING0, THIGH);
+    uint32_t tlow = FIELD_EX32(s->regs[R_TIMING0], TIMING0, TLOW);
+    uint32_t tr = FIELD_EX32(s->regs[R_TIMING1], TIMING1, T_R);
+    uint32_t tf = FIELD_EX32(s->regs[R_TIMING1], TIMING1, T_F);
+    /*
+     * In i2c_controller_fsm.sv, tcount_d computes t_r_i + thigh_i in 13-bit
+     * arithmetic (13'(t_r_i) + 13'(thigh_i)) on Earlgrey v1 (version == 1),
+     * vs 16-bit arithmetic (16'(t_r_i) + 16'(thigh_i)) on Earlgrey v2.
+     */
+    uint32_t thigh_tot = (s->version == 1u) ? ((tr + thigh) & 0x1fffu) :
+                                              ((tr + thigh) & 0xffffu);
+    uint32_t cycles = thigh_tot + tf + tlow;
     if (!s->pclk || !cycles) {
         return 10000ULL;
     }
@@ -739,6 +750,12 @@ static bool ot_i2c_check_timings(OtI2CState *s)
     if (thigh < 4u) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: invalid Thigh settings\n",
                       __func__, s->ot_id);
+        res = false;
+    }
+    if (s->version == 1u && (tr + thigh) > 0x1fffu) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s: v1 13-bit T_R + THIGH overflow (0x%x -> 0x%x)\n",
+                      __func__, s->ot_id, tr + thigh, (tr + thigh) & 0x1fffu);
         res = false;
     }
 
@@ -1843,6 +1860,7 @@ static const Property ot_i2c_properties[] = {
     DEFINE_PROP_STRING("clock-name", OtI2CState, clock_name),
     DEFINE_PROP_LINK("clock-src", OtI2CState, clock_src, TYPE_DEVICE,
                      DeviceState *),
+    DEFINE_PROP_UINT8("version", OtI2CState, version, 1u),
 };
 
 static void ot_i2c_reset_enter(Object *obj, ResetType type)

@@ -2081,6 +2081,27 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_UINT_PROP("version", 3u)
         ),
     },
+    [OT_EG_SOC_DEV_I2C0] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c0"),
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_I2C1] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c1"),
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_I2C2] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c2"),
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
     [OT_EG_SOC_DEV_ALERT_HANDLER] = {
         .type = TYPE_OT_ALERT,
         .prop = IBEXDEVICEPROPDEFS(
@@ -2373,10 +2394,12 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SPI_HOST1].prop;
         v2_devs[OT_EG_SOC_DEV_ALERT_HANDLER].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ALERT_HANDLER].prop;
-        v2_devs[OT_EG_SOC_DEV_SPI_HOST0].prop =
-            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SPI_HOST0].prop;
-        v2_devs[OT_EG_SOC_DEV_SPI_HOST1].prop =
-            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SPI_HOST1].prop;
+        v2_devs[OT_EG_SOC_DEV_I2C0].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_I2C0].prop;
+        v2_devs[OT_EG_SOC_DEV_I2C1].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_I2C1].prop;
+        v2_devs[OT_EG_SOC_DEV_I2C2].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_I2C2].prop;
         v2_devs[OT_EG_SOC_DEV_PLIC].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PLIC].prop;
         v2_devs[OT_EG_SOC_DEV_ROM_CTRL].memmap =

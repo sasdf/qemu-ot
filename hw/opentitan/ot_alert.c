@@ -345,7 +345,7 @@ static bool ot_alert_is_class_enabled(const OtAlertState *s, unsigned nclass)
 
 static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9]);
 static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
-                                bool from_timer, bool class_trig);
+                                bool from_timer, bool accu_trig);
 static void ot_alert_enter_phase0(OtAlertState *s, unsigned nclass);
 
 static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
@@ -799,14 +799,10 @@ static void ot_alert_enter_phase0(OtAlertState *s, unsigned nclass)
 }
 
 static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
-                                bool from_timer, bool class_trig)
+                                bool from_timer, bool accu_trig)
 {
     OtAlertAClass *aclass = &s->regs.classes[nclass];
     OtAlertAClassState state = DVAL(aclass->state);
-
-    bool accu_trig =
-        class_trig && (DVAL(aclass->accum_cnt) >
-                       ot_shadow_reg_peek(&aclass->accum_thresh_shadowed));
 
     trace_ot_alert_fsm_update(s->ot_id, ACLASS(nclass), ST_NAME(state),
                               from_timer, accu_trig);
@@ -927,12 +923,20 @@ static void ot_alert_signal_tx(void *opaque, int n, int level)
     DVAL(s->regs.intr->state) |= 1u << nclass;
 
     if (class_en) {
+        /*
+         * In RTL (alert_handler_accu.sv:56), accu_trig_o is evaluated as
+         * (accu_cnt_o >= thresh_i) & trig_gated against the current counter
+         * value before the saturating increment, so thresh_i == 0xffff
+         * triggers escalation once accu_cnt_o reaches 0xffff.
+         */
+        bool accu_trig = DVAL(aclass->accum_cnt) >=
+                         ot_shadow_reg_peek(&aclass->accum_thresh_shadowed);
         /* saturate (no roll over) */
         if (DVAL(aclass->accum_cnt) < CLASS_ACCUM_CNT_MASK) {
             DVAL(aclass->accum_cnt) += 1u;
         }
 
-        ot_alert_fsm_update(s, nclass, false, true);
+        ot_alert_fsm_update(s, nclass, false, accu_trig);
     }
 
     ot_alert_update_irqs(s);
@@ -1045,10 +1049,12 @@ static void ot_alert_raise_local(OtAlertState *s, unsigned loc_alert)
     DVAL(s->regs.intr->state) |= 1u << nclass;
 
     if (class_en) {
+        bool accu_trig = DVAL(aclass->accum_cnt) >=
+                         ot_shadow_reg_peek(&aclass->accum_thresh_shadowed);
         if (DVAL(aclass->accum_cnt) < CLASS_ACCUM_CNT_MASK) {
             DVAL(aclass->accum_cnt) += 1u;
         }
-        ot_alert_fsm_update(s, nclass, false, true);
+        ot_alert_fsm_update(s, nclass, false, accu_trig);
     }
 
     ot_alert_update_irqs(s);
