@@ -1360,7 +1360,8 @@ static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
     }
 
     if ((val32 != 0x9 && val32 != 0x6) ||
-        (val32 == 0x6 && s->regs.cheriot_ena != 0x9 && s->regs.cheriot_ena != 0x6)) {
+        (val32 == 0x6 && s->regs.cheriot_ena != 0x9 &&
+         s->regs.cheriot_ena != 0x6)) {
         s->regs.err_status |= ERR_STATUS_FATAL_CORE_MASK;
         ot_ibex_wrapper_update_alerts(s);
     }

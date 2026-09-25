@@ -205,6 +205,7 @@ typedef struct OtAESRegisters {
     uint32_t data_out[PARAM_NUM_REGS_DATA]; /* ro */
     OtShadowReg ctrl;
     OtShadowReg ctrl_aux;
+    OtShadowReg ctrl_gcm;
     uint32_t ctrl_aux_regwen;
     uint32_t trigger;
     uint32_t status;
@@ -290,6 +291,7 @@ struct OtAESState {
     char *clock_name;
     DeviceState *clock_src;
     uint8_t version;
+    bool gcm_supported;
 };
 
 struct OtAESClass {
@@ -396,6 +398,11 @@ static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
     case 0x10u:
         break;
     case 0x20u:
+        if (s->version >= 2u && s->gcm_supported) {
+            break;
+        }
+        mode = none_mode;
+        break;
     case 0x3fu:
     default:
         mode = none_mode;
@@ -1281,7 +1288,11 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
         }
         break;
     case R_CTRL_GCM_SHADOWED:
-        val32 = 0x00000401u;
+        if (s->gcm_supported) {
+            val32 = ot_shadow_reg_read(&r->ctrl_gcm);
+        } else {
+            val32 = 0x00000401u;
+        }
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
@@ -1470,6 +1481,41 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_aes_handle_trigger(s);
         break;
     case R_CTRL_GCM_SHADOWED:
+        if (!s->gcm_supported) {
+            break;
+        }
+        if (!ot_aes_is_idle(s)) {
+            break;
+        }
+        val32 &= 0x7ffu;
+        uint32_t phase = val32 & 0x3fu;
+        uint32_t num_bytes = (val32 >> 6u) & 0x1fu;
+        switch (phase) {
+        case 0x01u:
+        case 0x02u:
+        case 0x04u:
+        case 0x08u:
+        case 0x10u:
+        case 0x20u:
+            break;
+        default:
+            phase = 0x01u;
+            break;
+        }
+        if (num_bytes == 0u || num_bytes > 16u) {
+            num_bytes = 16u;
+        }
+        val32 = (num_bytes << 6u) | phase;
+        switch (ot_shadow_reg_write(&r->ctrl_gcm, val32)) {
+        case OT_SHADOW_REG_STAGED:
+        case OT_SHADOW_REG_COMMITTED:
+            break;
+        case OT_SHADOW_REG_ERROR:
+        default:
+            r->status |= R_STATUS_ALERT_RECOV_CTRL_UPDATE_ERR_MASK;
+            ot_aes_update_alert(s);
+            break;
+        }
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: Bad offset 0x%02x\n", __func__,
@@ -1512,6 +1558,7 @@ static const Property ot_aes_properties[] = {
      * cases, using fast-mode reduces latency and increase AES throughput
      */
     DEFINE_PROP_BOOL("fast-mode", OtAESState, fast_mode, true),
+    DEFINE_PROP_BOOL("gcm-supported", OtAESState, gcm_supported, false),
 };
 
 static const MemoryRegionOps ot_aes_regs_ops = {
@@ -1542,6 +1589,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
 
     ot_shadow_reg_init(&r->ctrl, (s->version >= 2u) ? 0x11fdu : 0x1181u);
     ot_shadow_reg_init(&r->ctrl_aux, 1u);
+    ot_shadow_reg_init(&r->ctrl_gcm, 0x0401u);
     r->ctrl_aux_regwen = 1u;
     r->trigger = 0xeu;
     r->status = 0u;
