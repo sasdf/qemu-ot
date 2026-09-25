@@ -2183,6 +2183,13 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_UINT_PROP("version", OT_CLKMGR_VERSION_EG_2_0_0)
         ),
     },
+    [OT_EG_SOC_DEV_AON_TIMER] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP("clock-name", "timers.io_div4"),
+            IBEX_DEV_STRING_PROP("clock-name-aon", "timers.aon"),
+            IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
     [OT_EG_SOC_DEV_AES] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "trans.aes"),
@@ -2367,6 +2374,8 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PWRMGR].prop;
         v2_devs[OT_EG_SOC_DEV_CLKMGR].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_CLKMGR].prop;
+        v2_devs[OT_EG_SOC_DEV_AON_TIMER].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_AON_TIMER].prop;
         v2_devs[OT_EG_SOC_DEV_AES].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_AES].prop;
         v2_devs[OT_EG_SOC_DEV_OTBN].prop =

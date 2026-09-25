@@ -622,11 +622,12 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 }
                 s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                 s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                if (s->version >= 2) {
-                    /* [ERRATA-PWRMGR-V2-002] Pulse sleep_en before abort */
-                    ot_pwrmgr_set_low_power(s, true);
-                    ot_pwrmgr_set_low_power(s, false);
-                }
+                /*
+                 * [pwrmgr_fsm.sv:378,382] FastPwrStateDisClks pulses
+                 * low_power_o = 1 before FastPwrStateNvmIdleChk aborts.
+                 */
+                ot_pwrmgr_set_low_power(s, true);
+                ot_pwrmgr_set_low_power(s, false);
                 s->regs[R_INTR_STATE] |= WAKEUP_MASK;
                 ot_pwrmgr_update_irq(s);
                 return;
