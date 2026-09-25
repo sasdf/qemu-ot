@@ -1744,6 +1744,7 @@ static void ot_ibex_wrapper_realize(DeviceState *dev, Error **errp)
         s->num_regions * ACCESS_COUNT * sizeof(OtIbexRemap) / sizeof(uint32_t);
     s->reg_count = offsetof(OtIbexWrapperRegs, dv_sim_win) / sizeof(uint32_t) +
                    DV_SIM_COUNT + s->remap_reg_count;
+    s->reg_count = MAX(s->reg_count, 64u);
 
     memory_region_init_io(&s->mmio, OBJECT(dev), &ot_ibex_wrapper_regs_ops, s,
                           TYPE_OT_IBEX_WRAPPER,

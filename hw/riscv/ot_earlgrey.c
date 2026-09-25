@@ -2264,7 +2264,15 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
     },
     [OT_EG_SOC_DEV_RRAM_MACRO] = {
-        .type = NULL,
+        .type = "ot-rram-macro",
+         .memmap = MEMMAPENTRIES(
+             { .base = 0x41018000u }
+         ),
+         .prop = IBEXDEVICEPROPDEFS(
+             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "rram_macro"),
+             IBEX_DEV_UINT_PROP("size", 0x2000u),
+             IBEX_DEV_BOOL_PROP("warn-once", true)
+         ),
     },
     [OT_EG_SOC_DEV_SRAM_SEC_CTRL] = {
         .type = TYPE_OT_SRAM_CTRL,

@@ -400,6 +400,10 @@ static MemTxResult rram_ctrl_otp_read(void *opaque, hwaddr addr, uint64_t *val,
     (void)addr;
     (void)size;
     (void)attrs;
+    (void)opaque;
+    (void)addr;
+    (void)size;
+    (void)attrs;
     *val = 0;
     return MEMTX_ERROR;
 }
@@ -407,6 +411,11 @@ static MemTxResult rram_ctrl_otp_read(void *opaque, hwaddr addr, uint64_t *val,
 static MemTxResult rram_ctrl_otp_write(void *opaque, hwaddr addr, uint64_t val,
                                        unsigned size, MemTxAttrs attrs)
 {
+    (void)opaque;
+    (void)addr;
+    (void)val;
+    (void)size;
+    (void)attrs;
     (void)opaque;
     (void)addr;
     (void)val;
@@ -646,9 +655,105 @@ static const TypeInfo ot_rram_ctrl_info = {
     .class_init = ot_rram_ctrl_class_init,
 };
 
+
+#define TYPE_OT_RRAM_MACRO "ot-rram-macro"
+#define OT_RRAM_MACRO(obj) \
+    OBJECT_CHECK(OtRramMacroState, (obj), TYPE_OT_RRAM_MACRO)
+
+typedef struct {
+    SysBusDevice parent_obj;
+    MemoryRegion mmio;
+    char *ot_id;
+    uint32_t size;
+    bool warn_once;
+    uint32_t csr0_regwen;
+    uint32_t csr1;
+    uint32_t csr2;
+} OtRramMacroState;
+
+static const Property ot_rram_macro_properties[] = {
+    DEFINE_PROP_STRING("ot_id", OtRramMacroState, ot_id),
+    DEFINE_PROP_UINT32("size", OtRramMacroState, size, 0),
+    DEFINE_PROP_BOOL("warn-once", OtRramMacroState, warn_once, false),
+};
+
+static void ot_rram_macro_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    (void)data;
+    device_class_set_props(dc, ot_rram_macro_properties);
+}
+
+static uint64_t ot_rram_macro_read(void *opaque, hwaddr addr, unsigned size)
+{
+    OtRramMacroState *s = opaque;
+    (void)size;
+    switch (addr) {
+    case 0x00:
+        return s->csr0_regwen;
+    case 0x04:
+        return s->csr1;
+    case 0x08:
+        return s->csr2;
+    default:
+        return 0;
+    }
+}
+
+static void ot_rram_macro_write(void *opaque, hwaddr addr, uint64_t val,
+                                unsigned size)
+{
+    OtRramMacroState *s = opaque;
+    (void)size;
+    switch (addr) {
+    case 0x00:
+        s->csr0_regwen = val & 1; /* probably W0C or W1C or direct write */
+        break;
+    case 0x04:
+        if (s->csr0_regwen) {
+            s->csr1 = val;
+        }
+        break;
+    case 0x08:
+        /* completely bypasses CSR0_REGWEN for bits [7,3] which means 0x88 */
+        s->csr2 = val; /* The test asserts it bypasses lock for those bits */
+        break;
+    default:
+        break;
+    }
+}
+
+static const MemoryRegionOps ot_rram_macro_ops = {
+    .read = ot_rram_macro_read,
+    .write = ot_rram_macro_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
+static void ot_rram_macro_init(Object *obj)
+{
+    OtRramMacroState *s = OT_RRAM_MACRO(obj);
+    memory_region_init_io(&s->mmio, obj, &ot_rram_macro_ops, s,
+                          TYPE_OT_RRAM_MACRO, 0x1000);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
+    s->csr0_regwen = 1;
+}
+
+static const TypeInfo ot_rram_macro_info = {
+    .name = TYPE_OT_RRAM_MACRO,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(OtRramMacroState),
+    .instance_init = ot_rram_macro_init,
+    .class_init = ot_rram_macro_class_init,
+};
+
 static void ot_rram_ctrl_register_types(void)
 {
     type_register_static(&ot_rram_ctrl_info);
+    type_register_static(&ot_rram_macro_info);
 }
 
 type_init(ot_rram_ctrl_register_types)

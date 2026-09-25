@@ -24,6 +24,7 @@ struct OtRramCtrlState {
 
     MemoryRegion core_iomem;
     MemoryRegion host_iomem;
+    MemoryRegion oob_iomem;
     MemoryRegion otp_iomem;
     MemoryRegion prim_iomem;
 
