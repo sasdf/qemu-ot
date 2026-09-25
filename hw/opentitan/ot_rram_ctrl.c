@@ -178,8 +178,7 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
                         addr < sizeof(s->info_storage)) {
                         ((uint32_t *)s->info_storage)[addr / 4] = val;
                     }
-                } else if (!mp_err && full_rram_word &&
-                           addr < RRAM_HOST_SIZE) {
+                } else if (!mp_err && full_rram_word && addr < RRAM_HOST_SIZE) {
                     ((uint32_t *)s->storage)[addr / 4] = val;
                 }
             }

@@ -524,8 +524,7 @@ static void ot_pwrmgr_update_usb_clock(OtPwrMgrState *s)
 
 static void ot_pwrmgr_update_ctrl_cfg_regwen(OtPwrMgrState *s)
 {
-    bool en = (s->f_state == OT_PWR_FAST_ST_ACTIVE) &&
-              !(s->regs[R_CFG_CDC_SYNC] & R_CFG_CDC_SYNC_SYNC_MASK);
+    bool en = (s->f_state == OT_PWR_FAST_ST_ACTIVE) && !s->in_low_power;
     if (!en) {
         s->regs[R_CTRL_CFG_REGWEN] &= ~R_CTRL_CFG_REGWEN_EN_MASK;
     } else {
@@ -614,6 +613,7 @@ void ot_pwrmgr_cancel_check(OtPwrMgrState *s)
 static void ot_pwrmgr_set_low_power(OtPwrMgrState *s, bool low_power)
 {
     s->in_low_power = low_power;
+    ot_pwrmgr_update_ctrl_cfg_regwen(s);
     ot_pwrmgr_update_usb_clock(s);
     ibex_irq_set(&s->sleep_en, (int)low_power);
     OtAonTimerState *aon = (OtAonTimerState *)
@@ -1201,9 +1201,13 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CONTROL:
-        /* TODO: clear LOW_POWER_HINT on next WFI? */
-        val32 &= CONTROL_MASK(s);
-        s->regs[reg] = val32;
+        if (s->regs[R_CTRL_CFG_REGWEN] & R_CTRL_CFG_REGWEN_EN_MASK) {
+            val32 &= CONTROL_MASK(s);
+            s->regs[reg] = val32;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
+                          __func__, s->ot_id, REG_NAME(reg));
+        }
         break;
     case R_CFG_CDC_SYNC:
         val32 &= R_CFG_CDC_SYNC_SYNC_MASK;
