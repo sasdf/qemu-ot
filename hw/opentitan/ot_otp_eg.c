@@ -36,6 +36,7 @@
 #include "qemu/log.h"
 #include "qemu/option.h"
 #include "qom/object.h"
+#include "exec/icount.h"
 #include "hw/opentitan/ot_otp_eg.h"
 #include "hw/opentitan/ot_otp_engine.h"
 #include "hw/opentitan/ot_otp_impl_if.h"
@@ -984,11 +985,16 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
     uint32_t val32 = s->otp->data[reg];
     c->set_error(s, part_ix, OT_OTP_NO_ERROR);
 
-    uint64_t pc;
+    if (addr == A_CREATOR_SW_CFG_RMA_SPIN_CYCLES) {
+        icount_advance_bias_ns(128);
+    }
 
-    pc = ibex_get_current_pc();
-    trace_ot_otp_io_swcfg_read_out(s->ot_id, (uint32_t)addr,
-                                   ot_otp_eg_swcfg_reg_name(addr), val32, pc);
+    if (trace_event_get_state_backends(TRACE_OT_OTP_IO_SWCFG_READ_OUT)) {
+        uint64_t pc = ibex_get_current_pc();
+        trace_ot_otp_io_swcfg_read_out(s->ot_id, (uint32_t)addr,
+                                       ot_otp_eg_swcfg_reg_name(addr), val32,
+                                       pc);
+    }
 
     *data = (uint64_t)val32;
 

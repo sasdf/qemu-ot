@@ -1730,8 +1730,24 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
                     s->lc_tcount;
         break;
     case R_LC_STATE:
-        val32 = is_terminal_fsm ? LC_ENCODE_STATE(LC_STATE_INVALID) :
-                                  LC_ENCODE_STATE(s->lc_state);
+        switch (s->state) {
+        case ST_RESET:
+        case ST_INVALID:
+            val32 = LC_ENCODE_STATE(LC_STATE_INVALID);
+            break;
+        case ST_ESCALATE:
+            val32 = LC_ENCODE_STATE(LC_STATE_ESCALATE);
+            break;
+        case ST_POST_TRANS:
+            val32 = LC_ENCODE_STATE(LC_STATE_POST_TRANSITION);
+            break;
+        case ST_SCRAP:
+            val32 = LC_ENCODE_STATE(LC_STATE_SCRAP);
+            break;
+        default:
+            val32 = LC_ENCODE_STATE(s->lc_state);
+            break;
+        }
         break;
     case R_OTP_VENDOR_TEST_STATUS:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) &&

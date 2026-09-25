@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_fifo32.h"
+#include "hw/opentitan/ot_flash.h"
 #include "hw/opentitan/ot_lc_ctrl.h"
 #include "hw/opentitan/ot_rram_ctrl.h"
 #include "hw/qdev-properties-system.h"
@@ -562,9 +563,17 @@ static const MemoryRegionOps rram_ctrl_prim_ops = {
 
 static void ot_rram_ctrl_lc_broadcast(void *opaque, int n, int level)
 {
-    (void)opaque;
-    (void)n;
-    (void)level;
+    OtRramCtrlState *s = opaque;
+
+    if (n == OT_FLASH_LC_RMA && level) {
+        memset(s->storage, 0xff, RRAM_OTP_OFFSET);
+        memset(s->info_storage, 0xff, sizeof(s->info_storage));
+        memory_region_set_dirty(&s->host_iomem, 0, RRAM_OTP_OFFSET);
+        if (s->blk && blk_is_writable(s->blk)) {
+            /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+            blk_pwrite(s->blk, 0, RRAM_OTP_OFFSET, s->storage, 0);
+        }
+    }
 }
 
 static void ot_rram_ctrl_realize(DeviceState *dev, Error **errp)
