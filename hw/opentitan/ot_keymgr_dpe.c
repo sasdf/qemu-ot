@@ -876,7 +876,7 @@ static bool ot_keymgr_dpe_handle_kmac_resp_advance(
     memcpy(dst_slot->key.share0, rsp->digest_share0, OT_KMAC_KEY_SIZE);
     memcpy(dst_slot->key.share1, rsp->digest_share1, OT_KMAC_KEY_SIZE);
     dst_slot->max_key_version = max_key_version;
-    dst_slot->boot_stage = src_slot->boot_stage + 1u;
+    dst_slot->boot_stage = MIN(src_slot->boot_stage + 1u, NUM_BOOT_STAGES - 1u);
     dst_slot->policy.allow_child =
         (bool)(slot_policy & R_SLOT_POLICY_ALLOW_CHILD_MASK);
     dst_slot->policy.exportable =
@@ -1191,17 +1191,13 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
     OtKeyMgrDpeSlot *dst_slot = &s->key_slots[slot_dst_sel];
 
     bool invalid_allow_child = !src_slot->policy.allow_child;
-    bool invalid_max_boot_stage =
-        src_slot->boot_stage >= (NUM_BOOT_STAGES - 1u);
     bool invalid_src_slot = !src_slot->valid;
     bool invalid_retain_parent =
         src_slot->policy.retain_parent ?
             (slot_src_sel == slot_dst_sel || dst_slot->valid) :
             (slot_src_sel != slot_dst_sel);
 
-
-    if (invalid_allow_child || invalid_max_boot_stage || invalid_src_slot ||
-        invalid_retain_parent) {
+    if (invalid_allow_child || invalid_src_slot || invalid_retain_parent) {
         s->regs[R_ERR_CODE] |=
             R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
         s->op_state.op_ack = true;
