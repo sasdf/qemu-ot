@@ -438,6 +438,7 @@ struct OtKMACState {
     OtEDNState *edn;
     uint8_t edn_ep;
     uint8_t num_app;
+    uint8_t version;
 };
 
 static void
@@ -821,7 +822,9 @@ static void ot_kmac_process(void *opaque)
                     /* append right-encoded output width if KMAC */
                     if (cfg->mode == OT_KMAC_MODE_KMAC) {
                         uint8_t enc_out_len[3];
-                        uint32_t output_length = OT_KMAC_APP_DIGEST_BYTES * 8u;
+                        uint32_t output_length =
+                            s->version >= 2u ? 512u :
+                                               (OT_KMAC_APP_DIGEST_BYTES * 8u);
                         enc_out_len[0] = (output_length >> 8u) & 0xffu;
                         enc_out_len[1] = output_length & 0xffu;
                         enc_out_len[2] = 2u;
@@ -1761,14 +1764,24 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
     /* trigger error if an app is running or not in MSG_FEED state */
     if (s->current_app || s->state != KMAC_ST_MSG_FEED) {
         /*
-         * RTL (kmac_app.sv:200, 219, 728-734; kmac_pkg.sv:295-296):
+         * RTL (kmac_app.sv:200, 219, 728-734 in v1; kmac_app.sv:1049 &
+         * kmac_pkg.sv:382, 388 in v2; kmac_pkg.sv:295-296):
          * info = {8'h00, 8'(st), 8'(mux_sel_buf_err_check)}.
-         * In StIdle (10'b1010111110 = 0x2be -> 8'(st) = 0xbe) with
-         * SelNone (5'b10100 = 0x14), info = 0x00be14.
-         * In StAppMsg (10'b1110001011 = 0x38b -> 8'(st) = 0x8b) with
-         * SelApp (5'b11001 = 0x19), info = 0x008b19.
+         * In StIdle with SelNone (5'b10100 = 0x14):
+         *   - v1: StIdle = 10'b1010111110 (0x2be -> 8'(st) = 0xbe) -> 0x00be14
+         *   - v2: StIdle = 10'b0110100101 (0x1a5 -> 8'(st) = 0xa5) -> 0x00a514
+         * In StAppMsg with SelApp (5'b11001 = 0x19):
+         *   - v1: StAppMsg = 10'b1110001011 (0x38b -> 8'(st) = 0x8b) ->
+         * 0x008b19
+         *   - v2: StAppMsg = 10'b1011100000 (0x2e0 -> 8'(st) = 0xe0) ->
+         * 0x00e019
          */
-        uint32_t err_info = s->current_app ? 0x008b19u : 0x00a514u;
+        uint32_t err_info;
+        if (s->version >= 2u) {
+            err_info = s->current_app ? 0x00e019u : 0x00a514u;
+        } else {
+            err_info = s->current_app ? 0x008b19u : 0x00be14u;
+        }
         ot_kmac_report_error(s, OT_KMAC_ERR_SW_PUSHED_MSG_FIFO, err_info);
         return;
     }
@@ -1930,6 +1943,7 @@ static const Property ot_kmac_properties[] = {
     DEFINE_PROP_LINK("edn", OtKMACState, edn, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_UINT8("edn-ep", OtKMACState, edn_ep, UINT8_MAX),
     DEFINE_PROP_UINT8("num-app", OtKMACState, num_app, 0),
+    DEFINE_PROP_UINT8("version", OtKMACState, version, 1u),
 };
 
 static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
