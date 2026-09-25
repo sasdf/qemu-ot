@@ -594,6 +594,13 @@ static inline bool ot_spi_host_passthrough_active(const OtSPIHostState *s)
     return ot_spi_host_supports_passthrough(s) && s->passthrough_en;
 }
 
+static bool ot_spi_host_is_csb_switch(const OtSPIHostState *s)
+{
+    unsigned last_clkdiv = (s->last_clkdiv == UINT32_MAX) ? 0u : s->last_clkdiv;
+    return !s->fsm.transaction &&
+           FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) != last_clkdiv;
+}
+
 static bool ot_spi_host_update_stall(OtSPIHostState *s)
 {
     g_assert(s->active.state != CMD_NONE);
@@ -605,7 +612,8 @@ static bool ot_spi_host_update_stall(OtSPIHostState *s)
 
     bool resume = true;
 
-    if (write && txfifo_is_empty(s->tx_fifo)) {
+    if (write && txfifo_is_empty(s->tx_fifo) &&
+        !(s->active.size == 0u && ot_spi_host_is_csb_switch(s))) {
         trace_ot_spi_host_stall(s->ot_id, "TX", length);
         s->fsm.tx_stall = true;
         resume = false;
@@ -1636,9 +1644,10 @@ static bool ot_spi_host_accepts(void *opaque, hwaddr addr, unsigned size,
         return false;
     }
     if (is_write && reg != R_TXDATA) {
+        uint8_t cmd_permit = (s->version >= 3u) ? 0xfu : 0x3u;
         uint8_t permit = (reg >= R_CONTROL && reg <= R_CSID) ?
                              0xfu :
-                             (reg == R_COMMAND ? 0x3u : 0x1u);
+                             (reg == R_COMMAND ? cmd_permit : 0x1u);
         uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
         return (permit & ~reg_be) == 0u;
     }

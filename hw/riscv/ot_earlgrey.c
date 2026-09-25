@@ -2061,6 +2061,22 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_UINT_PROP("version", 2u)
         ),
     },
+    [OT_EG_SOC_DEV_SPI_HOST0] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi0"),
+            IBEX_DEV_UINT_PROP("bus-num", 0),
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io"),
+            IBEX_DEV_UINT_PROP("version", 3u)
+        ),
+    },
+    [OT_EG_SOC_DEV_SPI_HOST1] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi1"),
+            IBEX_DEV_UINT_PROP("bus-num", 1),
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div2"),
+            IBEX_DEV_UINT_PROP("version", 3u)
+        ),
+    },
     [OT_EG_SOC_DEV_ALERT_HANDLER] = {
         .type = TYPE_OT_ALERT,
         .prop = IBEXDEVICEPROPDEFS(
@@ -2291,6 +2307,10 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_GPIO].prop;
         v2_devs[OT_EG_SOC_DEV_PINMUX].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PINMUX].prop;
+        v2_devs[OT_EG_SOC_DEV_SPI_HOST0].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SPI_HOST0].prop;
+        v2_devs[OT_EG_SOC_DEV_SPI_HOST1].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_SPI_HOST1].prop;
         v2_devs[OT_EG_SOC_DEV_ALERT_HANDLER].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ALERT_HANDLER].prop;
         v2_devs[OT_EG_SOC_DEV_PLIC].prop =

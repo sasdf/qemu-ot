@@ -1027,8 +1027,7 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
         (s->version == 2u) ? OT_OTBN_V2_IMEM_SIZE : OT_OTBN_IMEM_SIZE;
     uint32_t dmem_pub_size =
         (s->version == 2u) ? OT_OTBN_V2_DMEM_SIZE : OT_OTBN_DMEM_SIZE;
-    uint32_t dmem_size =
-        (s->version == 2u) ? (32u << 10u) : (4u << 10u);
+    uint32_t dmem_size = (s->version == 2u) ? (32u << 10u) : (4u << 10u);
 
     /*
      * IMEM cannot be defined as a RAM region since accesses need to be
@@ -1049,8 +1048,8 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
     s->proxy =
         ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
                           &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],
-                          &ot_otbn_signal_on_completion, s,
-                          imem_size, dmem_size, dmem_pub_size);
+                          &ot_otbn_signal_on_completion, s, imem_size,
+                          dmem_size, dmem_pub_size);
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_clock_input,
                             OT_OTBN_CLOCK_INPUT, 1);

@@ -447,6 +447,7 @@ typedef struct {
     uint32_t opcode;
     unsigned write_pos;
     unsigned len;
+    uint16_t write_valid_mask;
     Fifo8 rdfifo;
     unsigned can_receive;
     unsigned transfer_size;
@@ -804,6 +805,7 @@ static void ot_spi_device_clear_modes(OtSPIDeviceState *s)
     tpm->reg = 0u;
     tpm->opcode = 0u;
     tpm->locality = 0u;
+    tpm->write_valid_mask = 0u;
     tpm->write_buffer = &((uint8_t *)s->sram)[SPI_SRAM_TPM_WRITE_OFFSET];
     fifo8_reset(&tpm->rdfifo);
 
@@ -2568,11 +2570,22 @@ static MemTxResult ot_spi_device_buf_read_with_attrs(
         return MEMTX_DECODE_ERROR;
     }
 
-    if ((addr >= SPI_SRAM_PAYLOAD_OFFSET &&
-         last < (SPI_SRAM_PAYLOAD_OFFSET + SPI_SRAM_PAYLOAD_SIZE)) ||
-        (addr >= SPI_SRAM_TPM_WRITE_OFFSET &&
-         last < (SPI_SRAM_TPM_WRITE_OFFSET + SPI_SRAM_TPM_WRITE_SIZE))) {
-        /* flash payload and tpm write buffers */
+    if (addr >= SPI_SRAM_PAYLOAD_OFFSET &&
+        last < (SPI_SRAM_PAYLOAD_OFFSET + SPI_SRAM_PAYLOAD_SIZE)) {
+        /* flash payload buffer */
+        val32 = s->sram[addr >> 2u];
+    } else if (addr >= SPI_SRAM_TPM_WRITE_OFFSET &&
+               last < (SPI_SRAM_TPM_WRITE_OFFSET + SPI_SRAM_TPM_WRITE_SIZE)) {
+        /* tpm write buffer: faults with odd-parity error if never written by
+         * SPI */
+        unsigned widx = (unsigned)((addr - SPI_SRAM_TPM_WRITE_OFFSET) >> 2u);
+        if (!(s->tpm.write_valid_mask & (1u << widx))) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: uninitialized odd-parity read from TPM "
+                          "write buffer 0x%03x\n",
+                          __func__, s->ot_id, (uint32_t)addr);
+            return MEMTX_DECODE_ERROR;
+        }
         val32 = s->sram[addr >> 2u];
     } else if (addr >= SPI_SRAM_CMD_OFFSET &&
                last < (SPI_SRAM_CMD_OFFSET + SPI_SRAM_CMD_SIZE)) {
@@ -2914,6 +2927,11 @@ static void ot_spi_device_tpm_write_state(OtSPIDeviceState *s,
                                           const uint8_t *buf, unsigned size)
 {
     SpiDeviceTpm *tpm = &s->tpm;
+    for (unsigned pos = tpm->write_pos; pos < tpm->write_pos + size; pos++) {
+        if ((pos >> 2u) < 16u) {
+            tpm->write_valid_mask |= (uint16_t)(1u << (pos >> 2u));
+        }
+    }
     memcpy(&tpm->write_buffer[tpm->write_pos], buf, size);
     tpm->write_pos += size;
     if (tpm->write_pos >= tpm->transfer_size) {
