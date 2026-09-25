@@ -34,9 +34,9 @@
 #define CSR_CPUCTRLSTS 0x7c0
 #define CSR_SECURESEED 0x7c1
 
-#define CPUCTRLSTS_ICACHE_ENABLE     0x000
-#define CPUCTRLSTS_DATA_IND_TIMING   0x001
-#define CPUCTRLSTS_DUMMY_INSTR_EN    0x002
+#define CPUCTRLSTS_ICACHE_ENABLE     0x001
+#define CPUCTRLSTS_DATA_IND_TIMING   0x002
+#define CPUCTRLSTS_DUMMY_INSTR_EN    0x004
 #define CPUCTRLSTS_DUMMY_INSTR_MASK  0x038
 #define CPUCTRLSTS_SYNC_EXC_SEEN     0x040
 #define CPUCTRLSTS_DOUBLE_FAULT_SEEN 0x080
@@ -57,10 +57,14 @@ static RISCVException write_cpuctrlsts(CPURISCVState *env, int csrno,
 {
     (void)csrno;
     (void)ra;
-    /* b7 can only be cleared */
-    env->cpuctrlsts &= ~0xbf;
-    /* b6 should be cleared on mret */
-    env->cpuctrlsts |= val & 0x3f;
+    /*
+     * In ibex_cs_registers.sv (lines 701-704, 1656-1657 in v1; 874-877,
+     * 1967-1968 in v2), cpuctrlsts_part_q[7:0] (including double_fault_seen at
+     * bit 7 and sync_exc_seen at bit 6) is directly written from
+     * csr_wdata_int[7:0], while bit 8 (ic_scr_key_valid) is read-only.
+     */
+    env->cpuctrlsts = val & 0xffu;
+    env->sync_exc_seen = (val & CPUCTRLSTS_SYNC_EXC_SEEN) != 0;
     return RISCV_EXCP_NONE;
 }
 
