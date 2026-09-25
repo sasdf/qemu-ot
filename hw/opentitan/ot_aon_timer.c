@@ -283,7 +283,7 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s)
             if (!was_continuous_high) {
                 s->regs[R_INTR_STATE] |= INTR_WKUP_TIMER_EXPIRED_MASK;
             }
-            if (s->version >= 2u && (new_count - 1u) == threshold &&
+            if ((new_count - 1u) == threshold &&
                 s->prescale_count == 0u) {
                 s->wkup_cause_pending = true;
             } else {
@@ -346,12 +346,7 @@ static void ot_aon_timer_sync_wdog(OtAonTimerState *s)
         s->wdog_bite = true;
     }
 
-    uint64_t r_wdog_count = new_count;
-    if (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) < s->wdog_bark_fired_ns + 20000) {
-        r_wdog_count = bark_threshold > 0 ? bark_threshold - 1 : 0;
-    }
-
-    s->regs[R_WDOG_COUNT] = (uint32_t)r_wdog_count;
+    s->regs[R_WDOG_COUNT] = (uint32_t)new_count;
     s->wdog_origin_ns = ot_aon_timer_ticks_to_ns(s, 0u, now_clks);
 }
 
@@ -601,7 +596,7 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_WKUP_COUNT_LO:
         val32 = s->regs[reg];
-        if (s->version >= 2u && ot_aon_timer_is_wkup_enabled(s) &&
+        if (ot_aon_timer_is_wkup_enabled(s) &&
             s->regs[R_WKUP_COUNT_HI] == 0u &&
             FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER) == 0u &&
             val32 >= 2u && val32 <= 4u) {
@@ -610,7 +605,7 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_WDOG_COUNT:
         val32 = s->regs[reg];
-        if (s->version >= 2u && ot_aon_timer_is_wdog_enabled(s) &&
+        if (ot_aon_timer_is_wdog_enabled(s) &&
             val32 >= 2u && val32 <= 4u) {
             val32 = 1u;
         }
