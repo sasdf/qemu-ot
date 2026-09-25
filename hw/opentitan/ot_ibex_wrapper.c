@@ -1466,6 +1466,20 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
          rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
         s->access_table[rix].permit = 0u;
     }
+    for (rix = R32_DYN_POS(s, dv_sim_win[0]); rix < 64; rix++)
+        s->access_table[rix].permit = 0u;
+    for (rix = R32_DYN_POS(s, dv_sim_win[0]); rix < s->reg_count; rix++) {
+        if (s->version >= 2u && rix < FIRST_REMAP_REG_POS) {
+            s->access_table[rix].permit = 0u;
+        }
+    }
+
+    static uint32_t dummy_unmapped_reg = 0;
+    for (rix = 0; rix < s->reg_count; rix++) {
+        if (!s->access_regs[rix]) {
+            s->access_regs[rix] = &dummy_unmapped_reg;
+        }
+    }
 
     s->access_table[R32_DYN_POS(s, alert_test)].write =
         &ot_ibex_wrapper_write_alert_test;
@@ -1541,6 +1555,8 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
          * DV_SIM_WINDOW (0x80..0x9F) is wired to u_sim_win_rsp (tlul_err_resp),
          * unconditionally returning d_error = 1 on read and write.
          */
+        for (rix = R32_DYN_POS(s, dv_sim_win[0]); rix < 64; rix++)
+            s->access_table[rix].permit = 0u;
         for (rix = R32_DYN_POS(s, dv_sim_win[0]);
              rix < R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix++) {
             s->access_table[rix].permit = 0u;
