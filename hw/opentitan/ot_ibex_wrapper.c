@@ -1341,6 +1341,16 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
     (*s->access_table[reg].write)(s, reg, val32);
 };
 
+static void ot_ibex_wrapper_update_cheriot_ena(OtIbexWrapperState *s,
+                                               unsigned reg, uint32_t val32)
+{
+    (void)reg;
+    if (s->regs.cheriot_lock == 0x6) {
+        return; // Ignore writes when locked
+    }
+    s->regs.cheriot_ena = val32;
+}
+
 static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
                                                 unsigned reg, uint32_t val32)
 {
@@ -1348,6 +1358,13 @@ static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
     if (s->regs.cheriot_lock == 0x6) {
         return; // Ignore all writes if already locked (erratum behavior)
     }
+
+    if ((val32 != 0x9 && val32 != 0x6) ||
+        (val32 == 0x6 && s->regs.cheriot_ena != 0x9 && s->regs.cheriot_ena != 0x6)) {
+        s->regs.err_status |= ERR_STATUS_FATAL_CORE_MASK;
+        ot_ibex_wrapper_update_alerts(s);
+    }
+
     s->regs.cheriot_lock = val32;
     if (val32 == 0x6) {
         int ena = (s->regs.cheriot_ena == 0x6) ? 0x6 : 0x9;
@@ -1495,6 +1512,8 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_write_dv_sim_status;
     s->access_table[R32_DYN_POS(s, dv_sim_win[DV_SIM_LOG])].write =
         &ot_ibex_wrapper_write_dv_sim_log;
+    s->access_table[R32_DYN_POS(s, cheriot_ena)].write =
+        &ot_ibex_wrapper_update_cheriot_ena;
     s->access_table[R32_DYN_POS(s, cheriot_lock)].write =
         &ot_ibex_wrapper_update_cheriot_lock;
     s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].write =
