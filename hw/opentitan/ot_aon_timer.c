@@ -127,6 +127,7 @@ struct OtAonTimerState {
     int64_t wkup_origin_ns;
     int64_t wdog_origin_ns;
     uint32_t prescale_count;
+    uint8_t version;
     bool wkup_intr_level;
     int64_t wkup_intr_fired_ns;
     int64_t wdog_bark_fired_ns;
@@ -248,7 +249,7 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s)
         return;
     }
 
-    if (s->wkup_cause_pending) {
+    if (s->version >= 2u && s->wkup_cause_pending) {
         s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
         s->wkup_cause_pending = false;
     }
@@ -339,7 +340,7 @@ static void ot_aon_timer_sync_wdog(OtAonTimerState *s)
     }
     s->wdog_bark_level = bark_level;
 
-    if (bark_level) {
+    if (bark_level && s->version >= 2u) {
         s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
     }
     if (last_pre_incr >= bite_threshold) {
@@ -413,7 +414,7 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
          ((threshold - count) <= (INT64_MAX / 5000u) / (prescaler + 1u)))) {
         uint64_t rem_incrs = (count >= threshold) ? 0u : (threshold - count);
         uint64_t needed_clks =
-            (intr_done && s->wkup_cause_pending) ?
+            (s->version >= 2u && intr_done && s->wkup_cause_pending) ?
                 1u :
                 (ot_aon_timer_first_wkup_incr_clks(s) +
                  rem_incrs * (prescaler + 1u));
@@ -466,7 +467,7 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
     uint64_t needed_clks = UINT64_MAX;
     bool bark_done = (s->wdog_bark_level ||
                       (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
-                     (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+                     (s->version < 2u || (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK));
     if (!bark_done) {
         uint64_t bark_clks = (count >= bark_threshold) ?
                                  1u :
@@ -713,8 +714,10 @@ static void ot_aon_timer_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case R_WKUP_CAUSE:
         s->regs[R_WKUP_CAUSE] &= val32 & R_WKUP_CAUSE_CAUSE_MASK; /* rw0c */
-        if ((val32 & R_WKUP_CAUSE_CAUSE_MASK) == 0u) {
-            s->wkup_cause_pending = false;
+        if (s->version >= 2u) {
+            if ((val32 & R_WKUP_CAUSE_CAUSE_MASK) == 0u) {
+                s->wkup_cause_pending = false;
+            }
         }
         ot_aon_timer_rearm_wkup(s, false);
         ot_aon_timer_rearm_wdog(s, false);
@@ -736,6 +739,7 @@ static const MemoryRegionOps ot_aon_timer_ops = {
 
 static const Property ot_aon_timer_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtAonTimerState, ot_id),
+    DEFINE_PROP_UINT8("version", OtAonTimerState, version, 1),
     DEFINE_PROP_STRING("clock-name", OtAonTimerState,
                        clock_names[OT_AON_TIMER_CLOCK_SRC_IO]),
     DEFINE_PROP_STRING("clock-name-aon", OtAonTimerState,
