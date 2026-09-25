@@ -206,6 +206,7 @@ REG32(RECOV_ALERT_STS, 0xb4u)
     FIELD(RECOV_ALERT_STS, ENTROPY_DATA_REG_ENABLE_FIELD_ALERT, 1u, 1u)
     FIELD(RECOV_ALERT_STS, MODULE_ENABLE_FIELD_ALERT, 2u, 1u)
     FIELD(RECOV_ALERT_STS, THRESHOLD_SCOPE_FIELD_ALERT, 3u, 1u)
+    FIELD(RECOV_ALERT_STS, THRESHOLD_ONEWAY_FIELD_ALERT, 4u, 1u)
     FIELD(RECOV_ALERT_STS, RNG_BIT_ENABLE_FIELD_ALERT, 5u, 1u)
     FIELD(RECOV_ALERT_STS, FW_OV_SHA3_START_FIELD_ALERT, 7u, 1u)
     FIELD(RECOV_ALERT_STS, FW_OV_MODE_FIELD_ALERT, 8u, 1u)
@@ -902,8 +903,17 @@ static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
         CHK_MB4(CONF, FIPS_FLAG, FIPS_FLAG) |
         CHK_MB4(CONF, RNG_FIPS, RNG_FIPS) |
         CHK_MB4(CONF, RNG_BIT_ENABLE, RNG_BIT_ENABLE) |
-        CHK_MB4(CONF, V2_ENTROPY_DATA_REG_ENABLE, ENTROPY_DATA_REG_ENABLE) |
-        CHK_MB4(CONF, V2_THRESHOLD_SCOPE, THRESHOLD_SCOPE) |
+        ((s->version < 3) ?
+             (CHK_MB4(CONF, V2_ENTROPY_DATA_REG_ENABLE,
+                      ENTROPY_DATA_REG_ENABLE) |
+              CHK_MB4(CONF, V2_THRESHOLD_SCOPE, THRESHOLD_SCOPE)) :
+             (CHK_MB4(CONF, V3_ENTROPY_DATA_REG_ENABLE,
+                      ENTROPY_DATA_REG_ENABLE) |
+              CHK_MB4(CONF, V3_THRESHOLD_SCOPE, THRESHOLD_SCOPE) |
+              (ot_entropy_src_mb4_is_invalid(
+                   (uint8_t)(s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu)) ?
+                   R_RECOV_ALERT_STS_THRESHOLD_ONEWAY_FIELD_ALERT_MASK :
+                   0u))) |
         CHK_MB4(ENTROPY_CONTROL, ES_ROUTE, ES_ROUTE) |
         CHK_MB4(ENTROPY_CONTROL, ES_TYPE, ES_TYPE) |
         CHK_MB4(FW_OV_CONTROL, FW_OV_MODE, FW_OV_MODE) |
@@ -1972,8 +1982,20 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                                   REG_HI_NAME(reg), val32, pc);
 
     if (s->version >= 3 && R32_OFF(addr) == 5u) {
-        /* THRESHOLD_ONEWAY (RW1S, 4-bit mubi) */
-        s->regs_hi[R_REPCNT_HI_WATERMARKS] |= (val32 & 0xfu);
+        /*
+         * THRESHOLD_ONEWAY (u_threshold_oneway: SwAccessW1S with Mubi = 1'b1,
+         * prim_mubi_pkg::mubi4_or_hi(q, wd)). Note: threshold_oneway_pfa sets
+         * RECOV_ALERT_STS.THRESHOLD_ONEWAY_FIELD_ALERT without driving
+         * recov_alert_state (entropy_src_core.sv:1967-1986).
+         */
+        uint32_t cur = s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu;
+        uint32_t wr = val32 & 0xfu;
+        uint32_t next = ((cur | wr) & 0x6u) | ((cur & wr) & 0x9u);
+        s->regs_hi[R_REPCNT_HI_WATERMARKS] = next;
+        if (ot_entropy_src_mb4_is_invalid((uint8_t)next)) {
+            s->regs_hi[R_RECOV_ALERT_STS] |=
+                R_RECOV_ALERT_STS_THRESHOLD_ONEWAY_FIELD_ALERT_MASK;
+        }
         return;
     }
     if (s->version >= 3 && R32_OFF(addr) == 15u) {
@@ -2024,7 +2046,15 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                     s->regs_hi[R_MARKOV_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
                 } else {
-                    s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
+                    uint32_t wm_num =
+                        s->regs_hi[R_REPCNTS_HI_WATERMARKS] & 0xfu;
+                    if (wm_num == 3u || wm_num == 6u || wm_num == 8u) {
+                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0xffffu;
+                    } else if (wm_num == 0u || wm_num == 1u) {
+                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0x0001u;
+                    } else {
+                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
+                    }
                 }
 
                 s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
@@ -2101,7 +2131,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             if (s->version >= 3) {
                 uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
                 uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
-                bool oneway = (s->regs_hi[R_REPCNT_HI_WATERMARKS] == 0x6u);
+                bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
+                               OT_MULTIBITBOOL4_FALSE);
                 s->regs_hi[reg] =
                     oneway ? (uint32_t)MIN(cur_lo, wr_lo) : (uint32_t)wr_lo;
             } else {
@@ -2123,7 +2154,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             if (s->version >= 3) {
                 uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
                 uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
-                bool oneway = (s->regs_hi[R_REPCNT_HI_WATERMARKS] == 0x6u);
+                bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
+                               OT_MULTIBITBOOL4_FALSE);
                 s->regs_hi[reg] =
                     oneway ? (uint32_t)MAX(cur_lo, wr_lo) : (uint32_t)wr_lo;
             } else {
@@ -2299,29 +2331,40 @@ static bool ot_entropy_src_rev_accepts(void *opaque, hwaddr addr, unsigned size,
 static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
                                       bool is_write, MemTxAttrs attrs)
 {
-    (void)opaque;
+    const OtEntropySrcState *s = opaque;
     (void)attrs;
+    hwaddr raw_reg = R32_OFF(addr);
+    hwaddr reg = ot_entropy_src_hi_reg_map(s, raw_reg);
+    if (reg >= REGS_HI_COUNT) {
+        return false;
+    }
     if (!is_write) {
         return true;
     }
     uint8_t permit;
-    switch (R32_OFF(addr)) {
-    case R_MODULE_ENABLE:
-    case R_ENTROPY_CONTROL:
-    case R_EXTHT_FAIL_COUNTS:
-    case R_FW_OV_CONTROL ... R_FW_OV_RD_FIFO_OVERFLOW:
-    case R_OBSERVE_FIFO_THRESH:
-    case R_OBSERVE_FIFO_DEPTH:
-    case R_ERR_CODE_TEST:
+    if (s->version >= 3 && (raw_reg == 5u || raw_reg == 15u)) {
         permit = 0x1u;
-        break;
-    case R_ALERT_SUMMARY_FAIL_COUNTS:
-    case R_MAIN_SM_STATE:
+    } else if (s->version >= 3 && raw_reg >= 6u && raw_reg <= 16u) {
         permit = 0x3u;
-        break;
-    default:
-        permit = 0xfu;
-        break;
+    } else {
+        switch (reg) {
+        case R_MODULE_ENABLE:
+        case R_ENTROPY_CONTROL:
+        case R_EXTHT_FAIL_COUNTS:
+        case R_FW_OV_CONTROL ... R_FW_OV_RD_FIFO_OVERFLOW:
+        case R_OBSERVE_FIFO_THRESH:
+        case R_OBSERVE_FIFO_DEPTH:
+        case R_ERR_CODE_TEST:
+            permit = 0x1u;
+            break;
+        case R_ALERT_SUMMARY_FAIL_COUNTS:
+        case R_MAIN_SM_STATE:
+            permit = 0x3u;
+            break;
+        default:
+            permit = 0xfu;
+            break;
+        }
     }
     uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     return !(permit & ~mask);

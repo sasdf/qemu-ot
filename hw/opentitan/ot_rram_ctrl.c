@@ -536,7 +536,8 @@ static MemTxResult rram_ctrl_prim_write(void *opaque, hwaddr addr, uint64_t val,
             s->prim_regs[1] = v32 & 0x1fffu;
         }
         break;
-    case 0x8u: /* CSR2: bits [7,3] (0x88) are rw; bits [6:4,2:0] (0x77) are w1c */
+    case 0x8u: /* CSR2: bits [7,3] (0x88) are rw; bits [6:4,2:0] (0x77) are w1c
+                */
         s->prim_regs[2] =
             ((s->prim_regs[2] & ~0x88u) & ~(v32 & 0x77u)) | (v32 & 0x88u);
         break;
