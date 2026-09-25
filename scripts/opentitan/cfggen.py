@@ -240,14 +240,21 @@ class OtConfiguration:
             mod_clocks[name] = clocks
         self._mod_clocks = mod_clocks
 
-    def load_lifecycle(self, svpath: str) -> None:
+    def load_lifecycle(self, svpath: str,
+                       tkpath: Optional[str] = None) -> None:
         """Load LifeCycle data from RTL file.
 
            :param svpath: System Verilog file with OTP constants
+           :param tkpath: Optional System Verilog file with LC token constants
         """
         with open(svpath, 'rt') as cfp:
             self._log.debug('Loading LC constants from %s', svpath)
-            self._lcconst.load_sv(cfp)
+            if tkpath and isfile(tkpath):
+                with open(tkpath, 'rt') as tfp:
+                    self._log.debug('Loading LC tokens from %s', tkpath)
+                    self._lcconst.load_sv(cfp, tfp)
+            else:
+                self._lcconst.load_sv(cfp)
 
     def load_otp_constants(self, svpath: str) -> None:
         """Load OTP data from RTL file.
@@ -679,7 +686,8 @@ def main():
                     secpath = maybe_secpath
                     break
 
-        cfg.load_lifecycle(lcpath)
+        tkpath = joinpath(top_dir, 'rtl/autogen/testing/lc_ctrl_token_pkg.sv')
+        cfg.load_lifecycle(lcpath, tkpath if isfile(tkpath) else None)
         cfg.load_otp_constants(ocpath)
         cfg.load_constants(secpath)
         cfg.prepare()

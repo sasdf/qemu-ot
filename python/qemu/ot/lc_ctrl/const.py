@@ -9,7 +9,7 @@
 
 from copy import deepcopy
 from logging import getLogger
-from typing import TextIO
+from typing import Optional, TextIO
 
 from ot.otp.lifecycle import OtpLifecycle
 
@@ -24,13 +24,16 @@ class LcCtrlConstants:
         self._tokens: dict[str, str] = {}
         self._diversifiers: dict[str, str] = {}
 
-    def load_sv(self, svp: TextIO) -> None:
+    def load_sv(self, svp: TextIO, tkp: Optional[TextIO] = None) -> None:
         """Decode LC information from a System Verilog file.
 
            :param svp: System Verilog stream with OTP definitions.
+           :param tkp: Optional System Verilog stream with LC token definitions.
         """
         lcext = OtpLifecycle()
         lcext.load(svp)
+        if tkp is not None:
+            lcext.load(tkp)
         states = lcext.get_configuration('LC_STATE')
         if not states:
             raise ValueError('Cannot obtain LifeCycle states')
