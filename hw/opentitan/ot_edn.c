@@ -673,8 +673,6 @@ static bool ot_edn_check_command_ready(OtEDNState *s)
     uint32_t command = FIELD_EX32(c->buffer[0], OT_CSNRG_CMD, ACMD);
     if (command != OT_CSRNG_CMD_NONE) {
         xtrace_ot_edn_error(c->appid, "Another command is already scheduled");
-        s->regs[R_ERR_CODE] |= R_ERR_CODE_EDN_MAIN_SM_ERR_MASK;
-        ot_edn_change_state(s, EDN_ERROR);
         return false;
     }
 
