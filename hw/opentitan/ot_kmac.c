@@ -1329,6 +1329,9 @@ static uint64_t ot_kmac_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtKMACState *s = OT_KMAC(opaque);
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
@@ -1453,6 +1456,9 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
 {
     OtKMACState *s = OT_KMAC(opaque);
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);

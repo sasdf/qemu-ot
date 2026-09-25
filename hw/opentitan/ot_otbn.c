@@ -642,6 +642,9 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtOTBNState *s = opaque;
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     uint32_t val32;
 
     uint32_t pc = ibex_get_current_pc();
@@ -714,6 +717,9 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtOTBNState *s = opaque;
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     uint32_t val32 = (uint32_t)val64;
 
     hwaddr reg = R32_OFF(addr);

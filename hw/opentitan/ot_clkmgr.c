@@ -424,6 +424,34 @@ static void ot_clkmgr_update_swcg(OtClkMgrState *s, uint32_t change)
     }
 }
 
+static void ot_clkmgr_update_hints(OtClkMgrState *s)
+{
+    uint32_t hint_status = s->regs[R_CLK_HINTS] | s->clock_states;
+
+    for (unsigned ix = 0; ix < s->hint_count; ix++) {
+        bool enabled = (bool)(hint_status & (1u << ix));
+        OtClkMgrClock *clk = s->hints[ix];
+
+        for (GList *onode = clk->outputs; onode; onode = onode->next) {
+            OtClkMgrClockOutput *out = (OtClkMgrClockOutput *)(onode->data);
+            if (!out->group->hint) {
+                continue;
+            }
+
+            out->disabled = !enabled;
+
+            for (GList *snode = out->sinks; snode; snode = snode->next) {
+                OtClkMgrClockSink *sink = (OtClkMgrClockSink *)(snode->data);
+                unsigned active_freq = out->disabled ? 0 : out->frequency;
+                trace_ot_clkmgr_update_sink(s->ot_id, sink->irq_name,
+                                            active_freq);
+
+                ibex_irq_set(&sink->out, (int)active_freq);
+            }
+        }
+    }
+}
+
 static void ot_clkmgr_clock_hint(void *opaque, int irq, int level)
 {
     OtClkMgrHintContext *hint_ctx = opaque;
@@ -441,6 +469,7 @@ static void ot_clkmgr_clock_hint(void *opaque, int irq, int level)
     } else {
         s->clock_states &= ~(1u << hint);
     }
+    ot_clkmgr_update_hints(s);
 }
 
 static void ot_clkmgr_clock_input(void *opaque, int irq, int level)
@@ -1254,6 +1283,7 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_CLK_HINTS:
         val32 &= (1u << s->hint_count) - 1u;
         s->regs[reg] = val32;
+        ot_clkmgr_update_hints(s);
         break;
     case R_MEASURE_CTRL_REGWEN:
         val32 &= R_MEASURE_CTRL_REGWEN_EN_MASK;
@@ -1459,6 +1489,7 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
     }
 
     ot_clkmgr_update_swcg(s, (1u << s->swcg_count) - 1u);
+    ot_clkmgr_update_hints(s);
 
     ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
     ot_clkmgr_update_alerts(s);

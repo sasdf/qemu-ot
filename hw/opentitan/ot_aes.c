@@ -1214,6 +1214,9 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtAESState *s = opaque;
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     OtAESRegisters *r = s->regs;
 
     uint32_t val32;
@@ -1313,6 +1316,9 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     OtAESState *s = opaque;
     (void)size;
+    if (!s->pclk) {
+        ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s), addr);
+    }
     OtAESRegisters *r = s->regs;
     uint32_t val32 = (uint32_t)val64;
 
