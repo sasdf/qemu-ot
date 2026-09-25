@@ -442,6 +442,7 @@ void ot_common_ignore_chr_status_lines(CharFrontend *chr)
 
 G_NORETURN extern void
 riscv_cpu_stall_on_unclocked_mmio(CPUState *cs, uint64_t phys_addr);
+G_NORETURN extern void riscv_cpu_retire_load_without_wb(CPUState *cs);
 
 G_NORETURN void
 ot_common_stall_cpu_on_unclocked_mmio(DeviceState *dev, hwaddr offset)
@@ -460,5 +461,9 @@ void ot_common_raise_load_integrity_error(DeviceState *dev, hwaddr offset)
         hwaddr base = sbd->mmio[0].addr;
         ot_ibex_wrapper_raise_load_integrity_error(OT_IBEX_WRAPPER(obj),
                                                    base + offset);
+        if (current_cpu && current_cpu->mem_io_pc) {
+            dev->mem_reentrancy_guard.engaged_in_io = false;
+            riscv_cpu_retire_load_without_wb(current_cpu);
+        }
     }
 }

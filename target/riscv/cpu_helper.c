@@ -2724,4 +2724,16 @@ G_NORETURN void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs,
     cpu_loop_exit(cs);
 }
 
+G_NORETURN void riscv_cpu_retire_load_without_wb(CPUState *cs)
+{
+    RISCVCPU *cpu = RISCV_CPU(cs);
+    CPURISCVState *env = &cpu->env;
+
+    cpu_restore_state(cs, cs->mem_io_pc);
+    uint16_t insn16 =
+        address_space_lduw_le(cs->as, env->pc, MEMTXATTRS_UNSPECIFIED, NULL);
+    env->pc += ((insn16 & 3u) == 3u) ? 4u : 2u;
+    cpu_loop_exit(cs);
+}
+
 #endif /* !CONFIG_USER_ONLY */
