@@ -1481,6 +1481,10 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
          rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
         s->access_table[rix].permit = 0u;
     }
+    for (rix = R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix < s->reg_count;
+         rix++) {
+        s->access_table[rix].permit = 0u;
+    }
 
     static uint32_t dummy_unmapped_reg = 0;
     for (rix = 0; rix < s->reg_count; rix++) {
@@ -1542,11 +1546,6 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = 0x1u;
 
     if (s->version < 2u) {
-        /* Unmap 0xa0..0xfc to trigger fatal error */
-        for (rix = 40; rix < s->reg_count; rix++) {
-            s->access_table[rix].permit = 0u;
-        }
-
         /*
          * Earlgrey v1 layout:
          * 0x60 (cheriot_ena slot) is FPGA_INFO (RO, permit 0xfu),
