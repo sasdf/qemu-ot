@@ -365,6 +365,13 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
         if (!s->noinit && s->init_sram_bm) {
             size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
             memset(s->init_sram_bm, 0xff, cell_slot_count * sizeof(uint64_t));
+            memset(s->init_slot_bm, 0xff,
+                   s->init_slot_count * sizeof(uint64_t));
+            unsigned slot_offset = ot_sram_ctrl_get_u64_offset(cell_slot_count);
+            if (slot_offset) {
+                s->init_slot_bm[s->init_slot_count - 1u] =
+                    (1ull << slot_offset) - 1u;
+            }
             s->scr_invalid = true;
             ot_sram_ctrl_mem_switch_to_init(s);
         }
@@ -758,6 +765,7 @@ static MemTxResult ot_sram_ctrl_mem_init_write_with_attrs(
                     }
                 }
                 s->initialized = true;
+                s->scr_invalid = false;
             }
         }
     }
