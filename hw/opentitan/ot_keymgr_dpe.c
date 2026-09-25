@@ -2017,8 +2017,10 @@ static MemTxResult ot_keymgr_dpe_write_with_attrs(
         ot_keymgr_dpe_sideload_clear(s);
         break;
     case R_RESEED_INTERVAL_REGWEN:
-        val32 &= R_RESEED_INTERVAL_REGWEN_EN_MASK;
-        s->regs[reg] &= val32; /* RW0C */
+        if (s->regs[R_CFG_REGWEN]) {
+            val32 &= R_RESEED_INTERVAL_REGWEN_EN_MASK;
+            s->regs[reg] &= val32; /* RW0C */
+        }
         break;
     case R_RESEED_INTERVAL_SHADOWED:
         if (!ot_keymgr_dpe_check_reg_write(s, reg, R_RESEED_INTERVAL_REGWEN)) {
@@ -2036,8 +2038,10 @@ static MemTxResult ot_keymgr_dpe_write_with_attrs(
         }
         break;
     case R_SLOT_POLICY_REGWEN:
-        val32 &= R_SLOT_POLICY_REGWEN_EN_MASK;
-        s->regs[reg] &= val32; /* RW0C */
+        if (s->regs[R_CFG_REGWEN]) {
+            val32 &= R_SLOT_POLICY_REGWEN_EN_MASK;
+            s->regs[reg] &= val32; /* RW0C */
+        }
         break;
     case R_SLOT_POLICY:
         if (!ot_keymgr_dpe_check_reg_write(s, reg, R_SLOT_POLICY_REGWEN)) {
@@ -2046,8 +2050,10 @@ static MemTxResult ot_keymgr_dpe_write_with_attrs(
         s->regs[reg] = val32;
         break;
     case R_SW_BINDING_REGWEN:
-        val32 &= R_SW_BINDING_REGWEN_EN_MASK;
-        s->regs[reg] &= val32; /* RW0C */
+        if (s->regs[R_CFG_REGWEN]) {
+            val32 &= R_SW_BINDING_REGWEN_EN_MASK;
+            s->regs[reg] &= val32; /* RW0C */
+        }
         break;
     case R_SW_BINDING_0:
     case R_SW_BINDING_1:
@@ -2087,8 +2093,10 @@ static MemTxResult ot_keymgr_dpe_write_with_attrs(
         s->regs[reg] = val32;
         break;
     case R_MAX_KEY_VER_REGWEN:
-        val32 &= R_MAX_KEY_VER_REGWEN_EN_MASK;
-        s->regs[reg] &= val32; /* RW0C */
+        if (s->regs[R_CFG_REGWEN]) {
+            val32 &= R_MAX_KEY_VER_REGWEN_EN_MASK;
+            s->regs[reg] &= val32; /* RW0C */
+        }
         break;
     case R_MAX_KEY_VER_SHADOWED:
         if (!ot_keymgr_dpe_check_reg_write(s, reg, R_MAX_KEY_VER_REGWEN)) {
