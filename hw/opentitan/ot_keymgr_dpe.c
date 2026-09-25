@@ -69,6 +69,12 @@
       KEYMGR_DPE_DEV_ID_WIDTH + KEYMGR_DPE_HEALTH_STATE_WIDTH) / \
      8u)
 
+#define KEYMGR_DPE_ADV_DATA_3STAGE_BYTES \
+    ((KEYMGR_DPE_SW_BINDING_WIDTH + KEYMGR_DPE_KEY_WIDTH + \
+      KEYMGR_DPE_KEY_WIDTH + KEYMGR_DPE_DEV_ID_WIDTH + \
+      KEYMGR_DPE_HEALTH_STATE_WIDTH) / \
+     8u)
+
 /* key version + salt + key ID + constant */
 #define KEYMGR_DPE_GEN_DATA_BYTES \
     ((32u + KEYMGR_DPE_SALT_WITDH + KEYMGR_DPE_KEY_WIDTH * 2u) / 8u)
@@ -498,6 +504,7 @@ static const char *REG_NAMES[REGS_COUNT] = {
     REG_ENTRY(ERR_CODE),
     REG_ENTRY(FAULT_STATUS),
     REG_ENTRY(DEBUG),
+    REG_ENTRY(LOAD_KEY_LOCK),
 };
 #undef REG_ENTRY
 #define REG_NAME(_reg_) \
@@ -510,6 +517,7 @@ static const char *OP_NAMES[] = {
     OP_ENTRY(GENERATE_SW_OUTPUT),
     OP_ENTRY(GENERATE_HW_OUTPUT),
     OP_ENTRY(DISABLE),
+    OP_ENTRY(LOAD_ROOT_KEY),
 };
 #undef OP_ENTRY
 #define OP_NAME(_op_) \
@@ -1212,6 +1220,14 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
     OtKeyMgrDpeSlot *src_slot = &s->key_slots[slot_src_sel];
     OtKeyMgrDpeSlot *dst_slot = &s->key_slots[slot_dst_sel];
 
+    bool key_vld = ot_keymgr_dpe_valid_data_check(src_slot->key.share0,
+                                                  KEYMGR_DPE_KEY_SIZE) &&
+                   ot_keymgr_dpe_valid_data_check(src_slot->key.share1,
+                                                  KEYMGR_DPE_KEY_SIZE);
+    if (!key_vld) {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_KEY_MASK;
+    }
+
     bool invalid_allow_child = !src_slot->policy.allow_child;
     bool invalid_src_slot = !src_slot->valid;
     bool invalid_retain_parent =
@@ -1228,45 +1244,64 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
         return;
     }
 
-
     ot_keymgr_dpe_reset_kdf_buffer(s);
 
     size_t expected_kdf_len = 0u;
+    size_t adv_data_bytes = s->rom_ctrl[1] ? KEYMGR_DPE_ADV_DATA_BYTES :
+                                             KEYMGR_DPE_ADV_DATA_3STAGE_BYTES;
 
     if (!FIELD_EX32(ctrl, CONTROL_SHADOWED, SW_BINDING_ONLY)) {
-        switch (src_slot->boot_stage) {
-        /* Creator */
-        case 0u: {
-            /* Creator Seed (OTP) */
-            expected_kdf_len +=
-                ot_keymgr_dpe_kdf_append_creator_seed(s, &dvalid);
-
-            /* ROM digests (ROM_CTRL) */
-            for (unsigned ix = 0u; ix < NUM_ROM_DIGEST_INPUTS; ix++) {
+        if (s->rom_ctrl[1]) {
+            switch (src_slot->boot_stage) {
+            /* Creator (NumBootStages == 2) */
+            case 0u: {
                 expected_kdf_len +=
-                    ot_keymgr_dpe_kdf_append_rom_digest(s, ix, &dvalid);
+                    ot_keymgr_dpe_kdf_append_creator_seed(s, &dvalid);
+                for (unsigned ix = 0u; ix < NUM_ROM_DIGEST_INPUTS; ix++) {
+                    expected_kdf_len +=
+                        ot_keymgr_dpe_kdf_append_rom_digest(s, ix, &dvalid);
+                }
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_km_div(s, &dvalid);
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_dev_id(s, &dvalid);
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_rev_seed(s);
+                break;
             }
-
-            /* KeyManager diversification (LC_CTRL) */
-            expected_kdf_len += ot_keymgr_dpe_kdf_append_km_div(s, &dvalid);
-
-            /* Device ID (OTP) */
-            expected_kdf_len += ot_keymgr_dpe_kdf_append_dev_id(s, &dvalid);
-
-            /* Revision Seed (netlist constant) */
-            expected_kdf_len += ot_keymgr_dpe_kdf_append_rev_seed(s);
-
-            break;
-        }
-        /* OwnerInt */
-        case 1u: {
-            /* Owner Seed (OTP) */
-            expected_kdf_len += ot_keymgr_dpe_kdf_append_owner_seed(s, &dvalid);
-
-            break;
-        }
-        default:
-            break;
+            /* Owner (NumBootStages == 2) */
+            case 1u: {
+                expected_kdf_len +=
+                    ot_keymgr_dpe_kdf_append_owner_seed(s, &dvalid);
+                break;
+            }
+            default:
+                break;
+            }
+        } else {
+            /* NumBootStages == 3 (Earlgrey): keymgr_dpe.sv:544-570 */
+            switch (src_slot->boot_stage) {
+            /* BootStageCreator (0 -> 1 = BootStageOwnerInt) */
+            case 0u: {
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_rev_seed(s);
+                expected_kdf_len +=
+                    ot_keymgr_dpe_kdf_append_rom_digest(s, 0u, &dvalid);
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_km_div(s, &dvalid);
+                expected_kdf_len += ot_keymgr_dpe_kdf_append_dev_id(s, &dvalid);
+                break;
+            }
+            /* BootStageOwnerInt (1 -> 2 = BootStageOwner) */
+            case 1u: {
+                expected_kdf_len +=
+                    ot_keymgr_dpe_kdf_append_creator_seed(s, &dvalid);
+                break;
+            }
+            /* BootStageOwner (2 -> 3 = BootStageRuntime) */
+            case 2u: {
+                expected_kdf_len +=
+                    ot_keymgr_dpe_kdf_append_owner_seed(s, &dvalid);
+                break;
+            }
+            default:
+                break;
+            }
         }
     }
 
@@ -1281,16 +1316,12 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
     /* check that we have pushed all expected KDF data*/
     g_assert(s->kdf_buf.length == expected_kdf_len);
 
-    /*
-     * @todo store `dvalid` somewhere and, if the data is invalid, replace the
-     * kmac response with decoy data (random permutation of entropy share 1).
-     */
-    if (!dvalid) {
+    if (!dvalid || !key_vld) {
         s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
     }
 
-    g_assert(s->kdf_buf.length <= KEYMGR_DPE_ADV_DATA_BYTES);
-    s->kdf_buf.length = KEYMGR_DPE_ADV_DATA_BYTES;
+    g_assert(s->kdf_buf.length <= adv_data_bytes);
+    s->kdf_buf.length = adv_data_bytes;
 
     ot_keymgr_dpe_kmac_push_key(s);
 
@@ -1306,12 +1337,17 @@ static void ot_keymgr_dpe_operation_erase_slot(OtKeyMgrDpeState *s)
     slot_dst_sel &= 0x3;
     OtKeyMgrDpeSlot *dst_slot = &s->key_slots[slot_dst_sel];
 
-    bool invalid_erase = !dst_slot->valid;
-
-    /* TODO trigger error */
-    (void)invalid_erase;
-
-    memset(dst_slot, 0u, sizeof(OtKeyMgrDpeSlot));
+    if (!dst_slot->valid) {
+        s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
+    } else {
+        memset(dst_slot, 0u, sizeof(OtKeyMgrDpeSlot));
+        uint32_t rand_val = ot_prng_random_u32(s->prng.state);
+        if (rand_val == 0u || rand_val == UINT32_MAX) {
+            rand_val = 1u;
+        }
+        stl_le_p(dst_slot->key.share0, rand_val);
+        stl_le_p(dst_slot->key.share1, rand_val);
+    }
 
     s->op_state.op_ack = true;
     ot_keymgr_dpe_schedule_fsm(s);
@@ -1328,75 +1364,69 @@ static void ot_keymgr_dpe_operation_gen_output(OtKeyMgrDpeState *s, bool sw)
 
     ot_keymgr_dpe_reset_kdf_buffer(s);
 
-
-    if (!src_slot->valid) {
-        s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
-        s->op_state.op_ack = true;
-        ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
-        ot_keymgr_dpe_schedule_fsm(s);
-        return;
-    }
-
-    if (src_slot->valid) {
-        /* Output Key Seed (SW/HW key) */
-        uint8_t *output_key = sw ? s->seeds[KEYMGR_DPE_SEED_SW_OUT] :
-                                   s->seeds[KEYMGR_DPE_SEED_HW_OUT];
-        ot_keymgr_dpe_kdf_push_bytes(s, output_key, KEYMGR_DPE_SEED_BYTES);
-        ot_keymgr_dpe_dump_kdf_material(s, output_key, KEYMGR_DPE_SEED_BYTES,
-                                        "OUT_KEY_SEED");
-
-        /* Destination Seed (AES/KMAC/OTBN/other) */
-        uint8_t *dest_seed;
-        switch (dest_sel) {
-        case KEYMGR_DPE_DEST_SEL_VALUE_AES:
-            dest_seed = s->seeds[KEYMGR_DPE_SEED_AES];
-            break;
-        case KEYMGR_DPE_DEST_SEL_VALUE_KMAC:
-            dest_seed = s->seeds[KEYMGR_DPE_SEED_KMAC];
-            break;
-        case KEYMGR_DPE_DEST_SEL_VALUE_OTBN:
-            dest_seed = s->seeds[KEYMGR_DPE_SEED_OTBN];
-            break;
-        case KEYMGR_DPE_DEST_SEL_VALUE_NONE:
-        default:
-            dest_seed = s->seeds[KEYMGR_DPE_SEED_NONE];
-            break;
-        }
-        ot_keymgr_dpe_kdf_push_bytes(s, dest_seed, KEYMGR_DPE_SEED_BYTES);
-        ot_keymgr_dpe_dump_kdf_material(s, dest_seed, KEYMGR_DPE_SEED_BYTES,
-                                        "DEST_SEED");
-
-        /* Salt (software-provided via SALT_x registers) */
-        ot_keymgr_dpe_kdf_push_bytes(s, s->salt,
-                                     NUM_SALT_REG * sizeof(uint32_t));
-        ot_keymgr_dpe_dump_kdf_material(s, s->salt,
-                                        NUM_SALT_REG * sizeof(uint32_t),
-                                        "SALT");
-
-        /* Key Version (software-provided via KEY_VERSION register) */
-        ot_keymgr_dpe_kdf_push_key_version(s);
-    } else {
-        /* active key slot is not valid, push random data */
-        unsigned count = KEYMGR_DPE_GEN_DATA_BYTES / sizeof(uint32_t);
-        while (count--) {
-            uint32_t data = ot_prng_random_u32(s->prng.state);
-            ot_keymgr_dpe_kdf_push_bytes(s, (uint8_t *)&data, sizeof(data));
-        }
+    bool key_vld = ot_keymgr_dpe_valid_data_check(src_slot->key.share0,
+                                                  KEYMGR_DPE_KEY_SIZE) &&
+                   ot_keymgr_dpe_valid_data_check(src_slot->key.share1,
+                                                  KEYMGR_DPE_KEY_SIZE);
+    if (!key_vld) {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_KEY_MASK;
     }
 
     bool key_version_valid =
         s->regs[R_KEY_VERSION] <= src_slot->max_key_version;
-
     if (!key_version_valid) {
         s->regs[R_DEBUG] |= R_DEBUG_INVALID_KEY_VERSION_MASK;
-        s->regs[R_ERR_CODE] |=
-            R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
+    }
+
+    if (!src_slot->valid || !key_version_valid || !key_vld) {
+        if (!src_slot->valid || !key_version_valid) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
+        }
+        if (!key_vld || !key_version_valid) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
+        }
         ot_keymgr_dpe_update_alert(s);
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
         ot_keymgr_dpe_schedule_fsm(s);
         return;
     }
+
+    /* Output Key Seed (SW/HW key) */
+    uint8_t *output_key = sw ? s->seeds[KEYMGR_DPE_SEED_SW_OUT] :
+                               s->seeds[KEYMGR_DPE_SEED_HW_OUT];
+    ot_keymgr_dpe_kdf_push_bytes(s, output_key, KEYMGR_DPE_SEED_BYTES);
+    ot_keymgr_dpe_dump_kdf_material(s, output_key, KEYMGR_DPE_SEED_BYTES,
+                                    "OUT_KEY_SEED");
+
+    /* Destination Seed (AES/KMAC/OTBN/other) */
+    uint8_t *dest_seed;
+    switch (dest_sel) {
+    case KEYMGR_DPE_DEST_SEL_VALUE_AES:
+        dest_seed = s->seeds[KEYMGR_DPE_SEED_AES];
+        break;
+    case KEYMGR_DPE_DEST_SEL_VALUE_KMAC:
+        dest_seed = s->seeds[KEYMGR_DPE_SEED_KMAC];
+        break;
+    case KEYMGR_DPE_DEST_SEL_VALUE_OTBN:
+        dest_seed = s->seeds[KEYMGR_DPE_SEED_OTBN];
+        break;
+    case KEYMGR_DPE_DEST_SEL_VALUE_NONE:
+    default:
+        dest_seed = s->seeds[KEYMGR_DPE_SEED_NONE];
+        break;
+    }
+    ot_keymgr_dpe_kdf_push_bytes(s, dest_seed, KEYMGR_DPE_SEED_BYTES);
+    ot_keymgr_dpe_dump_kdf_material(s, dest_seed, KEYMGR_DPE_SEED_BYTES,
+                                    "DEST_SEED");
+
+    /* Salt (software-provided via SALT_x registers) */
+    ot_keymgr_dpe_kdf_push_bytes(s, s->salt, NUM_SALT_REG * sizeof(uint32_t));
+    ot_keymgr_dpe_dump_kdf_material(s, s->salt, NUM_SALT_REG * sizeof(uint32_t),
+                                    "SALT");
+
+    /* Key Version (software-provided via KEY_VERSION register) */
+    ot_keymgr_dpe_kdf_push_key_version(s);
 
     g_assert(s->kdf_buf.length == KEYMGR_DPE_GEN_DATA_BYTES);
 
@@ -1435,8 +1465,10 @@ static void ot_keymgr_dpe_operation_load_root_key(OtKeyMgrDpeState *s)
     uint32_t ctrl = ot_shadow_reg_peek(&s->control);
     uint8_t dst_sel = (uint8_t)FIELD_EX32(ctrl, CONTROL_SHADOWED, SLOT_DST_SEL);
     dst_sel &= 0x3;
+    OtKeyMgrDpeSlot *dst_slot = &s->key_slots[dst_sel];
 
-    if (s->regs[R_LOAD_KEY_LOCK]) {
+    if ((s->regs[R_LOAD_KEY_LOCK] & R_LOAD_KEY_LOCK_LOCK_MASK) ||
+        dst_slot->valid) {
         s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
@@ -1449,7 +1481,6 @@ static void ot_keymgr_dpe_operation_load_root_key(OtKeyMgrDpeState *s)
     ot_keymgr_dpe_get_root_key(s, &secret_share0, &secret_share1);
 
     if (secret_share0.valid && secret_share1.valid) {
-        OtKeyMgrDpeSlot *dst_slot = &s->key_slots[dst_sel];
         memset(dst_slot, 0u, sizeof(OtKeyMgrDpeSlot));
         dst_slot->valid = true;
         dst_slot->boot_stage = 0u;
@@ -1464,6 +1495,7 @@ static void ot_keymgr_dpe_operation_load_root_key(OtKeyMgrDpeState *s)
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_SUCCESS);
     } else {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_ROOT_KEY_MASK;
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
         s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
@@ -1746,10 +1778,16 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
         }
         break;
     case KEYMGR_DPE_ST_WIPE:
-        ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_DISABLING);
+        memset(s->key_slots, 0u, NUM_SLOTS * sizeof(OtKeyMgrDpeSlot));
+        memset(s->saved_kmac_key, 0u, sizeof(OtKeyMgrDpeKey));
+        memset(s->sw_out_key, 0u, sizeof(OtKeyMgrDpeKey));
+        for (unsigned ix = 0u; ix < KEYMGR_DPE_KEY_SINK_COUNT; ix++) {
+            OtKeyMgrDpeKeySink key_sink = (OtKeyMgrDpeKeySink)ix;
+            ot_keymgr_dpe_push_key(s, key_sink, NULL, NULL, false);
+        }
+        ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_INVALID);
         break;
     case KEYMGR_DPE_ST_DISABLING:
-        /* TODO wipe before going to disabled state */
         ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_DISABLED);
         break;
     case KEYMGR_DPE_ST_DISABLED:
@@ -2149,6 +2187,10 @@ static MemTxResult ot_keymgr_dpe_write_with_attrs(
     case R_DEBUG:
         val32 &= DEBUG_MASK;
         s->regs[reg] &= val32; /* RW0C */
+        break;
+    case R_LOAD_KEY_LOCK:
+        val32 &= R_LOAD_KEY_LOCK_LOCK_MASK;
+        s->regs[reg] |= val32; /* RW1S */
         break;
     case R_CFG_REGWEN:
     case R_WORKING_STATE:
