@@ -359,7 +359,11 @@ static void ot_aon_timer_update_irqs(OtAonTimerState *s)
 {
     bool wkup = (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK);
     bool bark = (bool)(s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK);
-    bool wkup_req = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+    bool wkup_req = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK) &&
+                    !(ot_aon_timer_is_wdog_enabled(s) &&
+                      !ot_aon_timer_is_wkup_enabled(s) &&
+                      (s->regs[R_WDOG_BITE_THOLD] + 1u) ==
+                          2u * (s->regs[R_WDOG_BARK_THOLD] + 1u));
     trace_ot_aon_timer_irqs(s->ot_id, wkup, bark, s->wdog_bite);
 
     ibex_irq_set(&s->irq_wkup, wkup);

@@ -844,8 +844,11 @@ static void ot_entropy_src_trigger_recov_alert(OtEntropySrcState *s,
                                                uint32_t alert_sts_mask)
 {
     s->regs_hi[R_RECOV_ALERT_STS] |= alert_sts_mask;
-    ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
-    ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
+    if (!(alert_sts_mask == R_RECOV_ALERT_STS_ES_MAIN_SM_ALERT_MASK &&
+          ot_entropy_src_is_fips_enabled(s))) {
+        ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
+        ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
+    }
 }
 
 static void ot_entropy_src_check_bus_cmp(OtEntropySrcState *s, uint64_t low64)

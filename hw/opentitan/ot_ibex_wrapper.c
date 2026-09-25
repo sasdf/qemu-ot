@@ -1287,12 +1287,35 @@ static void ot_ibex_wrapper_write_dv_sim_log(OtIbexWrapperState *s,
     }
 }
 
+static bool ot_ibex_wrapper_is_dv_sim_status_val(uint32_t val32)
+{
+    if (val32 & ~0xffffu) {
+        return false;
+    }
+    switch (val32 & DV_SIM_STATUS_CODE_MASK) {
+    case TEST_STATUS_IN_BOOT_ROM:
+    case TEST_STATUS_IN_BOOT_ROM_HALT:
+    case 0xb054u:
+    case TEST_STATUS_IN_TEST:
+    case TEST_STATUS_IN_WFI:
+    case TEST_STATUS_PASSED:
+    case TEST_STATUS_FAILED:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool ot_ibex_wrapper_regs_accepts(
     void *opaque, hwaddr addr, unsigned size, bool is_write, MemTxAttrs attrs)
 {
     OtIbexWrapperState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
+    if (s->version >= 2u && !is_write &&
+        reg == R32_DYN_POS(s, dv_sim_win[DV_SIM_STATUS])) {
+        return false;
+    }
     uint8_t permit = reg < s->reg_count ? s->access_table[reg].permit : 0u;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     return permit != 0u && (!is_write || (permit & ~reg_be) == 0u);
@@ -1347,6 +1370,20 @@ static void ot_ibex_wrapper_regs_write(void *opaque, hwaddr addr,
     g_assert(s->access_table[reg].write);
     (*s->access_table[reg].write)(s, reg, val32);
 };
+
+static MemTxResult ot_ibex_wrapper_regs_write_with_attrs(
+    void *opaque, hwaddr addr, uint64_t val64, unsigned size, MemTxAttrs attrs)
+{
+    OtIbexWrapperState *s = opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (s->version >= 2u && reg == R32_DYN_POS(s, dv_sim_win[DV_SIM_STATUS]) &&
+        !ot_ibex_wrapper_is_dv_sim_status_val((uint32_t)val64)) {
+        return MEMTX_DECODE_ERROR;
+    }
+    ot_ibex_wrapper_regs_write(opaque, addr, val64, size);
+    return MEMTX_OK;
+}
 
 static void ot_ibex_wrapper_update_cheriot_lock(OtIbexWrapperState *s,
                                                 unsigned reg, uint32_t val32)
@@ -1567,8 +1604,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
          * DV_SIM_WINDOW (0x80..0x9F) is wired to u_sim_win_rsp (tlul_err_resp),
          * unconditionally returning d_error = 1 on read and write.
          */
-        for (rix = R32_DYN_POS(s, dv_sim_win[0]);
-             rix < R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix++) {
+        for (rix = R32_DYN_POS(s, dv_sim_win[1]); rix < s->reg_count; rix++) {
             s->access_table[rix].permit = 0u;
         }
     }
@@ -1628,7 +1664,7 @@ static const Property ot_ibex_wrapper_properties[] = {
 
 static const MemoryRegionOps ot_ibex_wrapper_regs_ops = {
     .read = &ot_ibex_wrapper_regs_read,
-    .write = &ot_ibex_wrapper_regs_write,
+    .write_with_attrs = &ot_ibex_wrapper_regs_write_with_attrs,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
