@@ -167,7 +167,10 @@ REG32(MAIN_SM_STATE, 0x5cu)
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_ACMD_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_CMD_SEQ_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_RESEED_CNT_ALERT_MASK)
-#define ERR_CODE_MASK 0x77f0ffffu
+#define ERR_CODE_MASK_V1         0x77f0ffffu
+#define ERR_CODE_MASK_V2         0x76700003u
+#define FATAL_LOC_EVENTS_MASK_V1 0x07f00000u
+#define FATAL_LOC_EVENTS_MASK_V2 0x06700000u
 
 #define OT_CSRNG_AES_KEY_SIZE   32u /* 256 bits */
 #define OT_CSRNG_AES_BLOCK_SIZE 16u /* 128 bits */
@@ -307,7 +310,7 @@ typedef struct {
     bool no_fips;
     bool force_fips;
     bool no_glast_update;
-    uint32_t prev_genbits[OT_CSRNG_PACKET_WORD_COUNT];
+    uint32_t prev_genbits[2]; /* 64-bit cs_rdata_capt_q bus compare */
     bool prev_genbits_valid;
 } OtCSRNGDrng;
 
@@ -362,10 +365,11 @@ struct OtCSRNGState {
 
     OtEntropySrcState *entropy_src;
     DeviceState *otp_ctrl;
+    uint8_t version;
 };
 
 /* clang-format off */
-static const uint8_t OtCSRNGFsmStateCode[] = {
+static const uint8_t OtCSRNGFsmStateCodeV1[] = {
     [CSRNG_IDLE]           = 0b01001110, // 0x4e: idle
     [CSRNG_PARSE_CMD]      = 0b10111011, // 0xbb: parse the cmd
     [CSRNG_INSTANT_PREP]   = 0b11000001, // 0xc1: instantiate prep
@@ -381,6 +385,24 @@ static const uint8_t OtCSRNGFsmStateCode[] = {
     [CSRNG_CLR_A_DATA]     = 0b00000010, // 0x02: clear out the add. data fifo
     [CSRNG_CMD_COMP_WAIT]  = 0b10111100, // 0xbc: wait for command to complete
     [CSRNG_ERROR]          = 0b01111000  // 0x78: error state
+};
+
+static const uint8_t OtCSRNGFsmStateCodeV2[] = {
+    [CSRNG_IDLE]           = 0b110111, // 0x37: MainSmIdle
+    [CSRNG_PARSE_CMD]      = 0b011101, // 0x1d: MainSmParseCmd
+    [CSRNG_INSTANT_PREP]   = 0b001110, // 0x0e: MainSmEntropyReq
+    [CSRNG_INSTANT_REQ]    = 0b010000, // 0x10: MainSmCmdVld
+    [CSRNG_RESEED_PREP]    = 0b001110, // 0x0e: MainSmEntropyReq
+    [CSRNG_RESEED_REQ]     = 0b010000, // 0x10: MainSmCmdVld
+    [CSRNG_GENERATE_PREP]  = 0b000011, // 0x03: MainSmCmdPrep
+    [CSRNG_GENERATE_REQ]   = 0b010000, // 0x10: MainSmCmdVld
+    [CSRNG_UPDATE_PREP]    = 0b000011, // 0x03: MainSmCmdPrep
+    [CSRNG_UPDATE_REQ]     = 0b010000, // 0x10: MainSmCmdVld
+    [CSRNG_UNINSTANT_PREP] = 0b000011, // 0x03: MainSmCmdPrep
+    [CSRNG_UNINSTANT_REQ]  = 0b010000, // 0x10: MainSmCmdVld
+    [CSRNG_CLR_A_DATA]     = 0b111010, // 0x3a: MainSmClrAData
+    [CSRNG_CMD_COMP_WAIT]  = 0b100100, // 0x24: MainSmCmdCompWait
+    [CSRNG_ERROR]          = 0b101001  // 0x29: MainSmError
 };
 /* clang-format on */
 
@@ -879,13 +901,13 @@ static void ot_csrng_drng_generate(OtCSRNGInstance *inst, uint32_t *out,
     g_assert(res == CRYPT_OK);
 
     if (ot_csrng_get_slot(inst) == SW_INSTANCE_ID && drng->prev_genbits_valid &&
-        memcmp(drng->prev_genbits, out, sizeof(drng->prev_genbits)) == 0) {
+        memcmp(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits)) == 0) {
         OtCSRNGState *s = inst->parent;
         s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CS_BUS_CMP_ALERT_MASK;
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
     }
-    memcpy(drng->prev_genbits, out, sizeof(drng->prev_genbits));
+    memcpy(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits));
     drng->prev_genbits_valid = true;
 
     xtrace_ot_csrng_show_buffer(ot_csrng_get_slot(inst), "out", out,
@@ -1041,6 +1063,9 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
         s->enabled = true;
         s->regs[R_SW_CMD_STS] |= R_SW_CMD_STS_CMD_RDY_MASK;
         s->es_retry_count = ENTROPY_SRC_INITIAL_REQUEST_COUNT;
+        if (s->state == CSRNG_ERROR) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_MAIN_SM_ERR_MASK;
+        }
     }
 
     if (ot_csrng_is_ctrl_disabled(s)) {
@@ -1508,11 +1533,10 @@ static void ot_csrng_swapp_fill(OtCSRNGInstance *inst)
         }
         xtrace_ot_csrng_info("swfifo empty",
                              ot_fifo32_is_empty(&inst->sw.bits_fifo));
-    } else {
-        /* check if the instance is running an deferred completion command */
-        if (inst->defer_completion) {
-            ot_csrng_complete_command(inst, CSRNG_STATUS_SUCCESS);
-        }
+    }
+
+    if (!ot_csrng_drng_remaining_count(inst) && inst->defer_completion) {
+        ot_csrng_complete_command(inst, CSRNG_STATUS_SUCCESS);
     }
 }
 
@@ -1901,16 +1925,18 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_INT_STATE_VAL:
         val32 = ot_csrng_read_state_db(s);
         break;
-    case R_MAIN_SM_STATE:
+    case R_MAIN_SM_STATE: {
+        const uint8_t *fsm_codes =
+            (s->version >= 2u) ? OtCSRNGFsmStateCodeV2 : OtCSRNGFsmStateCodeV1;
         switch (s->state) {
         case CSRNG_IDLE ... CSRNG_ERROR:
-            val32 = OtCSRNGFsmStateCode[s->state];
+            val32 = fsm_codes[s->state];
             break;
         default:
-            val32 = OtCSRNGFsmStateCode[CSRNG_ERROR];
+            val32 = fsm_codes[CSRNG_ERROR];
             break;
         }
-        break;
+    } break;
     case R_GENBITS_VLD:
         inst = &s->instances[SW_INSTANCE_ID];
         {
@@ -2112,7 +2138,7 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             (s->regs[reg] & val32) | ot_csrng_get_ctrl_recov_alert_sts(s);
         ot_csrng_update_alerts(s);
         break;
-    case R_ERR_CODE_TEST:
+    case R_ERR_CODE_TEST: {
         if (!s->regs[R_REGWEN]) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s protected w/ REGWEN\n",
                           __func__, REG_NAME(reg));
@@ -2120,12 +2146,18 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs[R_ERR_CODE_TEST] = val32;
-        uint32_t err_bit = (1u << val32) & ERR_CODE_MASK;
+        uint32_t err_code_mask =
+            (s->version >= 2u) ? ERR_CODE_MASK_V2 : ERR_CODE_MASK_V1;
+        uint32_t fatal_loc_mask =
+            (s->version >= 2u) ? FATAL_LOC_EVENTS_MASK_V2 :
+                                 FATAL_LOC_EVENTS_MASK_V1;
+        uint32_t disabled_err_mask =
+            (s->version >= 2u) ? 0u : R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
+        uint32_t err_bit = (1u << val32) & err_code_mask;
         uint32_t err_en_mask =
-            ot_csrng_is_ctrl_enabled(s) ? ERR_CODE_MASK :
-                                          R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
+            ot_csrng_is_ctrl_enabled(s) ? err_code_mask : disabled_err_mask;
         s->regs[R_ERR_CODE] |= err_bit & err_en_mask;
-        if (err_bit & 0x07f00000u) {
+        if (err_bit & fatal_loc_mask) {
             if (ot_csrng_is_ctrl_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_MAIN_SM_ERR_MASK;
             }
@@ -2136,7 +2168,7 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             ibex_irq_set(&s->alerts[ALERT_FATAL], 1);
             ibex_irq_set(&s->alerts[ALERT_FATAL], 0);
         }
-        break;
+    } break;
     case R_RESEED_COUNTER_0:
     case R_RESEED_COUNTER_1:
     case R_RESEED_COUNTER_2:
@@ -2162,6 +2194,7 @@ static const Property ot_csrng_properties[] = {
                      TYPE_OT_ENTROPY_SRC, OtEntropySrcState *),
     DEFINE_PROP_LINK("otp-ctrl", OtCSRNGState, otp_ctrl, TYPE_OT_OTP_IF,
                      DeviceState *),
+    DEFINE_PROP_UINT8("version", OtCSRNGState, version, 1u),
 };
 
 static const MemoryRegionOps ot_csrng_regs_ops = {
@@ -2200,7 +2233,9 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->regs[R_RESEED_INTERVAL] = 0xffffffffu;
     s->regs[R_INT_STATE_READ_ENABLE_REGWEN] = 0x1u;
     s->regs[R_INT_STATE_READ_ENABLE] = 0x7u;
-    s->regs[R_MAIN_SM_STATE] = 0x4eu;
+    s->regs[R_MAIN_SM_STATE] =
+        (s->version >= 2u) ? OtCSRNGFsmStateCodeV2[CSRNG_IDLE] :
+                             OtCSRNGFsmStateCodeV1[CSRNG_IDLE];
     s->enabled = false;
     s->waiting_for_entropy = false;
     s->sw_app_granted = false;
