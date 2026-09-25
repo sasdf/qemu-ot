@@ -826,6 +826,8 @@ static void riscv_cpu_reset_hold(Object *obj, ResetType type)
     pmp_update_rule_nums(env);
 
     env->mseccfg = (target_ulong)cfg->mseccfg;
+    env->cpuctrlsts = 0;
+    env->ic_scr_key_inval_cnt = 0;
     env->sync_exc_seen = false;
     env->double_fault_seen = false;
     env->unclocked_mmio_stall = false;

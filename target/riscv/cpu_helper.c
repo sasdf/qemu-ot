@@ -2429,12 +2429,10 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         }
         if (env->sync_exc_seen) {
             env->double_fault_seen = true;
-            env->cpuctrlsts |= 0x80u;
             env->prev_exception_pc = env->mepc;
             env->prev_exception_addr = env->mtval;
         }
         env->sync_exc_seen = true;
-        env->cpuctrlsts |= 0x40u;
     }
 
     trace_riscv_trap(env->mhartid, async, cause, env->pc, tval,

@@ -420,7 +420,6 @@ target_ulong helper_mret(CPURISCVState *env)
     mstatus = set_field(mstatus, MSTATUS_MIE,
                         get_field(mstatus, MSTATUS_MPIE));
     env->sync_exc_seen = false;
-    env->cpuctrlsts &= ~0x40u;
     if (env->nmi_mode) {
         /*
          * Returning from Ibex NMI restores mstack CSRs and exits nmi_mode
