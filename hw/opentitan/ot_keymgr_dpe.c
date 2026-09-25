@@ -724,6 +724,11 @@ static void ot_keymgr_dpe_xchange_op_status(
 }
 
 static void ot_keymgr_dpe_request_entropy(OtKeyMgrDpeState *s);
+static void ot_keymgr_dpe_sideload_clear(OtKeyMgrDpeState *s);
+static void ot_keymgr_dpe_xchange_main_fsm_state(
+    OtKeyMgrDpeState *s, OtKeyMgrDpeFSMState state, int line);
+#define ot_keymgr_dpe_change_main_fsm_state(_s_, _op_status_) \
+    ot_keymgr_dpe_xchange_main_fsm_state(_s_, _op_status_, __LINE__)
 
 static void ot_keymgr_dpe_push_entropy(void *opaque, uint32_t bits, bool fips)
 {
@@ -928,6 +933,7 @@ static bool ot_keymgr_dpe_handle_kmac_resp_gen_hw_out(
 
         ot_keymgr_dpe_push_key(s, key_sink, rsp->digest_share0,
                                rsp->digest_share1, is_valid);
+        ot_keymgr_dpe_sideload_clear(s);
         return dest_sel != KEYMGR_DPE_DEST_SEL_VALUE_KMAC;
     }
     case KEYMGR_DPE_DEST_SEL_VALUE_NONE:
@@ -1194,8 +1200,8 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
 
     if (invalid_allow_child || invalid_max_boot_stage || invalid_src_slot ||
         invalid_retain_parent) {
-        s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
-        s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
+        s->regs[R_ERR_CODE] |=
+            R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
         ot_keymgr_dpe_schedule_fsm(s);
@@ -1361,7 +1367,7 @@ static void ot_keymgr_dpe_operation_gen_output(OtKeyMgrDpeState *s, bool sw)
     if (!key_version_valid) {
         s->regs[R_DEBUG] |= R_DEBUG_INVALID_KEY_VERSION_MASK;
         s->regs[R_ERR_CODE] |=
-            (R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK);
+            R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK;
         ot_keymgr_dpe_update_alert(s);
         s->op_state.op_ack = true;
         ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_ERROR);
@@ -1387,13 +1393,13 @@ static void ot_keymgr_dpe_operation_hw_output(OtKeyMgrDpeState *s)
     ot_keymgr_dpe_operation_gen_output(s, false);
 }
 
-static void ot_keymgr_dpe_xchange_main_fsm_state(
-    OtKeyMgrDpeState *s, OtKeyMgrDpeFSMState state, int line);
 static void ot_keymgr_dpe_operation_disable(OtKeyMgrDpeState *s)
 {
+    memset(s->key_slots, 0u, NUM_SLOTS * sizeof(OtKeyMgrDpeSlot));
+    memset(s->saved_kmac_key, 0u, sizeof(OtKeyMgrDpeKey));
+    ot_keymgr_dpe_sideload_clear(s);
+    ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_DISABLING);
     s->op_state.op_ack = true;
-    ot_keymgr_dpe_change_op_status(s, KEYMGR_DPE_OP_STATUS_DONE_SUCCESS);
-    ot_keymgr_dpe_xchange_main_fsm_state(s, KEYMGR_DPE_ST_WIPE, __LINE__);
     ot_keymgr_dpe_schedule_fsm(s);
 }
 
@@ -1568,9 +1574,6 @@ static void ot_keymgr_dpe_lc_signal(void *opaque, int irq, int level)
     ot_keymgr_dpe_schedule_fsm(s);
 }
 
-#define ot_keymgr_dpe_change_main_fsm_state(_s_, _op_status_) \
-    ot_keymgr_dpe_xchange_main_fsm_state(_s_, _op_status_, __LINE__)
-
 static void ot_keymgr_dpe_xchange_main_fsm_state(
     OtKeyMgrDpeState *s, OtKeyMgrDpeFSMState state, int line)
 {
@@ -1729,7 +1732,9 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
     case KEYMGR_DPE_ST_DISABLED:
         ot_keymgr_dpe_change_working_state(s,
                                            KEYMGR_DPE_WORKING_STATE_DISABLED);
-        if (op_start) {
+        if (!s->enabled) {
+            ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_WIPE);
+        } else if (op_start) {
             s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
         }
         break;
@@ -1791,12 +1796,12 @@ static void ot_keymgr_dpe_fsm_tick(void *opaque)
 static inline bool ot_keymgr_dpe_check_reg_write_func(
     const char *func, OtKeyMgrDpeState *s, hwaddr reg, hwaddr regwen)
 {
-    uint32_t val = s->regs[regwen];
-    if (regwen == R_SLOT_POLICY_REGWEN || regwen == R_SW_BINDING_REGWEN ||
+    uint32_t wen = s->regs[regwen];
+    if (regwen == R_SW_BINDING_REGWEN || regwen == R_SLOT_POLICY_REGWEN ||
         regwen == R_MAX_KEY_VER_REGWEN) {
-        val &= s->regs[R_CFG_REGWEN];
+        wen &= s->regs[R_CFG_REGWEN];
     }
-    if (!val) {
+    if (!wen) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Write to %s protected with %s\n",
                       func, REG_NAME(reg), REG_NAME(regwen));
         return false;
@@ -2212,6 +2217,23 @@ static const Property ot_keymgr_dpe_properties[] = {
                        seed_xstrs[KEYMGR_DPE_SEED_SW_OUT]),
 };
 
+static bool ot_keymgr_dpe_regs_accepts(void *opaque, hwaddr addr, unsigned size,
+                                       bool is_write, MemTxAttrs attrs)
+{
+    (void)opaque;
+    (void)attrs;
+    hwaddr reg = R32_OFF(addr);
+    if (addr >= 0xd8u || reg >= REGS_COUNT) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
+    uint8_t be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t permit = reg < 54u ? KEYMGR_DPE_PERMIT[reg] : 0xfu;
+    return (permit & ~be) == 0u;
+}
+
 static const MemoryRegionOps ot_keymgr_dpe_regs_ops = {
     .read_with_attrs = &ot_keymgr_dpe_read_with_attrs,
     .write_with_attrs = &ot_keymgr_dpe_write_with_attrs,
@@ -2220,6 +2242,7 @@ static const MemoryRegionOps ot_keymgr_dpe_regs_ops = {
     .valid.max_access_size = 4u,
     .impl.min_access_size = 1u,
     .impl.max_access_size = 4u,
+    .valid.accepts = &ot_keymgr_dpe_regs_accepts,
 };
 
 static void ot_keymgr_dpe_reset_enter(Object *obj, ResetType type)
@@ -2330,7 +2353,7 @@ static void ot_keymgr_dpe_init(Object *obj)
     OtKeyMgrDpeState *s = OT_KEYMGR_DPE(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_keymgr_dpe_regs_ops, s,
-                          TYPE_OT_KEYMGR_DPE, REGS_SIZE);
+                          TYPE_OT_KEYMGR_DPE, 0x100u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     ibex_sysbus_init_irq(obj, &s->irq);
