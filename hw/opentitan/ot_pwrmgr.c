@@ -631,9 +631,9 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
 
     uint32_t active_wkup = s->regs[R_WAKE_STATUS] & s->slow_regs.wakeup_en;
 
-    if (s->slow_regs.control & R_CONTROL_LOW_POWER_HINT_MASK) {
+    if (s->regs[R_CONTROL] & R_CONTROL_LOW_POWER_HINT_MASK) {
         CPUState *cpu = qemu_get_cpu(0);
-        if (cpu && !cpu->halted) {
+        if (!s->in_low_power && cpu && !cpu->halted) {
             /* Wait until CPU executes WFI (core_sleeping_i == 1) */
             timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
             return;
@@ -1204,6 +1204,13 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (s->regs[R_CTRL_CFG_REGWEN] & R_CTRL_CFG_REGWEN_EN_MASK) {
             val32 &= CONTROL_MASK(s);
             s->regs[reg] = val32;
+            /*
+             * [pwrmgr.sv:603] low_power_hint is consumed directly from
+             * reg2hw.control.low_power_hint.q in the fast clk_i domain.
+             */
+            s->slow_regs.control =
+                (s->slow_regs.control & ~R_CONTROL_LOW_POWER_HINT_MASK) |
+                (val32 & R_CONTROL_LOW_POWER_HINT_MASK);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: %s protected w/ REGWEN\n",
                           __func__, s->ot_id, REG_NAME(reg));
