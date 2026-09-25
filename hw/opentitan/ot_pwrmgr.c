@@ -356,6 +356,13 @@ static const OtPwrMgrConfig PWRMGR_CONFIG[OT_PWRMGR_VERSION_COUNT] = {
         .control_mask = 0x71u,
         .control_res_val = 0x40u, /* MAIN_PD_N */
     },
+    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+        .wakeup_count = 6u,
+        .reset_count = 2u,
+        .reset_mask = 0x3u,
+        .control_mask = 0x191u, /* Same as EG_1_0_0 */
+        .control_res_val = 0x180u, /* Same as EG_1_0_0 */
+    },
 };
 
 #define WAKE_INFO_REASONS_MASK(_s_) \

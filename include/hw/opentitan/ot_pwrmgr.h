@@ -38,6 +38,7 @@ OBJECT_DECLARE_TYPE(OtPwrMgrState, OtPwrMgrClass, OT_PWRMGR)
 typedef enum {
     OT_PWRMGR_VERSION_EG_1_0_0,
     OT_PWRMGR_VERSION_DJ,
+    OT_PWRMGR_VERSION_EG_2_0_0,
     OT_PWRMGR_VERSION_COUNT,
 } OtPwrMgrVersion;
 

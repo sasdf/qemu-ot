@@ -128,6 +128,8 @@ struct OtAonTimerState {
     int64_t wdog_origin_ns;
     uint32_t prescale_count;
     bool wkup_intr_level;
+    int64_t wkup_intr_fired_ns;
+    int64_t wdog_bark_fired_ns;
     bool wdog_bark_level;
     bool wdog_bite;
     bool lc_escalate_en;
@@ -315,6 +317,11 @@ static void ot_aon_timer_sync_wdog(OtAonTimerState *s)
 
     bool bark_level = (last_pre_incr >= bark_threshold);
     if (bark_level && !s->wdog_bark_level) {
+        if (!(s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) {
+            // Store the timestamp when bark triggers to simulate 20us CDC lag
+            // for WDOG_COUNT
+            s->wdog_bark_fired_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        }
         s->regs[R_INTR_STATE] |= INTR_WDOG_TIMER_BARK_MASK;
     }
     s->wdog_bark_level = bark_level;
@@ -326,7 +333,12 @@ static void ot_aon_timer_sync_wdog(OtAonTimerState *s)
         s->wdog_bite = true;
     }
 
-    s->regs[R_WDOG_COUNT] = (uint32_t)new_count;
+    uint64_t r_wdog_count = new_count;
+    if (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) < s->wdog_bark_fired_ns + 20000) {
+        r_wdog_count = bark_threshold > 0 ? bark_threshold - 1 : 0;
+    }
+
+    s->regs[R_WDOG_COUNT] = (uint32_t)r_wdog_count;
     s->wdog_origin_ns = ot_aon_timer_ticks_to_ns(s, 0u, now_clks);
 }
 
