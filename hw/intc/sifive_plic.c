@@ -164,6 +164,16 @@ static void sifive_plic_update(SiFivePLICState *plic)
     }
 }
 
+static uint32_t sifive_plic_word_permit(const SiFivePLICState *plic,
+                                        uint32_t wordid)
+{
+    if (wordid == (plic->bitfield_words - 1) && (plic->num_sources & 31)) {
+        uint32_t bytes = ((plic->num_sources & 31) + 7u) >> 3;
+        return (1u << bytes) - 1u;
+    }
+    return 0xfu;
+}
+
 static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
                                 bool is_write, MemTxAttrs attrs)
 {
@@ -175,12 +185,13 @@ static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
         permit = 0x1u;
     } else if (addr_between(addr, plic->pending_base,
                             plic->bitfield_words << 2)) {
-        permit = 0xfu;
+        uint32_t wordid = (addr - plic->pending_base) >> 2;
+        permit = sifive_plic_word_permit(plic, wordid);
     } else if (addr_between(addr, plic->enable_base,
                             plic->num_addrs * plic->enable_stride)) {
-        if (((addr & (plic->enable_stride - 1)) >> 2) <
-            plic->bitfield_words) {
-            permit = 0xfu;
+        uint32_t wordid = (addr & (plic->enable_stride - 1)) >> 2;
+        if (wordid < plic->bitfield_words) {
+            permit = sifive_plic_word_permit(plic, wordid);
         }
     } else if (addr_between(addr, plic->context_base,
                             plic->num_addrs * plic->context_stride)) {
