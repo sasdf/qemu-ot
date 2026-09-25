@@ -403,6 +403,12 @@ static const uint32_t ot_eg_v2_pmp_addrs[] = {
 #define EG_LC_CTRL_TAP_IDCODE  IBEX_JTAG_IDCODE(0, 2, 1)
 #define EG_COMBINED_TAP_IDCODE IBEX_JTAG_IDCODE(0, 3, 1)
 
+/*
+ * Earlgrey 2.x TAPs (hw/top_earlgrey/rtl/jtag_id_pkg.sv: PART_TYPE = 12'h2)
+ */
+#define EG_V2_RV_DM_TAP_IDCODE   IBEX_JTAG_IDCODE(2, 1, 1)
+#define EG_V2_LC_CTRL_TAP_IDCODE IBEX_JTAG_IDCODE(2, 2, 1)
+
 #define PULP_DM_BASE   0x00010000u
 #define SRAM_MAIN_SIZE 0x20000u
 
@@ -2044,6 +2050,23 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_BOOL_PROP("start-powered-off", true)
         ),
     },
+    [OT_EG_SOC_DEV_TAP_CTRL] = {
+        .type = TYPE_TAP_CTRL_RBB,
+        .cfg = &ot_eg_soc_tap_ctrl_configure,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
+            IBEX_DEV_UINT_PROP("idcode", EG_V2_RV_DM_TAP_IDCODE),
+            IBEX_DEV_BOOL_PROP("enabled", false)
+        ),
+    },
+    [OT_EG_SOC_DEV_LC_CTRL_TAP_CTRL] = {
+        .type = TYPE_TAP_CTRL_RBB,
+        .cfg = &ot_eg_soc_lc_ctrl_tap_ctrl_configure,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("ir_length", IBEX_TAP_IR_LENGTH),
+            IBEX_DEV_UINT_PROP("idcode", EG_V2_LC_CTRL_TAP_IDCODE)
+        ),
+    },
     [OT_EG_SOC_DEV_GPIO] = {
         .type = TYPE_OT_GPIO_EG,
         .link = IBEXDEVICELINKDEFS(
@@ -2390,6 +2413,10 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
         /* Apply static file-scope overrides */
         v2_devs[OT_EG_SOC_DEV_HART].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_HART].prop;
+        v2_devs[OT_EG_SOC_DEV_TAP_CTRL].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_TAP_CTRL].prop;
+        v2_devs[OT_EG_SOC_DEV_LC_CTRL_TAP_CTRL].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_LC_CTRL_TAP_CTRL].prop;
         v2_devs[OT_EG_SOC_DEV_GPIO].link =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_GPIO].link;
         v2_devs[OT_EG_SOC_DEV_GPIO].prop =
