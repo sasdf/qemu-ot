@@ -113,6 +113,7 @@ REG32(CONTROL_SHADOWED, 0x18u)
     FIELD(CONTROL_SHADOWED, DEST_SEL, 12u, 2u)
     FIELD(CONTROL_SHADOWED, SLOT_SRC_SEL, 14u, 3u)
     FIELD(CONTROL_SHADOWED, SLOT_DST_SEL, 18u, 3u)
+    FIELD(CONTROL_SHADOWED, SW_BINDING_ONLY, 22u, 1u)
 REG32(SIDELOAD_CLEAR, 0x1cu)
     FIELD(SIDELOAD_CLEAR, VAL, 0u, 3u)
 REG32(RESEED_INTERVAL_REGWEN, 0x20u)
@@ -213,7 +214,8 @@ REG32(LOAD_KEY_LOCK, 0xd4u)
 #define R_CONTROL_SHADOWED_MASK \
     (R_CONTROL_SHADOWED_OPERATION_MASK | R_CONTROL_SHADOWED_DEST_SEL_MASK | \
      R_CONTROL_SHADOWED_SLOT_SRC_SEL_MASK | \
-     R_CONTROL_SHADOWED_SLOT_DST_SEL_MASK)
+     R_CONTROL_SHADOWED_SLOT_DST_SEL_MASK | \
+     R_CONTROL_SHADOWED_SW_BINDING_ONLY_MASK)
 
 #define ERR_CODE_MASK \
     (R_ERR_CODE_INVALID_OP_MASK | R_ERR_CODE_INVALID_KMAC_INPUT_MASK | \
@@ -1213,38 +1215,41 @@ static void ot_keymgr_dpe_operation_advance(OtKeyMgrDpeState *s)
 
     size_t expected_kdf_len = 0u;
 
-    switch (src_slot->boot_stage) {
-    /* Creator */
-    case 0u: {
-        /* Creator Seed (OTP) */
-        expected_kdf_len += ot_keymgr_dpe_kdf_append_creator_seed(s, &dvalid);
-
-        /* ROM digests (ROM_CTRL) */
-        for (unsigned ix = 0u; ix < NUM_ROM_DIGEST_INPUTS; ix++) {
+    if (!FIELD_EX32(ctrl, CONTROL_SHADOWED, SW_BINDING_ONLY)) {
+        switch (src_slot->boot_stage) {
+        /* Creator */
+        case 0u: {
+            /* Creator Seed (OTP) */
             expected_kdf_len +=
-                ot_keymgr_dpe_kdf_append_rom_digest(s, ix, &dvalid);
+                ot_keymgr_dpe_kdf_append_creator_seed(s, &dvalid);
+
+            /* ROM digests (ROM_CTRL) */
+            for (unsigned ix = 0u; ix < NUM_ROM_DIGEST_INPUTS; ix++) {
+                expected_kdf_len +=
+                    ot_keymgr_dpe_kdf_append_rom_digest(s, ix, &dvalid);
+            }
+
+            /* KeyManager diversification (LC_CTRL) */
+            expected_kdf_len += ot_keymgr_dpe_kdf_append_km_div(s, &dvalid);
+
+            /* Device ID (OTP) */
+            expected_kdf_len += ot_keymgr_dpe_kdf_append_dev_id(s, &dvalid);
+
+            /* Revision Seed (netlist constant) */
+            expected_kdf_len += ot_keymgr_dpe_kdf_append_rev_seed(s);
+
+            break;
         }
+        /* OwnerInt */
+        case 1u: {
+            /* Owner Seed (OTP) */
+            expected_kdf_len += ot_keymgr_dpe_kdf_append_owner_seed(s, &dvalid);
 
-        /* KeyManager diversification (LC_CTRL) */
-        expected_kdf_len += ot_keymgr_dpe_kdf_append_km_div(s, &dvalid);
-
-        /* Device ID (OTP) */
-        expected_kdf_len += ot_keymgr_dpe_kdf_append_dev_id(s, &dvalid);
-
-        /* Revision Seed (netlist constant) */
-        expected_kdf_len += ot_keymgr_dpe_kdf_append_rev_seed(s);
-
-        break;
-    }
-    /* OwnerInt */
-    case 1u: {
-        /* Owner Seed (OTP) */
-        expected_kdf_len += ot_keymgr_dpe_kdf_append_owner_seed(s, &dvalid);
-
-        break;
-    }
-    default:
-        break;
+            break;
+        }
+        default:
+            break;
+        }
     }
 
     /* Software Binding (software-provided via SW_BINDING_x registers) */
