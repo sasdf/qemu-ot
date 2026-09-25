@@ -126,7 +126,7 @@ static bool ot_rram_ctrl_is_mp_err(OtRramCtrlState *s, uint32_t op,
     if (!part && start_addr >= RRAM_OTP_OFFSET) {
         return true;
     }
-    if (part && start_addr >= 0x200u && start_addr < 0x400u) {
+    if (part && start_addr < 0x1000u) {
         uint32_t cfg = s->regs[(0xc4 / 4) + (start_addr / 0x200u)];
         bool en = (cfg & 0xfu) == 0x6u;
         bool perm = (op == 0u) ? (((cfg >> 4u) & 0xfu) == 0x6u) :
