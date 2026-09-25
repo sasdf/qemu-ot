@@ -300,10 +300,16 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
     insn_bits: u32,
 ) -> Option<T::InstructionResult> {
     let dec_insn = insn_format::RType::new(insn_bits);
+    let alu_elen_raw = dec_insn.funct7 & 0b11;
+    let mac_vec_elen_raw = dec_insn.funct7 & 0b1;
+
     match dec_insn.funct3 {
         0b000 => {
-            let is_sub = (dec_insn.funct7 & 0b010_0000) != 0;
-            let is_mod = (dec_insn.funct7 & 0b000_1000) != 0;
+            if alu_elen_raw != 0b00 {
+                return None;
+            }
+            let is_mod = ((dec_insn.funct7 >> 3) & 0b1) != 0;
+            let is_sub = ((dec_insn.funct7 >> 5) & 0b1) != 0;
             match (is_sub, is_mod) {
                 (false, false) => Some(processor.process_bn_addv(dec_insn)),
                 (false, true) => Some(processor.process_bn_addvm(dec_insn)),
@@ -311,18 +317,33 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
                 (true, true) => Some(processor.process_bn_subvm(dec_insn)),
             }
         }
-        0b011 | 0b100 => {
-            let is_mod = dec_insn.funct3 == 0b100;
-            let is_lane = (dec_insn.funct7 & 0b000_0100) != 0;
-            match (is_mod, is_lane) {
-                (false, false) => Some(processor.process_bn_mulv(dec_insn)),
-                (false, true) => Some(processor.process_bn_mulvl(dec_insn)),
-                (true, false) => Some(processor.process_bn_mulvm(dec_insn)),
-                (true, true) => Some(processor.process_bn_mulvml(dec_insn)),
+        0b011 => {
+            if mac_vec_elen_raw != 0 {
+                return None;
+            }
+            let is_lane = ((dec_insn.funct7 >> 2) & 0b1) != 0;
+            if is_lane {
+                Some(processor.process_bn_mulvl(dec_insn))
+            } else {
+                Some(processor.process_bn_mulv(dec_insn))
+            }
+        }
+        0b100 => {
+            if mac_vec_elen_raw != 0 {
+                return None;
+            }
+            let is_lane = ((dec_insn.funct7 >> 2) & 0b1) != 0;
+            if is_lane {
+                Some(processor.process_bn_mulvml(dec_insn))
+            } else {
+                Some(processor.process_bn_mulvm(dec_insn))
             }
         }
         0b101 => {
-            let is_trn2 = (dec_insn.funct7 & 0b010_0000) != 0;
+            if alu_elen_raw == 0b11 {
+                return None;
+            }
+            let is_trn2 = ((dec_insn.funct7 >> 5) & 0b1) != 0;
             if is_trn2 {
                 Some(processor.process_bn_trn2(dec_insn))
             } else {
@@ -330,14 +351,19 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
             }
         }
         0b110 => {
-            let is_unpk = (dec_insn.funct7 & 0b010_0000) == 0;
-            if is_unpk {
-                Some(processor.process_bn_unpk(dec_insn))
-            } else {
+            let is_pack = ((dec_insn.funct7 >> 5) & 0b1) != 0;
+            if is_pack {
                 Some(processor.process_bn_pack(dec_insn))
+            } else {
+                Some(processor.process_bn_unpk(dec_insn))
             }
         }
-        0b111 => Some(processor.process_bn_shv(dec_insn)),
+        0b111 => {
+            if alu_elen_raw != 0b00 {
+                return None;
+            }
+            Some(processor.process_bn_shv(dec_insn))
+        }
         _ => None,
     }
 }
