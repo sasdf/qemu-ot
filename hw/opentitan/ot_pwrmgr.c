@@ -663,23 +663,6 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 ot_pwrmgr_update_irq(s);
                 return;
             }
-            if (active_wkup) {
-                /* Fall-through: a wakeup is already active when attempting to
-                 * sleep */
-                if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
-                      R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
-                    s->wake_info_recording = true;
-                    s->regs[R_WAKE_INFO] |=
-                        WAKE_INFO_FALL_THROUGH_MASK(s) | active_wkup;
-                }
-                s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
-                ot_pwrmgr_set_low_power(s, true);
-                ot_pwrmgr_set_low_power(s, false);
-                s->regs[R_INTR_STATE] |= WAKEUP_MASK;
-                ot_pwrmgr_update_irq(s);
-                return;
-            }
             if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
                   R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
                 s->wake_info_recording = true;
