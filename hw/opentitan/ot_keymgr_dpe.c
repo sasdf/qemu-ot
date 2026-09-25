@@ -44,6 +44,7 @@
 #include "hw/opentitan/ot_otp_if.h"
 #include "hw/opentitan/ot_prng.h"
 #include "hw/opentitan/ot_rom_ctrl.h"
+#include "hw/opentitan/ot_rram_ctrl.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
 #include "hw/riscv/ibex_common.h"
@@ -417,6 +418,7 @@ typedef struct OtKeyMgrDpeState {
     uint8_t kmac_app;
     OtLcCtrlState *lc_ctrl;
     DeviceState *otp_ctrl;
+    OtRramCtrlState *rram_ctrl;
     OtRomCtrlState *rom_ctrl[NUM_ROM_DIGEST_INPUTS];
     DeviceState *key_sinks[KEYMGR_DPE_KEY_SINK_COUNT];
     char *seed_xstrs[KEYMGR_DPE_SEED_COUNT];
@@ -1081,13 +1083,23 @@ ot_keymgr_dpe_kdf_append_creator_seed(OtKeyMgrDpeState *s, bool *dvalid)
 {
     OtOTPKeyMgrSecret secret = { 0u };
 
-    OtOTPIfClass *oc = OT_OTP_IF_GET_CLASS(s->otp_ctrl);
-    OtOTPIf *oi = OT_OTP_IF(s->otp_ctrl);
-    oc->get_keymgr_secret(oi, OT_OTP_KEYMGR_SECRET_CREATOR_SEED, &secret);
+    if (s->rram_ctrl) {
+        ot_rram_ctrl_get_seed(s->rram_ctrl, 0u, secret.secret);
+        secret.valid = true;
+    } else {
+        OtOTPIfClass *oc = OT_OTP_IF_GET_CLASS(s->otp_ctrl);
+        OtOTPIf *oi = OT_OTP_IF(s->otp_ctrl);
+        oc->get_keymgr_secret(oi, OT_OTP_KEYMGR_SECRET_CREATOR_SEED, &secret);
+    }
 
     ot_keymgr_dpe_kdf_push_bytes(s, secret.secret, OT_OTP_KEYMGR_SECRET_SIZE);
-    *dvalid &= ot_keymgr_dpe_valid_data_check(secret.secret,
-                                              OT_OTP_KEYMGR_SECRET_SIZE);
+    bool valid = secret.valid &&
+                 ot_keymgr_dpe_valid_data_check(secret.secret,
+                                                OT_OTP_KEYMGR_SECRET_SIZE);
+    if (!valid) {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_CREATOR_SEED_MASK;
+    }
+    *dvalid &= valid;
 
     ot_keymgr_dpe_dump_kdf_material(s, secret.secret, OT_OTP_KEYMGR_SECRET_SIZE,
                                     "CREATOR_SEED");
@@ -1163,13 +1175,23 @@ ot_keymgr_dpe_kdf_append_owner_seed(OtKeyMgrDpeState *s, bool *dvalid)
 {
     OtOTPKeyMgrSecret secret = { 0u };
 
-    OtOTPIfClass *oc = OT_OTP_IF_GET_CLASS(s->otp_ctrl);
-    OtOTPIf *oi = OT_OTP_IF(s->otp_ctrl);
-    oc->get_keymgr_secret(oi, OT_OTP_KEYMGR_SECRET_OWNER_SEED, &secret);
+    if (s->rram_ctrl) {
+        ot_rram_ctrl_get_seed(s->rram_ctrl, 1u, secret.secret);
+        secret.valid = true;
+    } else {
+        OtOTPIfClass *oc = OT_OTP_IF_GET_CLASS(s->otp_ctrl);
+        OtOTPIf *oi = OT_OTP_IF(s->otp_ctrl);
+        oc->get_keymgr_secret(oi, OT_OTP_KEYMGR_SECRET_OWNER_SEED, &secret);
+    }
 
     ot_keymgr_dpe_kdf_push_bytes(s, secret.secret, OT_OTP_KEYMGR_SECRET_SIZE);
-    *dvalid &= ot_keymgr_dpe_valid_data_check(secret.secret,
-                                              OT_OTP_KEYMGR_SECRET_SIZE);
+    bool valid = secret.valid &&
+                 ot_keymgr_dpe_valid_data_check(secret.secret,
+                                                OT_OTP_KEYMGR_SECRET_SIZE);
+    if (!valid) {
+        s->regs[R_DEBUG] |= R_DEBUG_INVALID_OWNER_SEED_MASK;
+    }
+    *dvalid &= valid;
 
     ot_keymgr_dpe_dump_kdf_material(s, secret.secret, OT_OTP_KEYMGR_SECRET_SIZE,
                                     "OWNER_SEED");
@@ -2198,6 +2220,8 @@ static const Property ot_keymgr_dpe_properties[] = {
                      OtLcCtrlState *),
     DEFINE_PROP_LINK("otp-ctrl", OtKeyMgrDpeState, otp_ctrl, TYPE_OT_OTP_IF,
                      DeviceState *),
+    DEFINE_PROP_LINK("rram-ctrl", OtKeyMgrDpeState, rram_ctrl,
+                     TYPE_OT_RRAM_CTRL, OtRramCtrlState *),
     DEFINE_PROP_LINK("rom0", OtKeyMgrDpeState, rom_ctrl[0], TYPE_OT_ROM_CTRL,
                      OtRomCtrlState *),
     DEFINE_PROP_LINK("rom1", OtKeyMgrDpeState, rom_ctrl[1], TYPE_OT_ROM_CTRL,

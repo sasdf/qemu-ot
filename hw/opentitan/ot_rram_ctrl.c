@@ -284,6 +284,51 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
     }
 }
 
+static const uint8_t RRAM_DEFAULT_SEEDS[OT_RRAM_SEED_COUNT][OT_RRAM_SEED_BYTES] = {
+    /* CreatorSeed (seeds[0]): RndCnstAllSeedsDefault[255:0] */
+    {
+        0x77u, 0x74u, 0x44u, 0x1bu, 0x72u, 0xfeu, 0x65u, 0x65u,
+        0x55u, 0xcdu, 0x6du, 0x18u, 0x48u, 0x3bu, 0xb0u, 0x32u,
+        0x34u, 0x98u, 0x90u, 0xf9u, 0xebu, 0xb0u, 0x4au, 0x98u,
+        0x76u, 0x3au, 0x31u, 0x5au, 0xe2u, 0x77u, 0xdeu, 0x9cu,
+    },
+    /* OwnerSeed (seeds[1]): RndCnstAllSeedsDefault[511:256] */
+    {
+        0x91u, 0x40u, 0xd0u, 0xa6u, 0x29u, 0xe0u, 0xefu, 0xccu,
+        0xb5u, 0xedu, 0x15u, 0x53u, 0x6fu, 0x89u, 0x18u, 0x62u,
+        0x2cu, 0x8au, 0x23u, 0xb6u, 0x0eu, 0x24u, 0x4du, 0xadu,
+        0x1eu, 0x48u, 0x9eu, 0x0du, 0x4cu, 0x87u, 0x28u, 0x35u,
+    },
+};
+
+static void ot_rram_ctrl_latch_seeds(OtRramCtrlState *s)
+{
+    static const unsigned SEED_INFO_PAGES[OT_RRAM_SEED_COUNT] = { 5u, 6u };
+
+    for (unsigned idx = 0u; idx < OT_RRAM_SEED_COUNT; idx++) {
+        const uint8_t *page = &s->info_storage[SEED_INFO_PAGES[idx] * 512u];
+        bool all_ones = true;
+        for (unsigned b = 0u; b < OT_RRAM_SEED_BYTES; b++) {
+            if (page[b] != 0xffu) {
+                all_ones = false;
+                break;
+            }
+        }
+        if (all_ones) {
+            memcpy(s->seeds[idx], RRAM_DEFAULT_SEEDS[idx], OT_RRAM_SEED_BYTES);
+        } else {
+            memcpy(s->seeds[idx], page, OT_RRAM_SEED_BYTES);
+        }
+    }
+}
+
+void ot_rram_ctrl_get_seed(const OtRramCtrlState *s, unsigned idx,
+                           uint8_t *seed)
+{
+    g_assert(idx < OT_RRAM_SEED_COUNT);
+    memcpy(seed, s->seeds[idx], OT_RRAM_SEED_BYTES);
+}
+
 static MemTxResult rram_ctrl_core_read(void *opaque, hwaddr addr, uint64_t *val,
                                        unsigned size, MemTxAttrs attrs)
 {
@@ -382,6 +427,14 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         ot_rram_ctrl_update_status(s);
         break;
 
+    case R_INIT * 4:
+        s->regs[R_INIT] = val32 & 1u;
+        if ((val32 & 1u) && !s->lcmgr_init_done) {
+            ot_rram_ctrl_latch_seeds(s);
+            s->lcmgr_init_done = true;
+        }
+        break;
+
     case R_ADDR * 4:
         s->regs[R_ADDR] = val32 & (RRAM_HOST_SIZE - 1u) & ~3u;
         break;
@@ -453,7 +506,6 @@ static const MemoryRegionOps rram_ctrl_otp_ops = {
     },
 };
 
-
 static void ot_rram_ctrl_load(OtRramCtrlState *s, Error **errp)
 {
     if (s->blk) {
@@ -519,6 +571,8 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
 
     s->last_wr_err_addr = 0;
     s->last_rd_err_addr = 0;
+    s->lcmgr_init_done = false;
+    ot_rram_ctrl_latch_seeds(s);
 
     /* rram_macro_prim_reg_top.sv: CSR0_REGWEN=1 (rw0c), CSR1=0 (rw), CSR2=0
      * (w1c) */

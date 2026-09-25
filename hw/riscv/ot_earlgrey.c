@@ -2191,7 +2191,8 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             OT_EG_SOC_DEVLINK("lc-ctrl", LC_CTRL),
             OT_EG_SOC_DEVLINK("otbn", OTBN),
             OT_EG_SOC_DEVLINK("otp-ctrl", OTP_CTRL),
-            OT_EG_SOC_DEVLINK("rom0", ROM_CTRL)
+            OT_EG_SOC_DEVLINK("rom0", ROM_CTRL),
+            OT_EG_SOC_DEVLINK("rram-ctrl", FLASH_CTRL)
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("edn-ep", 0u),
