@@ -49,6 +49,7 @@
 #include "system/replay.h"
 #include "system/runstate.h"
 #include "trace.h"
+static void ot_pwrmgr_update_ctrl_cfg_regwen(OtPwrMgrState *s);
 
 #define NUM_INT_RST_REQS   2u
 #define NUM_DEBUG_RST_REQS 1u
@@ -360,7 +361,7 @@ static const OtPwrMgrConfig PWRMGR_CONFIG[OT_PWRMGR_VERSION_COUNT] = {
         .wakeup_count = 6u,
         .reset_count = 2u,
         .reset_mask = 0x3u,
-        .control_mask = 0x191u, /* Same as EG_1_0_0 */
+        .control_mask = 0x1f1u,
         .control_res_val = 0x180u, /* Same as EG_1_0_0 */
     },
 };
@@ -465,6 +466,7 @@ static void ot_pwrmgr_change_fast_state_line(OtPwrMgrState *s,
                                  s->f_state, FST_NAME(state), state);
 
     s->f_state = state;
+    ot_pwrmgr_update_ctrl_cfg_regwen(s);
 }
 
 static void ot_pwrmgr_change_slow_state_line(OtPwrMgrState *s,
@@ -519,6 +521,18 @@ static void ot_pwrmgr_update_usb_clock(OtPwrMgrState *s)
     }
 }
 
+
+static void ot_pwrmgr_update_ctrl_cfg_regwen(OtPwrMgrState *s)
+{
+    bool en = (s->f_state == OT_PWR_FAST_ST_ACTIVE) &&
+              !(s->regs[R_CFG_CDC_SYNC] & R_CFG_CDC_SYNC_SYNC_MASK);
+    if (!en) {
+        s->regs[R_CTRL_CFG_REGWEN] &= ~R_CTRL_CFG_REGWEN_EN_MASK;
+    } else {
+        s->regs[R_CTRL_CFG_REGWEN] |= R_CTRL_CFG_REGWEN_EN_MASK;
+    }
+}
+
 static void ot_pwrmgr_cdc_sync(void *opaque)
 {
     OtPwrMgrState *s = opaque;
@@ -528,6 +542,7 @@ static void ot_pwrmgr_cdc_sync(void *opaque)
     ot_pwrmgr_sync_slow_regs(s);
     ot_pwrmgr_update_usb_clock(s);
     s->regs[R_CFG_CDC_SYNC] &= ~R_CFG_CDC_SYNC_SYNC_MASK;
+    ot_pwrmgr_update_ctrl_cfg_regwen(s);
     ot_pwrmgr_check_wakeup(s);
 }
 
@@ -642,6 +657,23 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                  * [pwrmgr_fsm.sv:378,382] FastPwrStateDisClks pulses
                  * low_power_o = 1 before FastPwrStateNvmIdleChk aborts.
                  */
+                ot_pwrmgr_set_low_power(s, true);
+                ot_pwrmgr_set_low_power(s, false);
+                s->regs[R_INTR_STATE] |= WAKEUP_MASK;
+                ot_pwrmgr_update_irq(s);
+                return;
+            }
+            if (active_wkup) {
+                /* Fall-through: a wakeup is already active when attempting to
+                 * sleep */
+                if (!(s->regs[R_WAKE_INFO_CAPTURE_DIS] &
+                      R_WAKE_INFO_CAPTURE_DIS_VAL_MASK)) {
+                    s->wake_info_recording = true;
+                    s->regs[R_WAKE_INFO] |=
+                        WAKE_INFO_FALL_THROUGH_MASK(s) | active_wkup;
+                }
+                s->regs[R_CONTROL] &= ~R_CONTROL_LOW_POWER_HINT_MASK;
+                s->slow_regs.control &= ~R_CONTROL_LOW_POWER_HINT_MASK;
                 ot_pwrmgr_set_low_power(s, true);
                 ot_pwrmgr_set_low_power(s, false);
                 s->regs[R_INTR_STATE] |= WAKEUP_MASK;
@@ -1201,6 +1233,7 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
                                        CDC_SYNC_PULSE_DURATION_NS);
         }
+        ot_pwrmgr_update_ctrl_cfg_regwen(s);
         break;
     case R_WAKEUP_EN_REGWEN:
         val32 &= R_WAKEUP_EN_REGWEN_EN_MASK;
