@@ -67,6 +67,8 @@ REG32(CMD, 0x10u)
     FIELD(CMD, CMD, 0u, 8u)
 REG32(CTRL, 0x14u)
     FIELD(CTRL, SW_ERRS_FATAL, 0u, 1u)
+    FIELD(CTRL, WFI_ENABLED, 1u, 1u)
+    FIELD(CTRL, URND_CTRL_ENABLED, 2u, 1u)
 REG32(STATUS, 0x18u)
     FIELD(STATUS, STATUS, 0u, 8u)
 REG32(ERR_BITS, 0x1cu)
@@ -78,6 +80,7 @@ REG32(ERR_BITS, 0x1cu)
     FIELD(ERR_BITS, KEY_INVALID, 5u, 1u)
     FIELD(ERR_BITS, RND_REP_CHK_FAIL, 6u, 1u)
     FIELD(ERR_BITS, RND_FIPS_CHK_FAIL, 7u, 1u)
+    FIELD(ERR_BITS, MAI_SOFTWARE_ERROR, 8u, 1u)
     FIELD(ERR_BITS, IMEM_INTG_VIOLATION, 16u, 1u)
     FIELD(ERR_BITS, DMEM_INTG_VIOLATION, 17u, 1u)
     FIELD(ERR_BITS, REG_INTG_VIOLATION, 18u, 1u)
@@ -101,9 +104,12 @@ REG32(LOAD_CHECKSUM, 0x28u)
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
-#define OT_OTBN_REGS_BASE 0x0u
-#define OT_OTBN_IMEM_BASE 0x4000u
-#define OT_OTBN_DMEM_BASE 0x8000u
+#define OT_OTBN_REGS_BASE    0x0u
+#define OT_OTBN_SCRATCH_BASE 0x2000u
+#define OT_OTBN_IMEM_BASE    0x4000u
+#define OT_OTBN_DMEM_BASE    0x8000u
+#define OT_OTBN_SCRATCH_COUNT 4u
+#define OT_OTBN_SCRATCH_SIZE  (OT_OTBN_SCRATCH_COUNT * sizeof(uint32_t))
 
 #define OT_OTBN_CLOCK_ACTIVE "clock-active"
 #define OT_OTBN_CLOCK_INPUT  "clock-in"
@@ -153,6 +159,7 @@ struct OtOTBNState {
     /* <public> */
     MemoryRegion mmio;
     MemoryRegion regs;
+    MemoryRegion scratch_regs;
     MemoryRegion imem;
     MemoryRegion dmem;
 
@@ -174,6 +181,7 @@ struct OtOTBNState {
     uint32_t errbits;
     uint32_t fatal_alert_cause;
     uint32_t load_checksum;
+    uint32_t scratch[OT_OTBN_SCRATCH_COUNT];
 
     enum OtOTBNCommand last_cmd;
     int64_t exec_start_ns;
@@ -338,6 +346,7 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
 
     switch (last_cmd) {
     case OT_OTBN_CMD_EXECUTE:
+    case OT_OTBN_CMD_RESUME:
     case OT_OTBN_CMD_SEC_WIPE_DMEM:
     case OT_OTBN_CMD_SEC_WIDE_IMEM:
         if (s->proxy_defer) {
@@ -349,7 +358,8 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
              * from the OTBN working thread.
              */
             uint64_t delay_ns = 100000ULL;
-            if (last_cmd == OT_OTBN_CMD_EXECUTE) {
+            if (last_cmd == OT_OTBN_CMD_EXECUTE ||
+                last_cmd == OT_OTBN_CMD_RESUME) {
                 uint32_t insncount =
                     ot_otbn_proxy_get_instruction_count(s->proxy);
                 delay_ns = MIN(2000000ULL,
@@ -464,6 +474,24 @@ static void ot_otbn_proxy_entropy_req_bh(void *opaque)
 
 static void ot_otbn_handle_command(OtOTBNState *s, unsigned command)
 {
+    if (s->version == 2u && command == (unsigned)OT_OTBN_CMD_RESUME) {
+        if (s->lc_escalated ||
+            ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_PAUSED) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: %s: cannot execute RESUME from a non-PAUSED state\n",
+                          __func__, s->ot_id);
+            return;
+        }
+        if (s->last_cmd != OT_OTBN_CMD_NONE) {
+            return;
+        }
+        ibex_irq_set(&s->clock_active, true);
+        s->last_cmd = command;
+        s->exec_start_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
+        ot_otbn_proxy_resume(s->proxy, false);
+        return;
+    }
+
     /* "Writes are ignored if OTBN is not idle" */
     if (!ot_otbn_is_idle(s)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -639,8 +667,10 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
         }
         val32 = ot_otbn_sync_proxy(s);
         if ((val32 == OT_OTBN_STATUS_IDLE ||
+             val32 == OT_OTBN_STATUS_PAUSED ||
              val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) &&
             (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
+             s->last_cmd == OT_OTBN_CMD_RESUME ||
              (s->proxy_defer && timer_pending(s->proxy_defer)))) {
             val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
         }
@@ -713,11 +743,15 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         ot_otbn_update_alert(s);
         break;
     case R_CMD:
+        val32 &= R_CMD_CMD_MASK;
+        if (s->version == 2u && val32 == (uint32_t)OT_OTBN_CMD_RESUME) {
+            ot_otbn_handle_command(s, (unsigned)val32);
+            break;
+        }
         if (!ot_otbn_is_idle(s)) {
             trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
             break;
         }
-        val32 &= R_CMD_CMD_MASK;
         ot_otbn_handle_command(s, (unsigned)val32);
         break;
     case R_CTRL:
@@ -725,8 +759,11 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
             break;
         }
-        val32 &= R_CTRL_SW_ERRS_FATAL_MASK;
-        ot_otbn_proxy_set_ctrl(s->proxy, (bool)val32);
+        val32 &= (s->version == 2u) ?
+                     (R_CTRL_SW_ERRS_FATAL_MASK | R_CTRL_WFI_ENABLED_MASK |
+                      R_CTRL_URND_CTRL_ENABLED_MASK) :
+                     R_CTRL_SW_ERRS_FATAL_MASK;
+        ot_otbn_proxy_set_ctrl(s->proxy, val32);
         ot_otbn_update_alert(s);
         break;
     case R_ERR_BITS:
@@ -773,6 +810,8 @@ static void ot_otbn_update_checksum(OtOTBNState *s, bool doi, uint32_t addr,
 
 static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
 {
+    bool was_paused =
+        (ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_PAUSED);
     bool valid = true;
     uint32_t value = ot_otbn_proxy_read_memory(s->proxy, doi, addr, &valid);
     trace_ot_otbn_mem_read(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value);
@@ -782,18 +821,18 @@ static uint32_t ot_otbn_mem_read(OtOTBNState *s, bool doi, hwaddr addr)
         ot_otbn_post_execute(s);
     }
     if (valid) {
-        /*
-         * In otbn.sv:737-746, mem_crc_data_in_valid checks:
-         *   ~(dmem_access_core | imem_access_core) &
-         *   ((imem_req_bus & (imem_byte_mask_bus == 4'hf)) |
-         *    (dmem_req_bus & (dmem_byte_mask_bus == 4'hf)))
-         * without gating on imem_write_bus / dmem_write_bus. Because
-         * tlul_adapter_host.sv:94 drives a_mask = 4'hf on all TL-UL Get
-         * requests and tlul_adapter_sram.sv:390,429 asserts req_o = 1 with
-         * wdata_int = 0 when we_o = 0, valid idle host reads advance
-         * u_mem_load_crc32 with wr_data = 0.
-         */
-        ot_otbn_update_checksum(s, doi, addr, 0u);
+        if (!was_paused) {
+            /*
+             * In otbn.sv:788-792, mem_crc_data_in_valid checks:
+             *   ~(dmem_access_core | imem_access_core) &
+             *   ((imem_req_bus & (imem_byte_mask_bus == 4'hf)) |
+             *    (dmem_req_bus & (dmem_byte_mask_bus == 4'hf)))
+             * While paused by WFI (wfi_pending == 1), imem_access_core is 1
+             * (otbn.sv:451), forcing mem_crc_data_in_valid to 0 even for valid
+             * DMEM accesses.
+             */
+            ot_otbn_update_checksum(s, doi, addr, 0u);
+        }
     } else {
         hwaddr offset = (doi ? OT_OTBN_IMEM_BASE : OT_OTBN_DMEM_BASE) + addr;
         ot_common_raise_load_integrity_error(DEVICE(s), offset);
@@ -805,18 +844,19 @@ static void ot_otbn_mem_write(OtOTBNState *s, bool doi, hwaddr addr,
                               uint32_t value)
 {
     bool was_locked = ot_otbn_is_locked(s);
+    bool was_paused =
+        (ot_otbn_proxy_get_status(s->proxy) == OT_OTBN_STATUS_PAUSED);
     bool written = !s->lc_escalated &&
                    ot_otbn_proxy_write_memory(s->proxy, doi, addr, value);
     trace_ot_otbn_mem_write(s->ot_id, doi ? 'I' : 'D', (uint32_t)addr, value,
                             written ? "" : " FAILED");
-    if (written || was_locked) {
+    if ((written || was_locked) && !was_paused) {
         /*
-         * In otbn.sv:737-739, mem_crc_data_in_valid is gated by
+         * In otbn.sv:788-792, mem_crc_data_in_valid is gated by
          * ~(dmem_access_core | imem_access_core), i.e. ~(busy_execute_q |
-         * start_q), and is NOT gated by ~locking. When OTBN is already in
-         * StatusLocked, prim_ram_1p_scr suppresses the SRAM macro write
-         * (.intg_error_i(locking)), but u_mem_load_crc32 still advances on
-         * 32-bit bus writes.
+         * start_q | wfi_pending), and is NOT gated by ~locking. When OTBN is
+         * in StatusPaused (wfi_pending == 1), imem_access_core == 1 disables
+         * u_mem_load_crc32 updates on DMEM writes.
          */
         ot_otbn_update_checksum(s, doi, addr, value);
     }
@@ -834,6 +874,34 @@ static bool ot_otbn_mem_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)attrs;
     return !is_write || (size == 4u && (addr & 3u) == 0u);
 }
+
+static uint64_t ot_otbn_scratch_read(void *opaque, hwaddr addr, unsigned size)
+{
+    OtOTBNState *s = opaque;
+    (void)size;
+    hwaddr idx = R32_OFF(addr);
+    return (idx < OT_OTBN_SCRATCH_COUNT) ? s->scratch[idx] : 0u;
+}
+
+static void ot_otbn_scratch_write(void *opaque, hwaddr addr, uint64_t val64,
+                                  unsigned size)
+{
+    OtOTBNState *s = opaque;
+    (void)size;
+    hwaddr idx = R32_OFF(addr);
+    if (idx < OT_OTBN_SCRATCH_COUNT) {
+        s->scratch[idx] = (uint32_t)val64;
+    }
+}
+
+static const MemoryRegionOps ot_otbn_scratch_ops = {
+    .read = &ot_otbn_scratch_read,
+    .write = &ot_otbn_scratch_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 4u,
+    .impl.max_access_size = 4u,
+    .valid.accepts = &ot_otbn_mem_accepts,
+};
 
 static inline uint64_t
 ot_otbn_imem_read(void *opaque, hwaddr addr, unsigned size)
@@ -930,6 +998,7 @@ static void ot_otbn_reset_enter(Object *obj, ResetType type)
     s->errbits = 0;
     s->fatal_alert_cause = 0;
     s->load_checksum = 0;
+    memset(s->scratch, 0, sizeof(s->scratch));
     s->lc_escalated = false;
 
     s->last_cmd = OT_OTBN_CMD_NONE;
@@ -1028,6 +1097,14 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
     uint32_t dmem_pub_size =
         (s->version == 2u) ? OT_OTBN_V2_DMEM_SIZE : OT_OTBN_DMEM_SIZE;
     uint32_t dmem_size = (s->version == 2u) ? (32u << 10u) : (4u << 10u);
+
+    if (s->version == 2u) {
+        memory_region_init_io(&s->scratch_regs, OBJECT(dev),
+                              &ot_otbn_scratch_ops, s, TYPE_OT_OTBN ".scratch",
+                              OT_OTBN_SCRATCH_SIZE);
+        memory_region_add_subregion(&s->mmio, OT_OTBN_SCRATCH_BASE,
+                                    &s->scratch_regs);
+    }
 
     /*
      * IMEM cannot be defined as a RAM region since accesses need to be

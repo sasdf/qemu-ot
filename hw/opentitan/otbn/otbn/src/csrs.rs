@@ -6,6 +6,7 @@
 use std::cell::Cell;
 use std::convert::TryFrom;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ethnum::{u256, U256};
@@ -34,8 +35,12 @@ pub enum CSRAddr {
     mod6 = 0x7d6,
     mod7 = 0x7d7,
     rnd_prefetch = 0x7d8,
-    rnd = 0xfc0,  // CSRNG
-    urnd = 0xfc1, // PRNG
+    urnd_ctrl = 0x7d9,
+    mai_ctrl = 0x7e0,
+    rnd = 0xfc0,         // CSRNG
+    urnd = 0xfc1,        // PRNG
+    urnd_status = 0xfc2, // URND status
+    mai_status = 0xfca,  // MAI status
 }
 
 impl TryFrom<u32> for CSRAddr {
@@ -55,8 +60,12 @@ impl TryFrom<u32> for CSRAddr {
             0x7d6 => Ok(Self::mod6),
             0x7d7 => Ok(Self::mod7),
             0x7d8 => Ok(Self::rnd_prefetch),
+            0x7d9 => Ok(Self::urnd_ctrl),
+            0x7e0 => Ok(Self::mai_ctrl),
             0xfc0 => Ok(Self::rnd),
             0xfc1 => Ok(Self::urnd),
+            0xfc2 => Ok(Self::urnd_status),
+            0xfca => Ok(Self::mai_status),
             _ => Err(value),
         }
     }
@@ -397,12 +406,156 @@ impl WSR for CSRWideSharedGeneric {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct UrndCtrlState {
+    stopped: bool,
+    used_while_stopped: bool,
+    restoring: bool,
+}
+
+struct CSRUrndCtrl {
+    ctrl: Arc<AtomicU32>,
+    state: Rc<Cell<UrndCtrlState>>,
+}
+
+impl CSRUrndCtrl {
+    pub fn new(ctrl: Arc<AtomicU32>, state: Rc<Cell<UrndCtrlState>>) -> Self {
+        Self { ctrl, state }
+    }
+}
+
+impl CSR for CSRUrndCtrl {
+    fn read(&self) -> Result<u32, ExceptionCause> {
+        Ok(0)
+    }
+
+    fn write(&mut self, val: u32) -> Result<(), ExceptionCause> {
+        let urnd_ctrl_enabled = (self.ctrl.load(Ordering::Relaxed) & 0x4) != 0;
+        if urnd_ctrl_enabled {
+            let mut s = self.state.get();
+            let start_cmd = (val & 0x1) != 0;
+            let stop_cmd = (val & 0x2) != 0;
+            let restore_cmd = (val & 0x4) != 0;
+
+            // otbn_rnd.sv:257-282:
+            // start_cmd has higher priority than stop_cmd for urnd_stopped_d.
+            // However, used_while_stopped_d checks `!urnd_stopped_q && stop_cmd && urnd_advance`
+            // where `urnd_advance` is true whenever `!urnd_stopped_d` is true!
+            let urnd_stopped_d = if start_cmd {
+                false
+            } else if stop_cmd {
+                true
+            } else {
+                s.stopped
+            };
+            let urnd_advance = !urnd_stopped_d;
+            let used_while_stopped_d = if !s.stopped && stop_cmd && urnd_advance {
+                true
+            } else if stop_cmd {
+                false
+            } else {
+                s.used_while_stopped
+            };
+            s.stopped = urnd_stopped_d;
+            s.used_while_stopped = used_while_stopped_d;
+            if restore_cmd {
+                s.restoring = true;
+            }
+            self.state.set(s);
+        }
+        Ok(())
+    }
+}
+
+struct CSRUrndStatus {
+    ctrl: Arc<AtomicU32>,
+    state: Rc<Cell<UrndCtrlState>>,
+}
+
+impl CSRUrndStatus {
+    pub fn new(ctrl: Arc<AtomicU32>, state: Rc<Cell<UrndCtrlState>>) -> Self {
+        Self { ctrl, state }
+    }
+}
+
+impl CSR for CSRUrndStatus {
+    fn read(&self) -> Result<u32, ExceptionCause> {
+        let urnd_ctrl_enabled = (self.ctrl.load(Ordering::Relaxed) & 0x4) != 0;
+        let s = self.state.get();
+        // otbn_rnd.sv:235-244:
+        // [31:26] urnd_restore_width = 32
+        // [25:16] urnd_state_width = 177
+        // [3] used_while_stopped
+        // [2] restoring
+        // [1] stopped
+        // [0] urnd_ctrl_enabled
+        let val = (32u32 << 26)
+            | (177u32 << 16)
+            | ((s.used_while_stopped as u32) << 3)
+            | ((s.restoring as u32) << 2)
+            | ((s.stopped as u32) << 1)
+            | (urnd_ctrl_enabled as u32);
+        Ok(val)
+    }
+
+    fn write(&mut self, _val: u32) -> Result<(), ExceptionCause> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CSRMaiCtrl {
+    op: Cell<u8>,
+}
+
+impl CSR for CSRMaiCtrl {
+    fn read(&self) -> Result<u32, ExceptionCause> {
+        // otbn_mai.sv:443-446: start and rsvd read as 0; op is bits [5:1]
+        Ok(((self.op.get() & 0x1f) as u32) << 1)
+    }
+
+    fn write(&mut self, val: u32) -> Result<(), ExceptionCause> {
+        let ma_start = (val & 0x1) != 0;
+        let op = ((val >> 1) & 0x1f) as u8;
+        let rsvd = val >> 6;
+        self.op.set(op);
+
+        // otbn_mai.sv:456-459:
+        // rsvd_csr_write = ispr_mai_ctrl_wr_i & (|ispr_mai_ctrl_w.rsvd)
+        // invalid_op = !(ma_mask_op_d inside {SecAdd, SecAddMod, ArithToBool, BoolToArith}) & ma_start
+        let rsvd_csr_write = rsvd != 0;
+        let valid_op = matches!(op, 0x17 | 0x1b | 0x06 | 0x19);
+        let invalid_op = !valid_op && ma_start;
+        if rsvd_csr_write || invalid_op {
+            return Err(ExceptionCause::EMaiSoftwareError);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CSRMaiStatus;
+
+impl CSR for CSRMaiStatus {
+    fn read(&self) -> Result<u32, ExceptionCause> {
+        Ok(0)
+    }
+
+    fn write(&mut self, _val: u32) -> Result<(), ExceptionCause> {
+        Ok(())
+    }
+}
+
 pub struct CSRSet {
     fg0: CSRFlagGroup,
     fg1: CSRFlagGroup,
     flags: CSRFlagGroup,
     mods: [CSRMod; 8],
     rndprefetch: CSRRndPrefetcher,
+    urnd_ctrl: CSRUrndCtrl,
+    urnd_status: CSRUrndStatus,
+    mai_ctrl: CSRMaiCtrl,
+    mai_status: CSRMaiStatus,
     rnd: CSRRnd,
     urnd: CSRUrnd,
 
@@ -416,16 +569,28 @@ pub struct CSRSet {
     key_s1_h: CSRWideKey,
 
     shared_flags: SharedFlags,
+    urnd_ctrl_state: Rc<Cell<UrndCtrlState>>,
+    ctrl: Arc<AtomicU32>,
 }
 
 impl CSRSet {
-    pub fn new(urnd: Arc<Mutex<dyn PRNG>>, rnd: Arc<random::Rnd>, key: Arc<key::Key>) -> Self {
+    pub fn new(
+        urnd: Arc<Mutex<dyn PRNG>>,
+        rnd: Arc<random::Rnd>,
+        key: Arc<key::Key>,
+        ctrl: Arc<AtomicU32>,
+    ) -> Self {
+        let urnd_ctrl_state = Rc::new(Cell::new(UrndCtrlState::default()));
         let mut csrs = Self {
             fg0: CSRFlagGroup::default(),
             fg1: CSRFlagGroup::default(),
             flags: CSRFlagGroup::default(),
             mods: <[CSRMod; 8]>::default(),
             rndprefetch: CSRRndPrefetcher::new(rnd.clone()),
+            urnd_ctrl: CSRUrndCtrl::new(ctrl.clone(), urnd_ctrl_state.clone()),
+            urnd_status: CSRUrndStatus::new(ctrl.clone(), urnd_ctrl_state.clone()),
+            mai_ctrl: CSRMaiCtrl::default(),
+            mai_status: CSRMaiStatus,
             rnd: CSRRnd::new(rnd.clone()),
             urnd: CSRUrnd::new(urnd.clone()),
             r#mod: CSRWideSharedGeneric::default(),
@@ -437,6 +602,8 @@ impl CSRSet {
             key_s1_l: CSRWideKey::new(key.clone(), 1, false),
             key_s1_h: CSRWideKey::new(key.clone(), 1, true),
             shared_flags: SharedFlags::default(),
+            urnd_ctrl_state,
+            ctrl,
         };
         csrs.fg0.plug(&csrs.shared_flags, FlagMode::Fg0);
         csrs.fg1.plug(&csrs.shared_flags, FlagMode::Fg1);
@@ -445,6 +612,15 @@ impl CSRSet {
             otmod.plug(&csrs.r#mod, pos)
         }
         csrs
+    }
+
+    pub fn get_ctrl(&self) -> u32 {
+        self.ctrl.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_on_start(&mut self) {
+        self.urnd_ctrl_state.set(UrndCtrlState::default());
+        self.mai_ctrl.op.set(0);
     }
 
     pub fn get_flags(&self, fg: usize) -> insn_proc::Flags {
@@ -474,8 +650,12 @@ impl CSRSet {
             CSRAddr::mod6 => &self.mods[6],
             CSRAddr::mod7 => &self.mods[7],
             CSRAddr::rnd_prefetch => &self.rndprefetch,
+            CSRAddr::urnd_ctrl => &self.urnd_ctrl,
+            CSRAddr::mai_ctrl => &self.mai_ctrl,
             CSRAddr::rnd => &self.rnd,
             CSRAddr::urnd => &self.urnd,
+            CSRAddr::urnd_status => &self.urnd_status,
+            CSRAddr::mai_status => &self.mai_status,
         })
     }
 
@@ -496,8 +676,12 @@ impl CSRSet {
             CSRAddr::mod6 => &mut self.mods[6],
             CSRAddr::mod7 => &mut self.mods[7],
             CSRAddr::rnd_prefetch => &mut self.rndprefetch,
+            CSRAddr::urnd_ctrl => &mut self.urnd_ctrl,
+            CSRAddr::mai_ctrl => &mut self.mai_ctrl,
             CSRAddr::rnd => &mut self.rnd,
             CSRAddr::urnd => &mut self.urnd,
+            CSRAddr::urnd_status => &mut self.urnd_status,
+            CSRAddr::mai_status => &mut self.mai_status,
         })
     }
 

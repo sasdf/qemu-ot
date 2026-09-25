@@ -36,7 +36,9 @@ pub enum ExceptionCause {
     EKeyInvalid = 1 << 5,
     ERndRepChkFail = 1 << 6,
     ERndFipsChkFail = 1 << 7,
+    EMaiSoftwareError = 1 << 8,
     EFatal = 1 << 20,
+    EWfi = 1 << 30,
     ECallMMode = 1 << 31,
 }
 

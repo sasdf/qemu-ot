@@ -40,6 +40,7 @@ enum OtOTBNCommand {
     OT_OTBN_CMD_EXECUTE = 0xD8,
     OT_OTBN_CMD_SEC_WIPE_DMEM = 0xC3,
     OT_OTBN_CMD_SEC_WIDE_IMEM = 0x1E,
+    OT_OTBN_CMD_RESUME = 0xA6,
 };
 
 enum OtOTBNStatus {
@@ -48,6 +49,7 @@ enum OtOTBNStatus {
     OT_OTBN_STATUS_BUSY_SEC_WIPE_DMEM = 0x02,
     OT_OTBN_STATUS_BUSY_SEC_WIPE_IMEM = 0x03,
     OT_OTBN_STATUS_BUSY_SEC_WIPE_INT = 0x04,
+    OT_OTBN_STATUS_PAUSED = 0x05,
     OT_OTBN_STATUS_LOCKED = 0xFF,
 };
 
@@ -78,6 +80,7 @@ extern bool ot_otbn_proxy_push_key(OTBNProxy proxy, const uint8_t *share0,
                                    const uint8_t *share1, uint32_t len,
                                    bool valid);
 extern int ot_otbn_proxy_execute(OTBNProxy proxy, bool dumpstate);
+extern int ot_otbn_proxy_resume(OTBNProxy proxy, bool dumpstate);
 extern int ot_otbn_proxy_wipe_memory(OTBNProxy proxy, bool doi);
 extern bool ot_otbn_proxy_acknowledge_execution(OTBNProxy proxy);
 extern uint32_t
@@ -90,7 +93,7 @@ extern void
 ot_otbn_proxy_set_instruction_count(OTBNProxy proxy, uint32_t value);
 extern uint32_t ot_otbn_proxy_get_err_bits(OTBNProxy proxy);
 extern void ot_otbn_proxy_set_err_bits(OTBNProxy proxy, uint32_t value);
-extern bool ot_otbn_proxy_get_ctrl(OTBNProxy proxy);
-extern void ot_otbn_proxy_set_ctrl(OTBNProxy proxy, bool value);
+extern uint32_t ot_otbn_proxy_get_ctrl(OTBNProxy proxy);
+extern void ot_otbn_proxy_set_ctrl(OTBNProxy proxy, uint32_t value);
 
 #endif /* HW_OPENTITAN_OTBN_PROXY_H */

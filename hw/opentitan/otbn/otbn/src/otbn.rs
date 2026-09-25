@@ -46,6 +46,7 @@ bitflags! {
         const KEY_INVALID = 1 << 5;
         const RND_REP_CHK_FAIL = 1 << 6;
         const RND_FIPS_CHK_FAIL = 1 << 7;
+        const MAI_SOFTWARE_ERROR = 1 << 8;
         const IMEM_INTG_VIOLATION = 1 << 16;
         const DMEM_INTG_VIOLATION = 1 << 17;
         const REG_INTG_VIOLATION = 1 << 18;
@@ -71,6 +72,7 @@ pub enum Status {
     BusySecWipeDMem = 2,
     BusySecWipeIMem = 3,
     BusySecWipeInt = 4,
+    Paused = 5,
     Locked = 0xff,
 }
 
@@ -82,6 +84,7 @@ impl Status {
             val if val == Status::BusySecWipeDMem as u32 => Status::BusySecWipeDMem,
             val if val == Status::BusySecWipeIMem as u32 => Status::BusySecWipeIMem,
             val if val == Status::BusySecWipeInt as u32 => Status::BusySecWipeInt,
+            val if val == Status::Paused as u32 => Status::Paused,
             _ => Status::Locked,
         }
     }
@@ -95,7 +98,7 @@ pub struct Registers {
     pub err_bits: Arc<AtomicU32>,
     /// ErrBits bitfield,
     pub fatal_bits: Arc<AtomicU32>,
-    pub ctrl: Arc<AtomicBool>,
+    pub ctrl: Arc<AtomicU32>,
     pub insn_count: Arc<AtomicUsize>,
     pub resetting: Arc<AtomicBool>,
 }
@@ -140,7 +143,12 @@ impl Executer {
             log_file = None;
         }
         Self {
-            hart_state: insn_exec::HartState::new(syncurnd.urnd(), rnd, key),
+            hart_state: insn_exec::HartState::new(
+                syncurnd.urnd(),
+                rnd,
+                key,
+                registers.ctrl.clone(),
+            ),
             imem,
             dmem,
             channel,
@@ -198,14 +206,14 @@ impl Executer {
                     .store(Status::Idle as u32, Ordering::Relaxed);
                 self.registers.err_bits.store(0, Ordering::Relaxed);
                 self.registers.fatal_bits.store(0, Ordering::Relaxed);
-                self.registers.ctrl.store(false, Ordering::Relaxed);
+                self.registers.ctrl.store(0, Ordering::Relaxed);
                 self.registers.insn_count.store(0, Ordering::Relaxed);
                 self.channel.1.send(comm::Response::Ack).unwrap();
                 continue;
             }
             let state = self.get_status();
             match state {
-                Status::Idle => self.handle_comm(cmd),
+                Status::Idle | Status::Paused => self.handle_comm(cmd),
                 Status::BusyExecute
                 | Status::BusySecWipeDMem
                 | Status::BusySecWipeIMem
@@ -252,12 +260,25 @@ impl Executer {
             comm::Command::Execute(dump) => {
                 // always update the state before replying
                 self.set_status(Status::BusyExecute);
-                self.registers
-                    .err_bits
-                    .store(ErrBits::empty().bits(), Ordering::Relaxed);
                 self.registers.insn_count.store(0, Ordering::Relaxed);
                 self.channel.1.send(comm::Response::Ack).unwrap();
-                self.execute(dump);
+                self.execute(dump, false);
+                if self.get_status() != Status::Locked {
+                    self.signal_completion();
+                }
+            }
+            comm::Command::Resume(dump) => {
+                if self.get_status() != Status::Paused {
+                    self.channel
+                        .1
+                        .send(comm::Response::Error("not paused".to_string()))
+                        .unwrap();
+                    return;
+                }
+                self.set_status(Status::BusyExecute);
+                self.registers.insn_count.fetch_add(1, Ordering::Relaxed);
+                self.channel.1.send(comm::Response::Ack).unwrap();
+                self.execute(dump, true);
                 if self.get_status() != Status::Locked {
                     self.signal_completion();
                 }
@@ -289,18 +310,20 @@ impl Executer {
         }
     }
 
-    /// Execute the uploaded OTBN program
-    fn execute(&mut self, dump: bool) {
+    /// Execute or resume the uploaded OTBN program
+    fn execute(&mut self, dump: bool, resuming: bool) {
         let mut fatal;
-        // "Each new execution of OTBN will reseed the URND PRNG."
-        // Stall OTBN execution till entropy is injected
-        self.syncurnd.sync_reseed();
+        if !resuming {
+            // "Each new execution of OTBN will reseed the URND PRNG."
+            // Stall OTBN execution till entropy is injected
+            self.syncurnd.sync_reseed();
+        }
         if self.registers.resetting.load(Ordering::Relaxed)
             || self.get_status() == Status::Locked
         {
             return;
         }
-        let trap = self.do_execute(dump);
+        let trap = self.do_execute(dump, resuming);
         if self.registers.resetting.load(Ordering::Relaxed)
             || self.get_status() == Status::Locked
         {
@@ -308,8 +331,11 @@ impl Executer {
         }
         match trap {
             insn_exec::InstructionTrap::Exception(cause, val) => {
+                if cause == ExceptionCause::EWfi {
+                    self.set_status(Status::Paused);
+                    return;
+                }
                 let mut error: u32;
-                // let mut registers = self.registers.lock().unwrap();
                 (fatal, error) = match cause {
                     ExceptionCause::ECallMMode => (false, ErrBits::empty().bits()),
                     ExceptionCause::EBadDataAddr => (false, ErrBits::BAD_DATA_ADDR.bits()),
@@ -320,6 +346,10 @@ impl Executer {
                     ExceptionCause::EKeyInvalid => (false, ErrBits::KEY_INVALID.bits()),
                     ExceptionCause::ERndRepChkFail => (false, ErrBits::RND_REP_CHK_FAIL.bits()),
                     ExceptionCause::ERndFipsChkFail => (false, ErrBits::RND_FIPS_CHK_FAIL.bits()),
+                    ExceptionCause::EMaiSoftwareError => {
+                        (false, ErrBits::MAI_SOFTWARE_ERROR.bits())
+                    }
+                    ExceptionCause::EWfi => unreachable!(),
                     ExceptionCause::EFatal => (
                         true,
                         self.registers.fatal_bits.load(Ordering::Relaxed)
@@ -332,16 +362,19 @@ impl Executer {
                     | ErrBits::CALL_STACK.bits()
                     | ErrBits::ILLEGAL_INSN.bits()
                     | ErrBits::LOOP.bits()
-                    | ErrBits::KEY_INVALID.bits();
+                    | ErrBits::KEY_INVALID.bits()
+                    | ErrBits::MAI_SOFTWARE_ERROR.bits();
 
                 // ctrl: "Controls the reaction to software errors.
                 // When set software errors produce fatal errors, rather than recoverable errors."
-                if (error & SW_ERR_MASK) != 0 && self.registers.ctrl.load(Ordering::Relaxed) {
+                if (error & SW_ERR_MASK) != 0
+                    && (self.registers.ctrl.load(Ordering::Relaxed) & 0x1) != 0
+                {
                     fatal = true;
                     error |= ErrBits::FATAL_SOFTWARE.bits();
                 }
-                // update error bits
-                self.registers.err_bits.fetch_or(error, Ordering::Relaxed);
+                // otbn.sv:999: err_bits_q is updated on done_core (`err_bits_q <= err_bits`)
+                self.registers.err_bits.store(error, Ordering::Relaxed);
             }
         }
         if fatal {
@@ -357,19 +390,17 @@ impl Executer {
         // operation on its side is over. Busy status is updated on that ack.
     }
 
-    fn do_execute(&mut self, dump: bool) -> insn_exec::InstructionTrap {
+    fn do_execute(&mut self, dump: bool, resuming: bool) -> insn_exec::InstructionTrap {
         let mut executor = insn_exec::InstructionExecutor {
             hart_state: &mut self.hart_state,
             imem: &mut *self.imem.try_lock().unwrap(),
             dmem: &mut *self.dmem.try_lock().unwrap(),
         };
 
-        executor.reset();
-
-        self.registers
-            .err_bits
-            .store(ErrBits::empty().bits(), Ordering::Relaxed);
-        self.registers.insn_count.store(0, Ordering::Relaxed);
+        if !resuming {
+            executor.reset();
+            self.registers.insn_count.store(0, Ordering::Relaxed);
+        }
 
         loop {
             // Debug/traces
@@ -430,6 +461,10 @@ impl Executer {
                 {
                     return trap;
                 }
+                let insn_exec::InstructionTrap::Exception(cause, _) = trap;
+                if cause == ExceptionCause::EWfi {
+                    return trap;
+                }
                 if let Some(log_file) = &mut self.log_file {
                     let log_line = match trap {
                         insn_exec::InstructionTrap::Exception(cause, val) => {
@@ -467,7 +502,6 @@ impl Executer {
                 }
                 executor.wipe_internal(&prng);
 
-                let insn_exec::InstructionTrap::Exception(cause, _) = trap;
                 if cause == ExceptionCause::ECallMMode {
                     // if the exception has been triggered by an ecall instruction,
                     // the actual instruction has been executed; otherwise the instruction failed

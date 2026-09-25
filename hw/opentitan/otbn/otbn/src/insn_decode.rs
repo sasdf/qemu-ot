@@ -206,10 +206,14 @@ fn process_opcode_system<T: insn_proc::InstructionProcessor>(
 
     match dec_insn.funct3 {
         0b000 => {
-            if dec_insn.rd != 0 || dec_insn.rs1 != 0 || dec_insn.csr != 0 {
+            if dec_insn.rd != 0 || dec_insn.rs1 != 0 {
                 None
-            } else {
+            } else if dec_insn.csr == 0x000 {
                 Some(processor.process_ecall())
+            } else if dec_insn.csr == 0x105 {
+                Some(processor.process_wfi())
+            } else {
+                None
             }
         }
         0b001 => Some(processor.process_csrrw(dec_insn)),

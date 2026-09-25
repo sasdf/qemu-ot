@@ -12,6 +12,7 @@ pub enum Command {
     SetTestMode(bool),
     LogTo(Box<io::BufWriter<File>>),
     Execute(bool),
+    Resume(bool),
     WipeDMem,
     WipeIMem,
     Reset,

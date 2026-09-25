@@ -48,6 +48,7 @@ pub trait InstructionProcessor {
     fn process_csrrs(&mut self, dec_insn: insn_format::ITypeCSR) -> Self::InstructionResult;
 
     fn process_ecall(&mut self) -> Self::InstructionResult;
+    fn process_wfi(&mut self) -> Self::InstructionResult;
 
     // custom-0
     fn process_bn_lid(&mut self, dec_insn: insn_format::WidType) -> Self::InstructionResult;

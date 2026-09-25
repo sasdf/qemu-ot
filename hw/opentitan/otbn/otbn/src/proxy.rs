@@ -100,7 +100,8 @@ impl Proxy {
     /// would only see the OTBN idle since the executed command would likely
     /// complete before the vCPU has a chance to get scheduled.
     pub fn acknowledge_execution(&mut self) -> bool {
-        if self.get_status() == otbn::Status::Locked {
+        let status = self.get_status();
+        if status == otbn::Status::Locked || status == otbn::Status::Paused {
             return false;
         }
         self.registers
@@ -209,6 +210,7 @@ impl Proxy {
     fn read_memory(&mut self, doi: bool, addr: u32, valid: &mut bool) -> u32 {
         match self.get_status() {
             otbn::Status::Idle => (),
+            otbn::Status::Paused if !doi => (),
             otbn::Status::Locked => {
                 *valid = true;
                 return 0; // Reads return zero in Locked state
@@ -243,6 +245,7 @@ impl Proxy {
     fn write_memory(&mut self, doi: bool, addr: u32, data: u32) -> bool {
         match self.get_status() {
             otbn::Status::Idle => (),
+            otbn::Status::Paused if !doi => (),
             otbn::Status::Locked => return false, // Writes have no effect in Locked state
             _ => {
                 self.lock_illegal_bus_access();
@@ -305,6 +308,22 @@ impl Proxy {
         if self.join_handle.is_some() {
             let channel = self.get_channel();
             channel.0.send(comm::Command::Execute(dump)).unwrap();
+            match channel.1.recv().unwrap() {
+                comm::Response::Ack => true,
+                comm::Response::Error(_) => false,
+                _ => panic!("Unexpected response"),
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Resume from WFI pause
+    pub fn resume(&mut self, dump: bool) -> bool {
+        self.check_request();
+        if self.join_handle.is_some() {
+            let channel = self.get_channel();
+            channel.0.send(comm::Command::Resume(dump)).unwrap();
             match channel.1.recv().unwrap() {
                 comm::Response::Ack => true,
                 comm::Response::Error(_) => false,
@@ -516,6 +535,15 @@ pub extern "C" fn ot_otbn_proxy_execute(proxy: Option<&mut Proxy>, dump: bool) -
 }
 
 #[no_mangle]
+pub extern "C" fn ot_otbn_proxy_resume(proxy: Option<&mut Proxy>, dump: bool) -> c_int {
+    if proxy.unwrap().resume(dump) {
+        0
+    } else {
+        -1
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn ot_otbn_proxy_wipe_memory(proxy: Option<&mut Proxy>, doi: bool) -> c_int {
     if proxy.unwrap().wipe_memory(doi) {
         0
@@ -606,12 +634,12 @@ pub extern "C" fn ot_otbn_proxy_set_err_bits(proxy: Option<&mut Proxy>, _value: 
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_get_ctrl(proxy: Option<&mut Proxy>) -> bool {
+pub extern "C" fn ot_otbn_proxy_get_ctrl(proxy: Option<&mut Proxy>) -> u32 {
     proxy.unwrap().registers.ctrl.load(Ordering::Relaxed)
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_ctrl(proxy: Option<&mut Proxy>, value: bool) {
+pub extern "C" fn ot_otbn_proxy_set_ctrl(proxy: Option<&mut Proxy>, value: u32) {
     let proxy = proxy.unwrap();
     if proxy.get_status() == otbn::Status::Idle {
         proxy.registers.ctrl.store(value, Ordering::Relaxed)

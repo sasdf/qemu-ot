@@ -6,6 +6,7 @@
 use std::convert::TryInto;
 use std::fmt;
 use std::mem::size_of;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
 use ethnum::{u256, AsU256, U256};
@@ -89,7 +90,12 @@ pub struct HartState {
 }
 
 impl HartState {
-    pub fn new(urnd: Arc<Mutex<dyn PRNG>>, rnd: Arc<random::Rnd>, key: Arc<key::Key>) -> Self {
+    pub fn new(
+        urnd: Arc<Mutex<dyn PRNG>>,
+        rnd: Arc<random::Rnd>,
+        key: Arc<key::Key>,
+        ctrl: Arc<AtomicU32>,
+    ) -> Self {
         HartState {
             registers: [0; 32],
             wregisters: [0.as_u256(); 32],
@@ -98,7 +104,7 @@ impl HartState {
             hwstack: Vec::with_capacity(8),
             updated: StateTracker::default(),
             x1_read: false,
-            csr_set: csrs::CSRSet::new(urnd, rnd, key),
+            csr_set: csrs::CSRSet::new(urnd, rnd, key, ctrl),
         }
     }
 
@@ -536,6 +542,7 @@ impl<'a, M: Memory> InstructionExecutor<'a, M> {
 
     pub fn reset(&mut self) {
         self.hart_state.pc = 0;
+        self.hart_state.csr_set.reset_on_start();
     }
 
     /// Execute instruction pointed to by `hart_state.pc`
@@ -851,6 +858,19 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
             ExceptionCause::ECallMMode,
             Some(0),
         ))
+    }
+
+    fn process_wfi(&mut self) -> Self::InstructionResult {
+        if (self.hart_state.csr_set.get_ctrl() & 0x2) != 0 {
+            self.check_loop_end()?;
+            self.hart_state.pc += 4;
+            Err(InstructionTrap::Exception(ExceptionCause::EWfi, None))
+        } else {
+            Err(InstructionTrap::Exception(
+                ExceptionCause::EIllegalInsn,
+                None,
+            ))
+        }
     }
 
     fn process_loop(&mut self, dec_insn: insn_format::IType) -> Self::InstructionResult {

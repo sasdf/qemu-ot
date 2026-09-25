@@ -304,6 +304,10 @@ impl insn_proc::InstructionProcessor for InstructionStringOutputter {
         String::from("ecall")
     }
 
+    fn process_wfi(&mut self) -> Self::InstructionResult {
+        String::from("wfi")
+    }
+
     fn process_loop(&mut self, dec_insn: insn_format::IType) -> Self::InstructionResult {
         format!("loop x{}, {}", dec_insn.rs1, dec_insn.imm + 1)
     }
