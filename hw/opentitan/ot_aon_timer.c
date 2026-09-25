@@ -338,7 +338,7 @@ static void ot_aon_timer_sync_wdog(OtAonTimerState *s)
     }
     s->wdog_bark_level = bark_level;
 
-    if (bark_level && s->version >= 2u) {
+    if (bark_level) {
         s->regs[R_WKUP_CAUSE] |= R_WKUP_CAUSE_CAUSE_MASK;
     }
     if (last_pre_incr >= bite_threshold) {
