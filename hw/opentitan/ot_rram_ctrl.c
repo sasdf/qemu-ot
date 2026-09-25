@@ -106,8 +106,8 @@ static void ot_rram_ctrl_update_status(OtRramCtrlState *s)
     s->regs[R_STATUS] = status;
 
     uint32_t cur_lvl = 0;
-    cur_lvl |= (ot_fifo32_num_used(&s->rd_fifo) & 0xff) << 16;
-    cur_lvl |= ot_fifo32_num_used(&s->wr_fifo) & 0xff;
+    cur_lvl |= (ot_fifo32_num_used(&s->rd_fifo) & 0x1fu) << 8;
+    cur_lvl |= ot_fifo32_num_used(&s->wr_fifo) & 0x1fu;
     s->regs[R_CURR_FIFO_LVL] = cur_lvl;
 
     /* Basic thresholds */
@@ -122,6 +122,9 @@ static bool ot_rram_ctrl_is_mp_err(OtRramCtrlState *s, uint32_t op,
 {
     if (op == 2u) {
         return false;
+    }
+    if (!part && start_addr >= RRAM_OTP_OFFSET) {
+        return true;
     }
     if (part && start_addr >= 0x200u && start_addr < 0x400u) {
         uint32_t cfg = s->regs[(0xc4 / 4) + (start_addr / 0x200u)];
@@ -187,6 +190,7 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
                 s->last_wr_err_addr = start_addr;
             } else if (mp_err) {
                 s->regs[R_ERR_ADDR] = start_addr;
+                s->last_wr_err_addr = start_addr;
             }
 
             s->regs[R_OP_STATUS] =
@@ -240,6 +244,7 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
             s->last_rd_err_addr = start_addr;
         } else if (mp_err) {
             s->regs[R_ERR_ADDR] = start_addr;
+            s->last_rd_err_addr = start_addr;
         }
 
         s->regs[R_OP_STATUS] =
@@ -251,9 +256,13 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
     } else if (op == 1) { /* WRITE (Prog) */
         s->regs[R_CTRL_REGWEN] = 0;
         ot_rram_ctrl_process_wr_fifo(s);
-    } else if (op == 2) { /* REWRITE */
-        s->regs[R_CTRL_REGWEN] = 0;
-        ot_rram_ctrl_process_wr_fifo(s);
+    } else if (op == 2) { /* REWRITE (HwLoopBack) */
+        s->regs[R_OP_STATUS] =
+            FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, DONE, 1);
+        s->regs[R_CONTROL] = FIELD_DP32(s->regs[R_CONTROL], CONTROL, START, 0);
+        s->regs[R_INTR_STATE] |= INTR_OP_DONE_MASK;
+        s->regs[R_CTRL_REGWEN] = 1;
+        ot_rram_ctrl_update_status(s);
     }
 }
 
@@ -294,7 +303,7 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
     OtRramCtrlState *s = opaque;
     uint32_t val32 = val;
 
-    if (size != 4) {
+    if (size != 4 && !(size == 1 && addr == 0x1c)) {
         return MEMTX_ERROR;
     }
 
@@ -527,8 +536,9 @@ static MemTxResult rram_ctrl_prim_write(void *opaque, hwaddr addr, uint64_t val,
             s->prim_regs[1] = v32 & 0x1fffu;
         }
         break;
-    case 0x8u: /* CSR2 (w1c, [7:0]) */
-        s->prim_regs[2] &= ~(v32 & 0xffu);
+    case 0x8u: /* CSR2: bits [7,3] (0x88) are rw; bits [6:4,2:0] (0x77) are w1c */
+        s->prim_regs[2] =
+            ((s->prim_regs[2] & ~0x88u) & ~(v32 & 0x77u)) | (v32 & 0x88u);
         break;
     default:
         return MEMTX_ERROR;
