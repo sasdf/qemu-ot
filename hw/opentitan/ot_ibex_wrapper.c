@@ -1345,9 +1345,11 @@ static void ot_ibex_wrapper_update_cheriot_ena(OtIbexWrapperState *s,
                                                unsigned reg, uint32_t val32)
 {
     (void)reg;
-    if (s->regs.cheriot_lock == 0x6) {
-        return; // Ignore writes when locked
-    }
+    /*
+     * In rv_core_ibex_cfg_reg_top.sv:1310-1335,1745, CHERIOT_ENA has no regwen
+     * input, so cheriot_ena_qs (s->regs.cheriot_ena) always updates on writes
+     * even after u_cheriot_switch has locked cheriot_ena_o (cheriot_ena_out).
+     */
     s->regs.cheriot_ena = val32;
 }
 
