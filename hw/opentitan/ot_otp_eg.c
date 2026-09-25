@@ -1064,14 +1064,6 @@ static void ot_otp_eg_get_keymgr_secret(
         break;
     case OT_OTP_KEYMGR_SECRET_CREATOR_SEED:
     case OT_OTP_KEYMGR_SECRET_OWNER_SEED:
-        if (s->part_descs == OT_OTP_PART_DESCS_V2) {
-            secret->valid = true;
-            memset(secret->secret,
-                   (type == OT_OTP_KEYMGR_SECRET_CREATOR_SEED) ? 0x5au : 0xa5u,
-                   OT_OTP_KEYMGR_SECRET_SIZE);
-            return;
-        }
-        /* fall through */
     default:
         error_report("%s: %s: invalid OTP keymgr secret type: %d", __func__,
                      s->ot_id, type);
