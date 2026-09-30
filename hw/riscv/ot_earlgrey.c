@@ -2380,30 +2380,36 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
                 continue;
             }
             size_t n = 0;
-            while (v2_devs[i].gpio[n].out.num >= 0 &&
-                   v2_devs[i].gpio[n].in.num >= 0) {
+            while (true) {
+                const IbexGpioConnDef *conn = &v2_devs[i].gpio[n];
+                if (conn->out.num < 0 || conn->in.num < 0) {
+                    break;
+                }
                 n++;
             }
             IbexGpioConnDef *g = g_new0(IbexGpioConnDef, n + 1);
             memcpy(g, v2_devs[i].gpio, (n + 1) * sizeof(IbexGpioConnDef));
             for (size_t j = 0; j < n; j++) {
                 unsigned target_idx = IBEX_GPIO_GET_IDX(g[j].in.index);
-                if (target_idx == OT_EG_SOC_DEV_KEYMGR && g[j].in.name &&
-                    !strcmp(g[j].in.name, OT_KEYMGR_ENABLE)) {
-                    g[j].in.name = OT_KEYMGR_DPE_ENABLE;
-                } else if (target_idx == OT_EG_SOC_DEV_PLIC &&
-                           g[j].in.num >= 124) {
-                    g[j].in.num -= 2;
-                } else if (target_idx == OT_EG_SOC_DEV_ALERT_HANDLER &&
-                           g[j].in.name &&
-                           !strcmp(g[j].in.name, OT_DEVICE_ALERT)) {
-                    int a = g[j].in.num;
-                    if (a >= 10 && a <= 28) {
-                        g[j].in.num = a - 1;
-                    } else if (a >= 30 && a <= 59) {
-                        g[j].in.num = a - 2;
-                    } else if (a >= 60 && a <= 64) {
-                        g[j].in.num = a - 1;
+                const char *in_name = g[j].in.name;
+                if (target_idx == OT_EG_SOC_DEV_KEYMGR) {
+                    if (in_name && !strcmp(in_name, OT_KEYMGR_ENABLE)) {
+                        g[j].in.name = OT_KEYMGR_DPE_ENABLE;
+                    }
+                } else if (target_idx == OT_EG_SOC_DEV_PLIC) {
+                    if (g[j].in.num >= 124) {
+                        g[j].in.num -= 2;
+                    }
+                } else if (target_idx == OT_EG_SOC_DEV_ALERT_HANDLER) {
+                    if (in_name && !strcmp(in_name, OT_DEVICE_ALERT)) {
+                        int a = g[j].in.num;
+                        if (a >= 10 && a <= 28) {
+                            g[j].in.num = a - 1;
+                        } else if (a >= 30 && a <= 59) {
+                            g[j].in.num = a - 2;
+                        } else if (a >= 60 && a <= 64) {
+                            g[j].in.num = a - 1;
+                        }
                     }
                 }
             }
