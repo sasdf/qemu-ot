@@ -474,7 +474,8 @@ static void ot_otbn_proxy_entropy_req_bh(void *opaque)
 
 static void ot_otbn_handle_command(OtOTBNState *s, unsigned command)
 {
-    if (s->version == 2u && command == (unsigned)OT_OTBN_CMD_RESUME) {
+    if (s->version == OT_VER_EG_2_0_0 &&
+        command == (unsigned)OT_OTBN_CMD_RESUME) {
         if (s->lc_escalated ||
             ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_PAUSED) {
             qemu_log_mask(
@@ -750,7 +751,8 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_CMD:
         val32 &= R_CMD_CMD_MASK;
-        if (s->version == 2u && val32 == (uint32_t)OT_OTBN_CMD_RESUME) {
+        if (s->version == OT_VER_EG_2_0_0 &&
+            val32 == (uint32_t)OT_OTBN_CMD_RESUME) {
             ot_otbn_handle_command(s, (unsigned)val32);
             break;
         }
@@ -765,7 +767,7 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
             break;
         }
-        val32 &= (s->version == 2u) ?
+        val32 &= (s->version == OT_VER_EG_2_0_0) ?
                      (R_CTRL_SW_ERRS_FATAL_MASK | R_CTRL_WFI_ENABLED_MASK |
                       R_CTRL_URND_CTRL_ENABLED_MASK) :
                      R_CTRL_SW_ERRS_FATAL_MASK;
@@ -955,7 +957,7 @@ static const Property ot_otbn_properties[] = {
     DEFINE_PROP_UINT8("edn-r-ep", OtOTBNState, rnds[OT_OTBN_RND].ep, UINT8_MAX),
     DEFINE_PROP_STRING("logfile", OtOTBNState, log_file),
     DEFINE_PROP_BOOL("logasm", OtOTBNState, log_asm, false),
-    DEFINE_PROP_UINT32("version", OtOTBNState, version, 1u),
+    DEFINE_PROP_UINT32("version", OtOTBNState, version, OT_VER_EG_1_0_0),
 };
 
 static const MemoryRegionOps ot_otbn_regs_ops = {
@@ -1097,14 +1099,18 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
     g_assert(s->rnds[OT_OTBN_RND].device);
     g_assert(s->rnds[OT_OTBN_URND].ep != UINT8_MAX);
     g_assert(s->rnds[OT_OTBN_RND].ep != UINT8_MAX);
+    g_assert(s->version < OT_VER_COUNT);
 
-    uint32_t imem_size =
-        (s->version == 2u) ? OT_OTBN_V2_IMEM_SIZE : OT_OTBN_IMEM_SIZE;
+    uint32_t imem_size = (s->version == OT_VER_EG_2_0_0) ?
+                             OT_OTBN_V2_IMEM_SIZE :
+                             OT_OTBN_IMEM_SIZE;
     uint32_t dmem_pub_size =
-        (s->version == 2u) ? OT_OTBN_V2_DMEM_SIZE : OT_OTBN_DMEM_SIZE;
-    uint32_t dmem_size = (s->version == 2u) ? (32u << 10u) : (4u << 10u);
+        (s->version == OT_VER_EG_2_0_0) ? OT_OTBN_V2_DMEM_SIZE :
+                                          OT_OTBN_DMEM_SIZE;
+    uint32_t dmem_size =
+        (s->version == OT_VER_EG_2_0_0) ? (32u << 10u) : (4u << 10u);
 
-    if (s->version == 2u) {
+    if (s->version == OT_VER_EG_2_0_0) {
         memory_region_init_io(&s->scratch_regs, OBJECT(dev),
                               &ot_otbn_scratch_ops, s, TYPE_OT_OTBN ".scratch",
                               OT_OTBN_SCRATCH_SIZE);
