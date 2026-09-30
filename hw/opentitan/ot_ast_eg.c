@@ -127,13 +127,14 @@ REG32(REGB4, 0x210u)
 #define REGB_NAME(_reg_) \
     ((((_reg_) < REGSB_COUNT) && REGB_NAMES[_reg_]) ? REGB_NAMES[_reg_] : "?")
 
-#define REGS_SIZE (A_REGB4 + sizeof(uint32_t))
+#define REGS_SIZE     0x400u
+#define REGA_NAME_LEN 8U
 #define REG_NAME(_s_, _reg_) \
     ((_reg_) >= R_REGB0 ? REGB_NAME((_reg_) - (R_REGB0)) : \
                           REGA_NAME(_s_, _reg_))
 
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
-static const char REGA_NAMES[REGSA_COUNT][8U] = {
+static const char REGA_NAMES[REGSA_COUNT][REGA_NAME_LEN] = {
     REG_NAME_ENTRY(REGA0),  REG_NAME_ENTRY(REGA1),  REG_NAME_ENTRY(REGA2),
     REG_NAME_ENTRY(REGA3),  REG_NAME_ENTRY(REGA4),  REG_NAME_ENTRY(REGA5),
     REG_NAME_ENTRY(REGA6),  REG_NAME_ENTRY(REGA7),  REG_NAME_ENTRY(REGA8),
@@ -364,7 +365,7 @@ static bool ot_ast_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     return (reg < s->num_regs_a || (reg >= R_REGB0 && reg <= R_REGB4)) &&
-           (!is_write || size == 4u);
+           (!is_write || size == sizeof(uint32_t));
 }
 
 static uint64_t ot_ast_eg_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -483,7 +484,7 @@ static void ot_ast_eg_init(Object *obj)
     OtASTEgState *s = OT_AST_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_ast_eg_regs_ops, s, TYPE_OT_AST_EG,
-                          0x400u);
+                          REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regsa = g_new0(uint32_t, REGSA_COUNT);
