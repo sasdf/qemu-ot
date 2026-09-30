@@ -398,11 +398,11 @@ static bool ot_uart_check_pty_parity(OtUARTState *s, OtUARTState *rx_owner)
         return true;
     }
     OtPtyChardev *pty = (OtPtyChardev *)rx_owner->chr.chr;
-    int master_fd =
-        (pty->ioc &&
-         object_dynamic_cast(OBJECT(pty->ioc), TYPE_QIO_CHANNEL_FILE)) ?
-            QIO_CHANNEL_FILE(pty->ioc)->fd :
-            -1;
+    if (!pty->ioc ||
+        !object_dynamic_cast(OBJECT(pty->ioc), TYPE_QIO_CHANNEL_FILE)) {
+        return true;
+    }
+    int master_fd = QIO_CHANNEL_FILE(pty->ioc)->fd;
     if (master_fd >= 0) {
         struct termios tio;
         if (tcgetattr(master_fd, &tio) == 0) {
@@ -623,8 +623,10 @@ static void ot_uart_receive(void *opaque, const uint8_t *buf, int size)
     }
 
     if (!timer_pending(s->rx_timer)) {
-        int64_t mult =
-            fifo8_is_empty(&s->rx_fifo) ? (int64_t)OT_UART_TX_FIFO_SIZE : 1LL;
+        int64_t mult = 1LL;
+        if (fifo8_is_empty(&s->rx_fifo)) {
+            mult = (int64_t)OT_UART_TX_FIFO_SIZE;
+        }
         timer_mod(s->rx_timer, s->last_rx_ns + mult * ot_uart_char_ns(s));
     }
 }
