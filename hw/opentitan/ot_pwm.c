@@ -146,13 +146,19 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
         bool dc_wrap_q = false;
         uint64_t max_steps = MIN(htbt_steps, 4096ULL);
         for (uint64_t i = 0; i < max_steps; i++) {
-            uint32_t ext =
-                htbt_dir ? ((uint32_t)dc_htbt - (uint32_t)blink_y - 1u) :
-                           ((uint32_t)dc_htbt + (uint32_t)blink_y + 1u);
+            uint32_t ext;
+            if (htbt_dir) {
+                ext = (uint32_t)dc_htbt - (uint32_t)blink_y - 1u;
+            } else {
+                ext = (uint32_t)dc_htbt + (uint32_t)blink_y + 1u;
+            }
             bool dc_wrap = (ext >> 16u) & 1u;
             uint16_t dc_htbt_d = (uint16_t)ext;
-            dc_wrap_q =
-                pos_htbt ? (dc_wrap && !htbt_dir) : (dc_wrap && htbt_dir);
+            if (pos_htbt) {
+                dc_wrap_q = dc_wrap && !htbt_dir;
+            } else {
+                dc_wrap_q = dc_wrap && htbt_dir;
+            }
             dc_htbt = dc_htbt_d;
             if (pos_htbt && (dc_htbt >= duty_b || dc_wrap)) {
                 htbt_dir = true;
@@ -164,7 +170,13 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
                 htbt_dir = true;
             }
         }
-        duty_cycle_actual = !dc_wrap_q ? dc_htbt : (pos_htbt ? 0xffffu : 0u);
+        if (!dc_wrap_q) {
+            duty_cycle_actual = dc_htbt;
+        } else if (pos_htbt) {
+            duty_cycle_actual = 0xffffu;
+        } else {
+            duty_cycle_actual = 0u;
+        }
     }
 
     uint16_t dc_mask = (uint16_t)(0xffffu >> (dc_resn + 1u));
@@ -179,8 +191,12 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
     bool on_phase_exceeded = (phase_cntr >= phase_delay_masked);
     bool off_phase_exceeded = (phase_cntr >= off_phase);
 
-    bool active = phase_wrap ? (on_phase_exceeded || !off_phase_exceeded) :
-                               (on_phase_exceeded && !off_phase_exceeded);
+    bool active;
+    if (phase_wrap) {
+        active = on_phase_exceeded || !off_phase_exceeded;
+    } else {
+        active = on_phase_exceeded && !off_phase_exceeded;
+    }
 
     return invert ? !active : active;
 }
@@ -233,9 +249,10 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 
     int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    uint64_t ticks = (now_ns > s->cntr_start_ns) ?
-                         (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL :
-                         0ULL;
+    uint64_t ticks = 0ULL;
+    if (now_ns > s->cntr_start_ns) {
+        ticks = (uint64_t)(now_ns - s->cntr_start_ns) / 4000ULL;
+    }
     if (FIELD_EX32(s->regs[R_CFG], CFG, CNTR_EN) && ticks > 0ULL) {
         s->phase_ctr_q = (uint16_t)ot_pwm_calc_phase(s, now_ns, &s->beat_ctr_q);
         s->cntr_start_ns += (int64_t)(ticks * 4000ULL);
