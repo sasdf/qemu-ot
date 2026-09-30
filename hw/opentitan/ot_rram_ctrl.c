@@ -26,59 +26,121 @@
 #include "system/blockdev.h"
 #include "trace.h"
 
-#define PARAM_NUM_REGIONS 10
-#define RRAM_CORE_SIZE    0x200
-#define RRAM_HOST_SIZE    0x200000
-#define RRAM_OTP_OFFSET   0x1ff600
-#define RRAM_OTP_SIZE     (RRAM_HOST_SIZE - RRAM_OTP_OFFSET)
-#define RRAM_FIFO_DEPTH   16u
+#define PARAM_NUM_REGIONS           10u
+#define RRAM_CORE_SIZE              OT_RRAM_CORE_SIZE
+#define RRAM_HOST_SIZE              0x200000u
+#define RRAM_OTP_OFFSET             0x1ff600u
+#define RRAM_OTP_SIZE               (RRAM_HOST_SIZE - RRAM_OTP_OFFSET)
+#define RRAM_FIFO_DEPTH             16u
+#define RRAM_INTERNAL_FIFO_CAPACITY 1024u
+#define RRAM_WORD_U32_COUNT         4u
+#define RRAM_PRIM_MMIO_SIZE         0x2000u
+#define RRAM_PRIM_REG_BYTES         (OT_RRAM_PRIM_REGS_COUNT * sizeof(uint32_t))
 
-REG32(INTR_STATE, 0x0)
-SHARED_FIELD(INTR_WR_EMPTY, 0, 1)
-SHARED_FIELD(INTR_WR_LVL, 1, 1)
-SHARED_FIELD(INTR_RD_FULL, 2, 1)
-SHARED_FIELD(INTR_RD_LVL, 3, 1)
-SHARED_FIELD(INTR_OP_DONE, 4, 1)
-SHARED_FIELD(INTR_CORR_ERR, 5, 1)
-REG32(INTR_ENABLE, 0x4)
-REG32(INTR_TEST, 0x8)
-REG32(ALERT_TEST, 0xc)
-REG32(DIS, 0x10)
-REG32(EXEC, 0x14)
-REG32(INIT, 0x18)
-REG32(CTRL_REGWEN, 0x1c)
-REG32(CONTROL, 0x20)
-FIELD(CONTROL, START, 0, 1)
-FIELD(CONTROL, OP, 4, 2)
-FIELD(CONTROL, PARTITION, 8, 1)
-FIELD(CONTROL, NUM, 16, 10)
-REG32(ADDR, 0x24)
-REG32(OP_STATUS, 0xe8)
-FIELD(OP_STATUS, DONE, 0, 1)
-FIELD(OP_STATUS, ERR, 1, 1)
-REG32(STATUS, 0xec)
-FIELD(STATUS, RD_FULL, 0, 1)
-FIELD(STATUS, RD_EMPTY, 1, 1)
-FIELD(STATUS, WR_FULL, 2, 1)
-FIELD(STATUS, WR_EMPTY, 3, 1)
-FIELD(STATUS, INIT_DONE, 4, 1)
-REG32(ERR_CODE, 0xf0)
-FIELD(ERR_CODE, OP_ERR, 0, 1)
-FIELD(ERR_CODE, MP_ERR, 1, 1)
-FIELD(ERR_CODE, RD_ERR, 2, 1)
-FIELD(ERR_CODE, WR_ERR, 3, 1)
-REG32(STD_FAULT_STATUS, 0xf4)
-REG32(FAULT_STATUS, 0xf8)
-REG32(ERR_ADDR, 0xfc)
-REG32(CORR_ERR_CNT, 0x100)
-REG32(CORR_ERR_LOC, 0x104)
-REG32(PHY_STATUS, 0x108)
-REG32(SCRATCH, 0x10c)
-REG32(FIFO_LVL, 0x110)
-REG32(FIFO_CLR, 0x114)
-REG32(CURR_FIFO_LVL, 0x118)
-REG32(WR_FIFO, 0x11c)
-REG32(RD_FIFO, 0x120)
+#define RRAM_CREATOR_SEED_INFO_PAGE 5u
+#define RRAM_OWNER_SEED_INFO_PAGE   6u
+
+#define RRAM_FIFO_LVL_RST             0x0f0fu
+#define RRAM_REGION_CFG_RST           0x99999u
+#define RRAM_DEFAULT_REGION_RST       0x9999u
+#define RRAM_INFO_CFG_RST             0x99999u
+#define RRAM_HW_INFO_CFG_OVERRIDE_RST 0x99u
+
+#define VFSH_MAGIC                  0x48534676u
+#define VFSH_HDR_BYTES              32
+#define VFSH_PAGES_PER_BANK_OFF     14
+#define VFSH_DEFAULT_PAGES_PER_BANK 256u
+#define VFSH_BANKS_COUNT            2u
+#define VFSH_PAGE_BYTES             2048u
+#define VFSH_DEFAULT_DATA_BYTES     0x100000u
+#define VFSH_CREATOR_INFO_OFF       0x5000
+#define RRAM_CREATOR_PARTITION_OFF  0x1fc000u
+
+typedef enum {
+    RRAM_OP_READ = 0u,
+    RRAM_OP_PROG = 1u,
+    RRAM_OP_HW_LOOPBACK = 2u,
+    RRAM_OP_ERASE = 3u,
+} OtRramOp;
+
+REG32(INTR_STATE, 0x0u)
+SHARED_FIELD(INTR_WR_EMPTY, 0u, 1u)
+SHARED_FIELD(INTR_WR_LVL, 1u, 1u)
+SHARED_FIELD(INTR_RD_FULL, 2u, 1u)
+SHARED_FIELD(INTR_RD_LVL, 3u, 1u)
+SHARED_FIELD(INTR_OP_DONE, 4u, 1u)
+SHARED_FIELD(INTR_CORR_ERR, 5u, 1u)
+REG32(INTR_ENABLE, 0x4u)
+REG32(INTR_TEST, 0x8u)
+REG32(ALERT_TEST, 0xcu)
+REG32(DIS, 0x10u)
+REG32(EXEC, 0x14u)
+REG32(INIT, 0x18u)
+REG32(CTRL_REGWEN, 0x1cu)
+REG32(CONTROL, 0x20u)
+FIELD(CONTROL, START, 0u, 1u)
+FIELD(CONTROL, OP, 4u, 2u)
+FIELD(CONTROL, PARTITION, 8u, 1u)
+FIELD(CONTROL, NUM, 16u, 10u)
+REG32(ADDR, 0x24u)
+REG32(REGION_CFG_REGWEN_0, 0x28u)
+REG32(REGION_CFG_REGWEN_9, 0x4cu)
+REG32(REGION_CFG_0, 0x50u)
+REG32(DEFAULT_REGION, 0xa0u)
+REG32(INFO_REGWEN_0, 0xa4u)
+REG32(INFO_REGWEN_7, 0xc0u)
+REG32(INFO_CFG_0, 0xc4u)
+SHARED_FIELD(INFO_CFG_EN, 0u, 4u)
+SHARED_FIELD(INFO_CFG_RD_EN, 4u, 4u)
+SHARED_FIELD(INFO_CFG_PROG_EN, 8u, 4u)
+REG32(HW_INFO_CFG_OVERRIDE, 0xe4u)
+REG32(OP_STATUS, 0xe8u)
+FIELD(OP_STATUS, DONE, 0u, 1u)
+FIELD(OP_STATUS, ERR, 1u, 1u)
+REG32(STATUS, 0xecu)
+FIELD(STATUS, RD_FULL, 0u, 1u)
+FIELD(STATUS, RD_EMPTY, 1u, 1u)
+FIELD(STATUS, WR_FULL, 2u, 1u)
+FIELD(STATUS, WR_EMPTY, 3u, 1u)
+FIELD(STATUS, INIT_DONE, 4u, 1u)
+REG32(ERR_CODE, 0xf0u)
+FIELD(ERR_CODE, OP_ERR, 0u, 1u)
+FIELD(ERR_CODE, MP_ERR, 1u, 1u)
+FIELD(ERR_CODE, RD_ERR, 2u, 1u)
+FIELD(ERR_CODE, WR_ERR, 3u, 1u)
+REG32(STD_FAULT_STATUS, 0xf4u)
+REG32(FAULT_STATUS, 0xf8u)
+REG32(ERR_ADDR, 0xfcu)
+REG32(CORR_ERR_CNT, 0x100u)
+REG32(CORR_ERR_LOC, 0x104u)
+REG32(PHY_STATUS, 0x108u)
+FIELD(PHY_STATUS, INIT_WIP, 0u, 1u)
+FIELD(PHY_STATUS, PROG_NORMAL_AVAIL, 1u, 1u)
+REG32(SCRATCH, 0x10cu)
+REG32(FIFO_LVL, 0x110u)
+FIELD(FIFO_LVL, WR, 0u, 5u)
+FIELD(FIFO_LVL, RD, 8u, 5u)
+REG32(FIFO_CLR, 0x114u)
+REG32(CURR_FIFO_LVL, 0x118u)
+FIELD(CURR_FIFO_LVL, WR, 0u, 5u)
+FIELD(CURR_FIFO_LVL, RD, 8u, 5u)
+REG32(WR_FIFO, 0x11cu)
+REG32(RD_FIFO, 0x120u)
+
+REG32(PRIM_CSR0_REGWEN, 0x0u)
+REG32(PRIM_CSR1, 0x4u)
+FIELD(PRIM_CSR1, VAL, 0u, 13u)
+REG32(PRIM_CSR2, 0x8u)
+
+#define R_PRIM_CSR2_RW_MASK  0x88u
+#define R_PRIM_CSR2_W1C_MASK 0x77u
+
+#define INTR_STATUS_MASK \
+    (INTR_WR_EMPTY_MASK | INTR_WR_LVL_MASK | INTR_RD_FULL_MASK | \
+     INTR_RD_LVL_MASK)
+#define INTR_EVENT_MASK (INTR_OP_DONE_MASK | INTR_CORR_ERR_MASK)
+#define INTR_ALL_MASK   (INTR_STATUS_MASK | INTR_EVENT_MASK)
+#define R_FIFO_LVL_MASK (R_FIFO_LVL_WR_MASK | R_FIFO_LVL_RD_MASK)
 
 /* Update interrupts */
 static void ot_rram_ctrl_update_irqs(OtRramCtrlState *s)
@@ -87,7 +149,7 @@ static void ot_rram_ctrl_update_irqs(OtRramCtrlState *s)
     uint32_t enable = s->regs[R_INTR_ENABLE];
     uint32_t level = state & enable;
 
-    for (int i = 0; i < 6; i++) {
+    for (unsigned i = 0u; i < OT_RRAM_IRQ_COUNT; i++) {
         ibex_irq_set(&s->irqs[i], (int)((level >> i) & 1u));
     }
 }
@@ -110,10 +172,10 @@ static void ot_rram_ctrl_update_status(OtRramCtrlState *s)
         FIELD_DP32(status, STATUS, WR_EMPTY, ot_fifo32_is_empty(&s->wr_fifo));
     s->regs[R_STATUS] = status;
 
-    s->regs[R_CURR_FIFO_LVL] = (rd_used << 8) | wr_used;
+    s->regs[R_CURR_FIFO_LVL] = FIELD_DP32(wr_used, CURR_FIFO_LVL, RD, rd_used);
 
-    uint32_t wr_lvl = s->regs[R_FIFO_LVL] & 0x1fu;
-    uint32_t rd_lvl = (s->regs[R_FIFO_LVL] >> 8) & 0x1fu;
+    uint32_t wr_lvl = FIELD_EX32(s->regs[R_FIFO_LVL], FIFO_LVL, WR);
+    uint32_t rd_lvl = FIELD_EX32(s->regs[R_FIFO_LVL], FIFO_LVL, RD);
     uint32_t status_irqs = 0;
     if (ot_fifo32_is_empty(&s->wr_fifo)) {
         status_irqs |= INTR_WR_EMPTY_MASK;
@@ -127,25 +189,30 @@ static void ot_rram_ctrl_update_status(OtRramCtrlState *s)
     if (rd_used >= rd_lvl) {
         status_irqs |= INTR_RD_LVL_MASK;
     }
-    s->regs[R_INTR_STATE] = (s->regs[R_INTR_STATE] & 0x30u) | status_irqs |
-                            (s->regs[R_INTR_TEST] & 0xfu);
+    s->regs[R_INTR_STATE] =
+        (s->regs[R_INTR_STATE] & INTR_EVENT_MASK) | status_irqs |
+        (s->regs[R_INTR_TEST] & INTR_STATUS_MASK);
     ot_rram_ctrl_update_irqs(s);
 }
 
 static bool ot_rram_ctrl_is_mp_err(OtRramCtrlState *s, uint32_t op,
                                    uint32_t part, uint32_t start_addr)
 {
-    if (op == 2u) {
+    if (op == RRAM_OP_HW_LOOPBACK) {
         return false;
     }
     if (!part && start_addr >= RRAM_OTP_OFFSET) {
         return true;
     }
-    if (part && start_addr < 0x1000u) {
-        uint32_t cfg = s->regs[(0xc4 / 4) + (start_addr / 0x200u)];
-        bool en = (cfg & 0xfu) == 0x6u;
-        bool perm = (op == 0u) ? (((cfg >> 4u) & 0xfu) == 0x6u) :
-                                 (((cfg >> 8u) & 0xfu) == 0x6u);
+    if (part && start_addr < OT_RRAM_INFO_STORAGE_BYTES) {
+        uint32_t cfg =
+            s->regs[R_INFO_CFG_0 + (start_addr / OT_RRAM_INFO_PAGE_BYTES)];
+        bool en = SHARED_FIELD_EX32(cfg, INFO_CFG_EN) == OT_MULTIBITBOOL4_TRUE;
+        bool perm = (op == RRAM_OP_READ) ?
+                        (SHARED_FIELD_EX32(cfg, INFO_CFG_RD_EN) ==
+                         OT_MULTIBITBOOL4_TRUE) :
+                        (SHARED_FIELD_EX32(cfg, INFO_CFG_PROG_EN) ==
+                         OT_MULTIBITBOOL4_TRUE);
         return !(en && perm);
     }
     return false;
@@ -160,52 +227,58 @@ static void ot_rram_ctrl_process_wr_fifo(OtRramCtrlState *s)
 
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
-    uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
-    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) & ~3u;
+    uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1u;
+    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) &
+                          ~(uint32_t)(sizeof(uint32_t) - 1u);
     bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
-    if (op == 1 || op == 2 || op == 3) {
-        if (mp_err && ot_fifo32_num_used(&s->wr_fifo) >= 1) {
-            s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+    if (op == RRAM_OP_PROG || op == RRAM_OP_HW_LOOPBACK ||
+        op == RRAM_OP_ERASE) {
+        if (mp_err && ot_fifo32_num_used(&s->wr_fifo) >= 1u) {
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_MP_ERR_MASK;
             s->regs[R_OP_STATUS] =
                 FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
         }
         if (ot_fifo32_num_used(&s->wr_fifo) >= num) {
             for (uint32_t i = 0; i < num; i++) {
                 uint32_t val = ot_fifo32_pop(&s->wr_fifo);
-                uint32_t addr = start_addr + i * 4;
-                bool full_rram_word = ((i | 3u) < num);
+                uint32_t addr = start_addr + i * sizeof(uint32_t);
+                bool full_rram_word = ((i | (RRAM_WORD_U32_COUNT - 1u)) < num);
                 if (part) {
                     if (!mp_err && full_rram_word &&
                         addr < sizeof(s->info_storage)) {
-                        ((uint32_t *)s->info_storage)[addr / 4] = val;
+                        ((uint32_t *)s->info_storage)[addr / sizeof(uint32_t)] =
+                            val;
                     }
                 } else if (!mp_err && full_rram_word && addr < RRAM_HOST_SIZE) {
-                    ((uint32_t *)s->storage)[addr / 4] = val;
+                    ((uint32_t *)s->storage)[addr / sizeof(uint32_t)] = val;
                 }
             }
             if (!part && start_addr < RRAM_HOST_SIZE) {
-                memory_region_set_dirty(&s->host_iomem, start_addr, num * 4);
+                memory_region_set_dirty(&s->host_iomem, start_addr,
+                                        num * sizeof(uint32_t));
             }
 
             if (!part && !mp_err && s->blk) {
                 /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange) */
                 blk_pwrite(
-                    s->blk, start_addr, num * 4, s->storage + start_addr,
+                    s->blk, start_addr,
+                    (int64_t)num * (int64_t)sizeof(uint32_t),
+                    s->storage + start_addr,
                     /* NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
                      */
                     0); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
             }
 
             if (mp_err) {
-                s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+                s->regs[R_ERR_CODE] |= R_ERR_CODE_MP_ERR_MASK;
                 s->regs[R_OP_STATUS] =
                     FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
                 ibex_irq_set(&s->alerts[0], 1);
                 ibex_irq_set(&s->alerts[0], 0);
             }
 
-            if (num == 1) {
+            if (num == 1u) {
                 s->regs[R_ERR_ADDR] = s->last_wr_err_addr;
                 s->last_wr_err_addr = start_addr;
             } else if (mp_err) {
@@ -229,22 +302,25 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
 {
     uint32_t op = FIELD_EX32(s->regs[R_CONTROL], CONTROL, OP);
     uint32_t part = FIELD_EX32(s->regs[R_CONTROL], CONTROL, PARTITION);
-    uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1;
-    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) & ~3u;
+    uint32_t num = FIELD_EX32(s->regs[R_CONTROL], CONTROL, NUM) + 1u;
+    uint32_t start_addr = s->regs[R_ADDR] & (RRAM_HOST_SIZE - 1u) &
+                          ~(uint32_t)(sizeof(uint32_t) - 1u);
     bool mp_err = ot_rram_ctrl_is_mp_err(s, op, part, start_addr);
 
-    if (op == 0) { /* READ */
+    if (op == RRAM_OP_READ) {
         for (uint32_t i = 0; i < num; i++) {
             if (!ot_fifo32_is_full(&s->rd_fifo)) {
-                uint32_t addr = start_addr + i * 4;
-                uint32_t val = 0xffffffffu;
+                uint32_t addr = start_addr + i * sizeof(uint32_t);
+                uint32_t val = UINT32_MAX;
                 if (!mp_err) {
                     if (part) {
                         if (addr < sizeof(s->info_storage)) {
-                            val = ((uint32_t *)s->info_storage)[addr / 4];
+                            val =
+                                ((uint32_t *)
+                                     s->info_storage)[addr / sizeof(uint32_t)];
                         }
                     } else if (addr < RRAM_HOST_SIZE) {
-                        val = ((uint32_t *)s->storage)[addr / 4];
+                        val = ((uint32_t *)s->storage)[addr / sizeof(uint32_t)];
                     }
                 }
                 ot_fifo32_push(&s->rd_fifo, val);
@@ -252,14 +328,14 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
         }
 
         if (mp_err) {
-            s->regs[R_ERR_CODE] |= (1 << 1); /* MP_ERR */
+            s->regs[R_ERR_CODE] |= R_ERR_CODE_MP_ERR_MASK;
             s->regs[R_OP_STATUS] =
                 FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, ERR, 1);
             ibex_irq_set(&s->alerts[0], 1);
             ibex_irq_set(&s->alerts[0], 0);
         }
 
-        if (num == 1) {
+        if (num == 1u) {
             s->regs[R_ERR_ADDR] = s->last_rd_err_addr;
             s->last_rd_err_addr = start_addr;
         } else if (mp_err) {
@@ -273,10 +349,10 @@ static void ot_rram_ctrl_execute_op(OtRramCtrlState *s)
         s->regs[R_INTR_STATE] |= INTR_OP_DONE_MASK;
         s->regs[R_CTRL_REGWEN] = 1;
         ot_rram_ctrl_update_status(s);
-    } else if (op == 1) { /* WRITE (Prog) */
+    } else if (op == RRAM_OP_PROG) {
         s->regs[R_CTRL_REGWEN] = 0;
         ot_rram_ctrl_process_wr_fifo(s);
-    } else if (op == 2) { /* REWRITE (HwLoopBack) */
+    } else if (op == RRAM_OP_HW_LOOPBACK) {
         s->regs[R_OP_STATUS] =
             FIELD_DP32(s->regs[R_OP_STATUS], OP_STATUS, DONE, 1);
         s->regs[R_CONTROL] = FIELD_DP32(s->regs[R_CONTROL], CONTROL, START, 0);
@@ -306,13 +382,17 @@ static const uint8_t
 
 static void ot_rram_ctrl_latch_seeds(OtRramCtrlState *s)
 {
-    static const unsigned SEED_INFO_PAGES[OT_RRAM_SEED_COUNT] = { 5u, 6u };
+    static const unsigned SEED_INFO_PAGES[OT_RRAM_SEED_COUNT] = {
+        RRAM_CREATOR_SEED_INFO_PAGE,
+        RRAM_OWNER_SEED_INFO_PAGE,
+    };
 
     for (unsigned idx = 0u; idx < OT_RRAM_SEED_COUNT; idx++) {
-        const uint8_t *page = &s->info_storage[SEED_INFO_PAGES[idx] * 512u];
+        const uint8_t *page =
+            &s->info_storage[SEED_INFO_PAGES[idx] * OT_RRAM_INFO_PAGE_BYTES];
         bool all_ones = true;
         for (unsigned b = 0u; b < OT_RRAM_SEED_BYTES; b++) {
-            if (page[b] != 0xffu) {
+            if (page[b] != UINT8_MAX) {
                 all_ones = false;
                 break;
             }
@@ -341,10 +421,10 @@ static MemTxResult rram_ctrl_core_read(void *opaque, hwaddr addr, uint64_t *val,
     uint32_t val32 = 0;
 
     switch (addr) {
-    case R_WR_FIFO * 4:
+    case R_WR_FIFO * sizeof(uint32_t):
         return MEMTX_ERROR;
 
-    case R_RD_FIFO * 4:
+    case R_RD_FIFO * sizeof(uint32_t):
         if (!ot_fifo32_is_empty(&s->rd_fifo)) {
             val32 = ot_fifo32_pop(&s->rd_fifo);
             ot_rram_ctrl_update_status(s);
@@ -353,7 +433,7 @@ static MemTxResult rram_ctrl_core_read(void *opaque, hwaddr addr, uint64_t *val,
 
     default:
         if (addr < sizeof(s->regs)) {
-            val32 = s->regs[addr / 4];
+            val32 = s->regs[addr / sizeof(uint32_t)];
         }
         break;
     }
@@ -369,15 +449,16 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
     OtRramCtrlState *s = opaque;
     uint32_t val32 = val;
 
-    if (size != 4 && !(size == 1 && addr == 0x1c)) {
+    if (size != sizeof(uint32_t) &&
+        !(size == 1u && addr == (R_CTRL_REGWEN * sizeof(uint32_t)))) {
         return MEMTX_ERROR;
     }
 
     switch (addr) {
-    case R_RD_FIFO * 4:
+    case R_RD_FIFO * sizeof(uint32_t):
         return MEMTX_ERROR;
 
-    case R_WR_FIFO * 4:
+    case R_WR_FIFO * sizeof(uint32_t):
         if (!FIELD_EX32(s->regs[R_CONTROL], CONTROL, START)) {
             return MEMTX_OK;
         }
@@ -389,7 +470,7 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
 
-    case R_CONTROL * 4:
+    case R_CONTROL * sizeof(uint32_t):
         s->regs[R_CONTROL] = val32;
         if (FIELD_EX32(val32, CONTROL, START)) {
             s->regs[R_OP_STATUS] = 0;
@@ -398,25 +479,25 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
 
-    case R_INTR_STATE * 4:
-        s->regs[R_INTR_STATE] &= ~(val32 & 0x30u);
+    case R_INTR_STATE * sizeof(uint32_t):
+        s->regs[R_INTR_STATE] &= ~(val32 & INTR_EVENT_MASK);
         ot_rram_ctrl_update_status(s);
         break;
-    case R_INTR_ENABLE * 4:
-        s->regs[R_INTR_ENABLE] = val32 & 0x3fu;
+    case R_INTR_ENABLE * sizeof(uint32_t):
+        s->regs[R_INTR_ENABLE] = val32 & INTR_ALL_MASK;
         ot_rram_ctrl_update_irqs(s);
         break;
-    case R_INTR_TEST * 4:
-        s->regs[R_INTR_TEST] = val32 & 0xfu;
-        s->regs[R_INTR_STATE] |= val32 & 0x30u;
+    case R_INTR_TEST * sizeof(uint32_t):
+        s->regs[R_INTR_TEST] = val32 & INTR_STATUS_MASK;
+        s->regs[R_INTR_STATE] |= val32 & INTR_EVENT_MASK;
         ot_rram_ctrl_update_status(s);
         break;
-    case R_FIFO_LVL * 4:
-        s->regs[R_FIFO_LVL] = val32 & 0x1f1fu;
+    case R_FIFO_LVL * sizeof(uint32_t):
+        s->regs[R_FIFO_LVL] = val32 & R_FIFO_LVL_MASK;
         ot_rram_ctrl_update_status(s);
         break;
-    case R_ALERT_TEST * 4:
-        for (int i = 0; i < 5; i++) {
+    case R_ALERT_TEST * sizeof(uint32_t):
+        for (unsigned i = 0u; i < OT_RRAM_ALERT_COUNT; i++) {
             if (val32 & (1u << i)) {
                 ibex_irq_set(&s->alerts[i], 1);
                 ibex_irq_set(&s->alerts[i], 0);
@@ -424,13 +505,13 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
 
-    case R_FIFO_CLR * 4:
+    case R_FIFO_CLR * sizeof(uint32_t):
         ot_fifo32_reset(&s->wr_fifo);
         ot_fifo32_reset(&s->rd_fifo);
         ot_rram_ctrl_update_status(s);
         break;
 
-    case R_INIT * 4:
+    case R_INIT * sizeof(uint32_t):
         s->regs[R_INIT] = val32 & 1u;
         if ((val32 & 1u) && !s->lcmgr_init_done) {
             ot_rram_ctrl_latch_seeds(s);
@@ -438,19 +519,22 @@ static MemTxResult rram_ctrl_core_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
 
-    case R_ADDR * 4:
-        s->regs[R_ADDR] = val32 & (RRAM_HOST_SIZE - 1u) & ~3u;
+    case R_ADDR * sizeof(uint32_t):
+        s->regs[R_ADDR] =
+            val32 & (RRAM_HOST_SIZE - 1u) & ~(uint32_t)(sizeof(uint32_t) - 1u);
         break;
 
-    case 0x1c: /* CTRL_REGWEN (rw0c) */
-    case 0x28 ... 0x4c: /* REGION_CFG_REGWEN_0..9 (rw0c) */
-    case 0xa4 ... 0xc0: /* INFO_REGWEN_0..7 (rw0c) */
-        s->regs[addr / 4] &= (val32 & 1u);
+    case R_CTRL_REGWEN * sizeof(uint32_t):
+    case (R_REGION_CFG_REGWEN_0 *
+          sizeof(uint32_t))...(R_REGION_CFG_REGWEN_9 * sizeof(uint32_t)):
+    case (R_INFO_REGWEN_0 *
+          sizeof(uint32_t))...(R_INFO_REGWEN_7 * sizeof(uint32_t)):
+        s->regs[addr / sizeof(uint32_t)] &= (val32 & 1u);
         break;
 
     default:
         if (addr < sizeof(s->regs)) {
-            s->regs[addr / 4] = val32;
+            s->regs[addr / sizeof(uint32_t)] = val32;
         }
         break;
     }
@@ -512,27 +596,32 @@ static void ot_rram_ctrl_load(OtRramCtrlState *s, Error **errp)
         blk_pread(s->blk, 0, sizeof(magic), &magic, 0);
 
         /* "vFSH" in little endian: 'v'=0x76, 'F'=0x46, 'S'=0x53, 'H'=0x48 */
-        if (magic == 0x48534676) {
+        if (magic == VFSH_MAGIC) {
             int64_t blk_len = blk_getlength(s->blk);
-            uint16_t pages_per_bank = 256;
-            blk_pread(s->blk, 14, sizeof(pages_per_bank), &pages_per_bank, 0);
-            uint32_t data_size = (uint32_t)pages_per_bank * 2u * 2048u;
+            uint16_t pages_per_bank = VFSH_DEFAULT_PAGES_PER_BANK;
+            blk_pread(s->blk, VFSH_PAGES_PER_BANK_OFF, sizeof(pages_per_bank),
+                      &pages_per_bank, 0);
+            uint32_t data_size =
+                (uint32_t)pages_per_bank * VFSH_BANKS_COUNT * VFSH_PAGE_BYTES;
             if (data_size == 0 || data_size > RRAM_HOST_SIZE) {
-                data_size = 0x100000;
+                data_size = VFSH_DEFAULT_DATA_BYTES;
             }
-            int64_t read_size = MIN((int64_t)data_size, blk_len - 32);
+            int64_t read_size =
+                MIN((int64_t)data_size, blk_len - VFSH_HDR_BYTES);
             if (read_size > 0) {
-                blk_pread(s->blk, 32, read_size, s->storage, 0);
+                blk_pread(s->blk, VFSH_HDR_BYTES, read_size, s->storage, 0);
             }
 
-            int64_t info_base = 32 + (int64_t)data_size;
+            int64_t info_base = VFSH_HDR_BYTES + (int64_t)data_size;
             if (blk_len >= info_base + (int64_t)sizeof(s->info_storage)) {
                 blk_pread(s->blk, info_base, sizeof(s->info_storage),
                           s->info_storage, 0);
             }
-            if (blk_len >= info_base + 0x5000 + 2048) {
-                blk_pread(s->blk, info_base + 0x5000, 2048,
-                          s->storage + 0x1FC000, 0);
+            if (blk_len >=
+                info_base + VFSH_CREATOR_INFO_OFF + (int64_t)VFSH_PAGE_BYTES) {
+                blk_pread(s->blk, info_base + VFSH_CREATOR_INFO_OFF,
+                          VFSH_PAGE_BYTES,
+                          s->storage + RRAM_CREATOR_PARTITION_OFF, 0);
             }
         } else {
             blk_pread(s->blk, 0, RRAM_HOST_SIZE, s->storage, 0);
@@ -546,22 +635,23 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
     OtRramCtrlState *s = OT_RRAM_CTRL(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
-    s->regs[R_DIS] = 0x9u;
-    s->regs[R_EXEC] = 0x9u;
-    s->regs[R_STATUS] = 0x1au;
-    s->regs[R_PHY_STATUS] = 0x2u;
-    s->regs[R_FIFO_LVL] = 0x0f0fu;
+    s->regs[R_DIS] = OT_MULTIBITBOOL4_FALSE;
+    s->regs[R_EXEC] = OT_MULTIBITBOOL4_FALSE;
+    s->regs[R_STATUS] = R_STATUS_RD_EMPTY_MASK | R_STATUS_WR_EMPTY_MASK |
+                        R_STATUS_INIT_DONE_MASK;
+    s->regs[R_PHY_STATUS] = R_PHY_STATUS_PROG_NORMAL_AVAIL_MASK;
+    s->regs[R_FIFO_LVL] = RRAM_FIFO_LVL_RST;
     s->regs[R_CTRL_REGWEN] = 1u;
-    for (int i = 0; i < 10; i++) {
-        s->regs[(0x28 / 4) + i] = 1u;
-        s->regs[(0x50 / 4) + i] = 0x99999u;
+    for (unsigned i = 0u; i < PARAM_NUM_REGIONS; i++) {
+        s->regs[R_REGION_CFG_REGWEN_0 + i] = 1u;
+        s->regs[R_REGION_CFG_0 + i] = RRAM_REGION_CFG_RST;
     }
-    s->regs[0xa0 / 4] = 0x9999u;
-    for (int i = 0; i < 8; i++) {
-        s->regs[(0xa4 / 4) + i] = 1u;
-        s->regs[(0xc4 / 4) + i] = 0x99999u;
+    s->regs[R_DEFAULT_REGION] = RRAM_DEFAULT_REGION_RST;
+    for (unsigned i = 0u; i < OT_RRAM_INFO_PAGE_COUNT; i++) {
+        s->regs[R_INFO_REGWEN_0 + i] = 1u;
+        s->regs[R_INFO_CFG_0 + i] = RRAM_INFO_CFG_RST;
     }
-    s->regs[0xe4 / 4] = 0x99u;
+    s->regs[R_HW_INFO_CFG_OVERRIDE] = RRAM_HW_INFO_CFG_OVERRIDE_RST;
 
     s->last_wr_err_addr = 0;
     s->last_rd_err_addr = 0;
@@ -570,9 +660,9 @@ static void ot_rram_ctrl_reset(DeviceState *dev)
 
     /* rram_macro_prim_reg_top.sv: CSR0_REGWEN=1 (rw0c), CSR1=0 (rw), CSR2=0
      * (w1c) */
-    s->prim_regs[0] = 1u;
-    s->prim_regs[1] = 0u;
-    s->prim_regs[2] = 0u;
+    s->prim_regs[R_PRIM_CSR0_REGWEN] = 1u;
+    s->prim_regs[R_PRIM_CSR1] = 0u;
+    s->prim_regs[R_PRIM_CSR2] = 0u;
 
     ot_fifo32_reset(&s->wr_fifo);
     ot_fifo32_reset(&s->rd_fifo);
@@ -585,10 +675,10 @@ static MemTxResult rram_ctrl_prim_read(void *opaque, hwaddr addr, uint64_t *val,
     (void)size;
     (void)attrs;
     OtRramCtrlState *s = opaque;
-    if (addr >= 0x0cu || (addr & 0x3u) != 0u) {
+    if (addr >= RRAM_PRIM_REG_BYTES || (addr & (sizeof(uint32_t) - 1u)) != 0u) {
         return MEMTX_ERROR;
     }
-    *val = s->prim_regs[addr >> 2u];
+    *val = s->prim_regs[addr / sizeof(uint32_t)];
     return MEMTX_OK;
 }
 
@@ -598,28 +688,29 @@ static MemTxResult rram_ctrl_prim_write(void *opaque, hwaddr addr, uint64_t val,
     (void)attrs;
     OtRramCtrlState *s = opaque;
     uint32_t v32 = (uint32_t)val;
-    if (addr >= 0x0cu || (addr & 0x3u) != 0u) {
+    if (addr >= RRAM_PRIM_REG_BYTES || (addr & (sizeof(uint32_t) - 1u)) != 0u) {
         return MEMTX_ERROR;
     }
     /* RRAM_MACRO_PRIM_PERMIT = '{4'b0001, 4'b0011, 4'b0001} */
-    if (addr == 0x4u && size < 2u) {
+    if (addr == (R_PRIM_CSR1 * sizeof(uint32_t)) && size < sizeof(uint16_t)) {
         return MEMTX_ERROR;
     }
     switch (addr) {
-    case 0x0u: /* CSR0_REGWEN (rw0c, 1 bit) */
+    case R_PRIM_CSR0_REGWEN * sizeof(uint32_t):
         if ((v32 & 1u) == 0u) {
-            s->prim_regs[0] = 0u;
+            s->prim_regs[R_PRIM_CSR0_REGWEN] = 0u;
         }
         break;
-    case 0x4u: /* CSR1 (rw, [12:0], gated by CSR0_REGWEN) */
-        if (s->prim_regs[0] & 1u) {
-            s->prim_regs[1] = v32 & 0x1fffu;
+    case R_PRIM_CSR1 * sizeof(uint32_t):
+        if (s->prim_regs[R_PRIM_CSR0_REGWEN] & 1u) {
+            s->prim_regs[R_PRIM_CSR1] = v32 & R_PRIM_CSR1_VAL_MASK;
         }
         break;
-    case 0x8u: /* CSR2: bits [7,3] (0x88) are rw; bits [6:4,2:0] (0x77) are w1c
-                */
-        s->prim_regs[2] =
-            ((s->prim_regs[2] & ~0x88u) & ~(v32 & 0x77u)) | (v32 & 0x88u);
+    case R_PRIM_CSR2 * sizeof(uint32_t):
+        s->prim_regs[R_PRIM_CSR2] =
+            ((s->prim_regs[R_PRIM_CSR2] & ~R_PRIM_CSR2_RW_MASK) &
+             ~(v32 & R_PRIM_CSR2_W1C_MASK)) |
+            (v32 & R_PRIM_CSR2_RW_MASK);
         break;
     default:
         return MEMTX_ERROR;
@@ -642,8 +733,8 @@ static void ot_rram_ctrl_lc_broadcast(void *opaque, int n, int level)
     OtRramCtrlState *s = opaque;
 
     if (n == OT_FLASH_LC_RMA && level) {
-        memset(s->storage, 0xff, RRAM_OTP_OFFSET);
-        memset(s->info_storage, 0xff, sizeof(s->info_storage));
+        memset(s->storage, UINT8_MAX, RRAM_OTP_OFFSET);
+        memset(s->info_storage, UINT8_MAX, sizeof(s->info_storage));
         memory_region_set_dirty(&s->host_iomem, 0, RRAM_OTP_OFFSET);
         if (s->blk && blk_is_writable(s->blk)) {
             /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
@@ -657,8 +748,8 @@ static void ot_rram_ctrl_realize(DeviceState *dev, Error **errp)
     OtRramCtrlState *s = OT_RRAM_CTRL(dev);
 
     s->storage = g_malloc0(RRAM_HOST_SIZE);
-    memset(s->storage, 0xff, RRAM_HOST_SIZE);
-    memset(s->info_storage, 0xff, sizeof(s->info_storage));
+    memset(s->storage, UINT8_MAX, RRAM_HOST_SIZE);
+    memset(s->info_storage, UINT8_MAX, sizeof(s->info_storage));
     ot_rram_ctrl_load(s, errp);
 
     memory_region_init_io(&s->core_iomem, OBJECT(dev), &rram_ctrl_core_ops, s,
@@ -678,25 +769,25 @@ static void ot_rram_ctrl_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->host_iomem);
 
     memory_region_init_io(&s->prim_iomem, OBJECT(dev), &rram_ctrl_prim_ops, s,
-                          TYPE_OT_RRAM_CTRL ".prim", 0x2000u);
+                          TYPE_OT_RRAM_CTRL ".prim", RRAM_PRIM_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->prim_iomem);
 
-    for (int i = 0; i < 6; i++) {
+    for (unsigned i = 0u; i < OT_RRAM_IRQ_COUNT; i++) {
         ibex_sysbus_init_irq(OBJECT(s), &s->irqs[i]);
     }
-    for (int i = 0; i < 5; i++) {
+    for (unsigned i = 0u; i < OT_RRAM_ALERT_COUNT; i++) {
         ibex_qdev_init_irq(OBJECT(dev), &s->alerts[i], OT_DEVICE_ALERT);
     }
     qdev_init_gpio_in_named(dev, &ot_rram_ctrl_lc_broadcast, OT_LC_BROADCAST,
-                            8);
+                            OT_FLASH_LC_BROADCAST_COUNT);
 }
 
 static void ot_rram_ctrl_init(Object *obj)
 {
     OtRramCtrlState *s = OT_RRAM_CTRL(obj);
 
-    ot_fifo32_create(&s->wr_fifo, 1024);
-    ot_fifo32_create(&s->rd_fifo, 1024);
+    ot_fifo32_create(&s->wr_fifo, RRAM_INTERNAL_FIFO_CAPACITY);
+    ot_fifo32_create(&s->rd_fifo, RRAM_INTERNAL_FIFO_CAPACITY);
 }
 
 static const Property ot_rram_ctrl_properties[] = {
