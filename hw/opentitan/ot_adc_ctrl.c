@@ -123,7 +123,23 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #define FILTER_CTL_EN_MASK     (1u << 31u)
 #define FILTER_CTL_REG_MASK    0x8ffc1ffcu
 #define ADC_PD_CTL_MASK        0xfffffff1u
-#define FSM_STATE_NP_0         12u
+#define ADC_EN_CTL_MASK \
+    (R_ADC_EN_CTL_ADC_ENABLE_MASK | R_ADC_EN_CTL_ONESHOT_MODE_MASK)
+
+#define ADC_PD_CTL_RESVAL        0x64070u
+#define ADC_LP_SAMPLE_CTL_RESVAL 0x4u
+#define ADC_SAMPLE_CTL_RESVAL    0x9bu
+
+#define FSM_STATE_PWRDN 0u
+#define FSM_STATE_LP_0  6u
+#define FSM_STATE_NP_0  12u
+
+#define ADC_SAMPLE_PERIOD_NS 25000LL
+#define ADC_MIN_DELAY_NS     100000LL
+
+#define REG_PERMIT_1B 0x1u
+#define REG_PERMIT_2B 0x3u
+#define REG_PERMIT_4B 0xfu
 
 #define CHN_VAL_VALUE_SHIFT      2u
 #define CHN_VAL_INTR_VALUE_SHIFT 18u
@@ -251,7 +267,7 @@ static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
         return;
     }
 
-    if (s->regs[R_ADC_FSM_STATE] == 6u) { /* LP_0 */
+    if (s->regs[R_ADC_FSM_STATE] == FSM_STATE_LP_0) {
         /* Evaluate match for LP but don't assert MATCH interrupts, only TRANS
          */
         bool any_match = false;
@@ -282,10 +298,12 @@ static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
             s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
             int64_t np_samples =
                 (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
-            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                           MAX(np_samples * 25000LL, 100000LL));
+            int64_t delay_ns =
+                MAX(np_samples * ADC_SAMPLE_PERIOD_NS, ADC_MIN_DELAY_NS);
+            timer_mod_ns(s->fsm_timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns);
         } else {
-            s->regs[R_ADC_FSM_STATE] = 0u;
+            s->regs[R_ADC_FSM_STATE] = FSM_STATE_PWRDN;
         }
         ot_adc_ctrl_update_irqs(s);
     } else {
@@ -297,7 +315,7 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
 {
     if (s->regs[R_ADC_FSM_RST] & R_ADC_FSM_RST_RST_EN_MASK) {
         s->trigger_q = false;
-        s->regs[R_ADC_FSM_STATE] = 0u;
+        s->regs[R_ADC_FSM_STATE] = FSM_STATE_PWRDN;
         timer_del(s->fsm_timer);
         return;
     }
@@ -309,7 +327,7 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
     s->trigger_q = adc_en;
 
     if (!adc_en) {
-        s->regs[R_ADC_FSM_STATE] = 0u;
+        s->regs[R_ADC_FSM_STATE] = FSM_STATE_PWRDN;
         timer_del(s->fsm_timer);
         return;
     }
@@ -322,23 +340,27 @@ static void ot_adc_ctrl_update_fsm(OtAdcCtrlState *s)
             if (s->regs[R_ADC_INTR_CTL] & (1u << ADC_INTR_ONESHOT_BIT)) {
                 s->regs[R_ADC_INTR_STATUS] |= (1u << ADC_INTR_ONESHOT_BIT);
             }
-            s->regs[R_ADC_FSM_STATE] = 0u;
+            s->regs[R_ADC_FSM_STATE] = FSM_STATE_PWRDN;
             ot_adc_ctrl_update_irqs(s);
         }
     } else {
         bool lp_mode =
             (s->regs[R_ADC_PD_CTL] & R_ADC_PD_CTL_LP_MODE_MASK) != 0u;
         if (lp_mode) {
-            s->regs[R_ADC_FSM_STATE] = 6u; /* LP_0 */
+            s->regs[R_ADC_FSM_STATE] = FSM_STATE_LP_0;
             int64_t samples =
                 (uint8_t)(s->regs[R_ADC_LP_SAMPLE_CTL] - 1u) + 1LL;
-            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                           MAX(samples * 25000LL, 100000LL));
+            int64_t delay_ns =
+                MAX(samples * ADC_SAMPLE_PERIOD_NS, ADC_MIN_DELAY_NS);
+            timer_mod_ns(s->fsm_timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns);
         } else {
             s->regs[R_ADC_FSM_STATE] = FSM_STATE_NP_0;
             int64_t samples = (uint16_t)(s->regs[R_ADC_SAMPLE_CTL] - 1u) + 1LL;
-            timer_mod_ns(s->fsm_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                           MAX(samples * 25000LL, 100000LL));
+            int64_t delay_ns =
+                MAX(samples * ADC_SAMPLE_PERIOD_NS, ADC_MIN_DELAY_NS);
+            timer_mod_ns(s->fsm_timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns);
         }
     }
 }
@@ -354,13 +376,14 @@ static bool ot_adc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1);
     bool is_half_word = (reg == R_ADC_SAMPLE_CTL) ||
                         (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS);
-    uint8_t permit = 0x1u;
+    uint8_t permit = REG_PERMIT_1B;
     if (is_full_word) {
-        permit = 0xfu;
+        permit = REG_PERMIT_4B;
     } else if (is_half_word) {
-        permit = 0x3u;
+        permit = REG_PERMIT_2B;
     }
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    uint32_t subword_offset = (uint32_t)(addr & (sizeof(uint32_t) - 1u));
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << subword_offset);
     return !is_write || (permit & ~reg_be) == 0u;
 }
 
@@ -429,7 +452,7 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_ADC_EN_CTL:
-        s->regs[R_ADC_EN_CTL] = val32 & 0x3u;
+        s->regs[R_ADC_EN_CTL] = val32 & ADC_EN_CTL_MASK;
         ot_adc_ctrl_update_fsm(s);
         break;
     case R_ADC_PD_CTL:
@@ -440,13 +463,14 @@ static void ot_adc_ctrl_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_ADC_LP_SAMPLE_CTL:
-        s->regs[R_ADC_LP_SAMPLE_CTL] = val32 & 0xffu;
+        s->regs[R_ADC_LP_SAMPLE_CTL] =
+            val32 & R_ADC_LP_SAMPLE_CTL_LP_SAMPLE_CNT_MASK;
         break;
     case R_ADC_SAMPLE_CTL:
-        s->regs[R_ADC_SAMPLE_CTL] = val32 & 0xffffu;
+        s->regs[R_ADC_SAMPLE_CTL] = val32 & R_ADC_SAMPLE_CTL_NP_SAMPLE_CNT_MASK;
         break;
     case R_ADC_FSM_RST:
-        s->regs[R_ADC_FSM_RST] = val32 & 0x1u;
+        s->regs[R_ADC_FSM_RST] = val32 & R_ADC_FSM_RST_RST_EN_MASK;
         ot_adc_ctrl_update_fsm(s);
         break;
     case R_ADC_CHN0_FILTER_CTL_0 ... R_ADC_CHN0_FILTER_CTL_7:
@@ -512,9 +536,9 @@ static void ot_adc_ctrl_reset_enter(Object *obj, ResetType type)
     }
     memset(s->regs, 0, REGS_SIZE);
     s->trigger_q = false;
-    s->regs[R_ADC_PD_CTL] = 0x64070u;
-    s->regs[R_ADC_LP_SAMPLE_CTL] = 0x4u;
-    s->regs[R_ADC_SAMPLE_CTL] = 0x9bu;
+    s->regs[R_ADC_PD_CTL] = ADC_PD_CTL_RESVAL;
+    s->regs[R_ADC_LP_SAMPLE_CTL] = ADC_LP_SAMPLE_CTL_RESVAL;
+    s->regs[R_ADC_SAMPLE_CTL] = ADC_SAMPLE_CTL_RESVAL;
 }
 
 static void ot_adc_ctrl_reset_exit(Object *obj, ResetType type)
