@@ -82,6 +82,10 @@
 #define RISCVDM_ABSTRACTDATA_SLOTS 10u
 #define ADDRESS_BITS               7u
 
+#define RISCV_DM_NDMRESET_POLL_STEPS 32u
+#define RISCV_DM_VCPU_SYNC_RETRIES   1000
+#define RISCV_DM_VCPU_SYNC_SLEEP_US  50u
+
 /* clang-format off */
 
 /* Debug Module registers */
@@ -1362,7 +1366,7 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
     } else if (prev_ndmreset) {
         RISCV_DEBUG_DEVICE(dm)->in_ndmreset = true;
         ibex_irq_set(&dm->ndmreset, 0);
-        for (unsigned step = 0; step < 32u; step++) {
+        for (unsigned step = 0; step < RISCV_DM_NDMRESET_POLL_STEPS; step++) {
             bool any_disabled = false;
             for (unsigned ix = 0; ix < dm->hart_count; ix++) {
                 CPUState *cs = CPU(dm->harts[ix].cpu);
@@ -1548,7 +1552,7 @@ static CmdErr riscv_dm_abstractauto_write(RISCVDMState *dm, uint32_t value)
 
 static void riscv_dm_sync_vcpu(RISCVDMState *dm)
 {
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < RISCV_DM_VCPU_SYNC_RETRIES; i++) {
         bool pending = dm->cmd_busy;
         for (unsigned hix = 0; hix < dm->hart_count; hix++) {
             RISCVDMHartState *hart = &dm->harts[hix];
@@ -1568,7 +1572,7 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
         }
         replay_mutex_unlock();
         bql_unlock();
-        g_usleep(50);
+        g_usleep(RISCV_DM_VCPU_SYNC_SLEEP_US);
         replay_mutex_lock();
         bql_lock();
     }
