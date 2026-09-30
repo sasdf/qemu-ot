@@ -342,22 +342,22 @@ typedef struct {
 } OtPwrMgrClockConfig;
 
 /* clang-format off */
-static const OtPwrMgrConfig PWRMGR_CONFIG[OT_PWRMGR_VERSION_COUNT] = {
-    [OT_PWRMGR_VERSION_EG_1_0_0] = {
+static const OtPwrMgrConfig PWRMGR_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
         .wakeup_count = 6u,
         .reset_count = 2u,
         .reset_mask = 0x3u,
         .control_mask = 0x1f1u,
         .control_res_val = 0x180u, /* MAIN_PD_N | USB_CLK_EN_ACTIVE */
     },
-    [OT_PWRMGR_VERSION_DJ] = {
+    [OT_VER_DJ] = {
         .wakeup_count = 4u,
         .reset_count = 2u,
         .reset_mask = 0x3u,
         .control_mask = 0x71u,
         .control_res_val = 0x40u, /* MAIN_PD_N */
     },
-    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+    [OT_VER_EG_2_0_0] = {
         .wakeup_count = 6u,
         .reset_count = 2u,
         .reset_mask = 0x3u,
@@ -382,24 +382,24 @@ static const OtPwrMgrConfig PWRMGR_CONFIG[OT_PWRMGR_VERSION_COUNT] = {
 #define RESET_SW_REQ_IDX(_s_) HW_RESET_WIDTH(_s_)
 
 static int
-PWRMGR_RESET_DISPATCH[OT_PWRMGR_VERSION_COUNT][PWRMGR_RST_REQ_MAX] = {
-    [OT_PWRMGR_VERSION_EG_1_0_0] = {
+PWRMGR_RESET_DISPATCH[OT_VER_COUNT][PWRMGR_RST_REQ_MAX] = {
+    [OT_VER_EG_1_0_0] = {
         [0] = OT_RSTMGR_RESET_SYSCTRL,
         [1] = OT_RSTMGR_RESET_AON_TIMER,
     },
-    [OT_PWRMGR_VERSION_DJ] = {
+    [OT_VER_DJ] = {
         [0] = OT_RSTMGR_RESET_AON_TIMER,
         [1] = OT_RSTMGR_RESET_SOC_PROXY,
     },
-    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+    [OT_VER_EG_2_0_0] = {
         [0] = OT_RSTMGR_RESET_SYSCTRL,
         [1] = OT_RSTMGR_RESET_AON_TIMER,
     },
 };
 
 static const char *
-PWRMGR_WAKEUP_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_WAKEUP_MAX] = {
-    [OT_PWRMGR_VERSION_EG_1_0_0] = {
+PWRMGR_WAKEUP_NAMES[OT_VER_COUNT][PWRMGR_WAKEUP_MAX] = {
+    [OT_VER_EG_1_0_0] = {
         [0] = "SYSRST",
         [1] = "ADC_CTRL",
         [2] = "PINMUX",
@@ -407,7 +407,7 @@ PWRMGR_WAKEUP_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_WAKEUP_MAX] = {
         [4] = "AON_TIMER",
         [5] = "SENSOR",
     },
-    [OT_PWRMGR_VERSION_DJ] = {
+    [OT_VER_DJ] = {
         [0] = "PINMUX",
         [1] = "USBDEV",
         [2] = "AON_TIMER",
@@ -415,7 +415,7 @@ PWRMGR_WAKEUP_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_WAKEUP_MAX] = {
         [4] = "SOC_PROXY_INT",
         [5] = "SOC_PROXY_EXT",
     },
-    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+    [OT_VER_EG_2_0_0] = {
         [0] = "SYSRST",
         [1] = "ADC_CTRL",
         [2] = "PINMUX",
@@ -426,16 +426,16 @@ PWRMGR_WAKEUP_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_WAKEUP_MAX] = {
 };
 
 static const char *
-PWRMGR_RST_NAMES[OT_PWRMGR_VERSION_COUNT][PWRMGR_RST_REQ_MAX] = {
-    [OT_PWRMGR_VERSION_EG_1_0_0] = {
+PWRMGR_RST_NAMES[OT_VER_COUNT][PWRMGR_RST_REQ_MAX] = {
+    [OT_VER_EG_1_0_0] = {
         [0] = "SYSRST",
         [1] = "AON_TIMER",
     },
-    [OT_PWRMGR_VERSION_DJ] = {
+    [OT_VER_DJ] = {
         [0] = "AON_TIMER",
         [1] = "SOC_PROXY",
     },
-    [OT_PWRMGR_VERSION_EG_2_0_0] = {
+    [OT_VER_EG_2_0_0] = {
         [0] = "SYSRST",
         [1] = "AON_TIMER",
     },
@@ -1418,7 +1418,7 @@ static void ot_pwrmgr_realize(DeviceState *dev, Error **errp)
     (void)errp;
 
     g_assert(s->ot_id);
-    g_assert(s->version < OT_PWRMGR_VERSION_COUNT);
+    g_assert(s->version < OT_VER_COUNT);
     g_assert(s->clock_ctrl);
     OBJECT_CHECK(OtClockCtrlIf, s->clock_ctrl, TYPE_OT_CLOCK_CTRL_IF);
 
