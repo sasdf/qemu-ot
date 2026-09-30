@@ -268,14 +268,11 @@ static bool ot_timer_accepts(void *opaque, hwaddr addr, unsigned size,
     return permit != 0u && (!is_write || (permit & ~reg_be) == 0u);
 }
 
-static MemTxResult ot_timer_read(void *opaque, hwaddr addr, uint64_t *val,
-                                 unsigned size, MemTxAttrs attrs)
+static uint64_t ot_timer_read(void *opaque, hwaddr addr, unsigned size)
 {
     OtTimerState *s = opaque;
-    (void)attrs;
     (void)size;
-
-    uint32_t val32;
+    uint32_t val32 = 0;
 
     hwaddr reg = R32_OFF(addr);
     switch (reg) {
@@ -310,10 +307,6 @@ static MemTxResult ot_timer_read(void *opaque, hwaddr addr, uint64_t *val,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        if ((addr >= 0x008u && addr <= 0x0fcu) ||
-            (addr >= 0x120u && addr <= 0x1fcu)) {
-            return MEMTX_ERROR; /* ERRATA-RV_TIMER-003 */
-        }
         val32 = 0;
         break;
     }
@@ -322,16 +315,14 @@ static MemTxResult ot_timer_read(void *opaque, hwaddr addr, uint64_t *val,
     trace_ot_timer_io_read_out(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
                                pc);
 
-    *val = val32;
-    return MEMTX_OK;
+    return (uint32_t)val32;
 }
 
-static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
-                                  unsigned size, MemTxAttrs attrs)
+static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
+                           unsigned size)
 {
     OtTimerState *s = opaque;
-    (void)attrs;
-
+    (void)size;
     uint32_t val32 = (uint32_t)value;
 
     hwaddr reg = R32_OFF(addr);
@@ -400,10 +391,6 @@ static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
         ot_timer_update_irqs(s);
         break;
     case R_CFG0:
-        if (size != 4) {
-            /* ERRATA-RV_TIMER-004: CFG0 PERMIT=0111 rejects sub-word stores */
-            return MEMTX_ERROR;
-        }
         if (ot_timer_is_active(s)) {
             int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             uint64_t mtime = ot_timer_get_mtime(s, now);
@@ -474,17 +461,12 @@ static MemTxResult ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%03x\n", __func__,
                       (uint32_t)addr);
-        if ((addr >= 0x008u && addr <= 0x0fcu) ||
-            (addr >= 0x120u && addr <= 0x1fcu)) {
-            return MEMTX_ERROR; /* ERRATA-RV_TIMER-003 */
-        }
     }
-    return MEMTX_OK;
 }
 
 static const MemoryRegionOps ot_timer_ops = {
-    .read_with_attrs = &ot_timer_read,
-    .write_with_attrs = &ot_timer_write,
+    .read = &ot_timer_read,
+    .write = &ot_timer_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4u,
     .impl.max_access_size = 4u,
