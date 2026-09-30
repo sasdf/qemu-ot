@@ -532,11 +532,12 @@ static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
     uint32_t tf = FIELD_EX32(s->regs[R_TIMING1], TIMING1, T_F);
     /*
      * In i2c_controller_fsm.sv, tcount_d computes t_r_i + thigh_i in 13-bit
-     * arithmetic (13'(t_r_i) + 13'(thigh_i)) on Earlgrey v1 (version == 1),
+     * arithmetic (13'(t_r_i) + 13'(thigh_i)) on Earlgrey v1 (OT_VER_EG_1_0_0),
      * vs 16-bit arithmetic (16'(t_r_i) + 16'(thigh_i)) on Earlgrey v2.
      */
-    uint32_t thigh_tot = (s->version == 1u) ? ((tr + thigh) & 0x1fffu) :
-                                              ((tr + thigh) & 0xffffu);
+    uint32_t thigh_tot = (s->version == OT_VER_EG_1_0_0) ?
+                             ((tr + thigh) & 0x1fffu) :
+                             ((tr + thigh) & 0xffffu);
     uint32_t cycles = thigh_tot + tf + tlow;
     if (!s->pclk || !cycles) {
         return 10000ULL;
@@ -752,7 +753,7 @@ static bool ot_i2c_check_timings(OtI2CState *s)
                       __func__, s->ot_id);
         res = false;
     }
-    if (s->version == 1u && (tr + thigh) > 0x1fffu) {
+    if (s->version == OT_VER_EG_1_0_0 && (tr + thigh) > 0x1fffu) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: v1 13-bit T_R + THIGH overflow (0x%x -> 0x%x)\n",
                       __func__, s->ot_id, tr + thigh, (tr + thigh) & 0x1fffu);
@@ -1860,7 +1861,7 @@ static const Property ot_i2c_properties[] = {
     DEFINE_PROP_STRING("clock-name", OtI2CState, clock_name),
     DEFINE_PROP_LINK("clock-src", OtI2CState, clock_src, TYPE_DEVICE,
                      DeviceState *),
-    DEFINE_PROP_UINT8("version", OtI2CState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtI2CState, version, OT_VER_EG_1_0_0),
 };
 
 static void ot_i2c_reset_enter(Object *obj, ResetType type)
@@ -2147,6 +2148,7 @@ static void ot_i2c_realize(DeviceState *dev, Error **errp)
     g_assert(s->ot_id);
     g_assert(s->clock_name);
     g_assert(s->clock_src);
+    g_assert(s->version < OT_VER_COUNT);
     OBJECT_CHECK(IbexClockSrcIf, s->clock_src, TYPE_IBEX_CLOCK_SRC_IF);
 
     if (!strcmp(s->ot_id, "i2c0")) {
