@@ -1545,7 +1545,7 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, mcounteren_writable)].mask = 0xfu;
     s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = 0x1u;
 
-    if (s->version < 2u) {
+    if (s->version == OT_VER_EG_1_0_0) {
         /*
          * Earlgrey v1 layout:
          * 0x60 (cheriot_ena slot) is FPGA_INFO (RO, permit 0xfu),
@@ -1620,7 +1620,7 @@ static const Property ot_ibex_wrapper_properties[] = {
     DEFINE_PROP_BOOL("dv-sim-status-exit", OtIbexWrapperState,
                      dv_sim_status_exit, true),
     DEFINE_PROP_UINT8("qemu_version", OtIbexWrapperState, qemu_version, 0),
-    DEFINE_PROP_UINT8("version", OtIbexWrapperState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtIbexWrapperState, version, OT_VER_EG_1_0_0),
     DEFINE_PROP_STRING("lc-ignore-ids", OtIbexWrapperState, lc_ignore_ids),
     DEFINE_PROP_CHR("logdev", OtIbexWrapperState, chr),
 };
@@ -1738,6 +1738,7 @@ static void ot_ibex_wrapper_realize(DeviceState *dev, Error **errp)
     g_assert(s->sys_mem);
     g_assert(s->ot_id);
     g_assert(s->num_regions);
+    g_assert(s->version < OT_VER_COUNT);
     /* if EDN mode is enabled, EDN endpoint must be set */
     g_assert(!s->edn || s->edn_ep != UINT8_MAX);
     /* if legacy alias_mode is disabled, vmapper must be set */
