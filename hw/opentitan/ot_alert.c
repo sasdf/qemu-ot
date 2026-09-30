@@ -278,14 +278,24 @@ static const char *ST_NAMES[] = {
 };
 #undef ST_NAME_ENTRY
 
+static inline uint8_t ot_alert_mask_to_permit(uint32_t mask)
+{
+    if (mask > 0xffffu) {
+        return 0xfu;
+    }
+    if (mask > 0xffu) {
+        return 0x3u;
+    }
+    return 0x1u;
+}
+
 #define R_ACC_MPA(_r_, _w_, _m_, _p_, _u_) (OtAlertAccess) { \
     .read = &ot_alert_reg_ ## _r_, \
     .write = &ot_alert_reg_ ## _w_, \
     .mask = (_m_), \
     .protect = (_p_), \
     .wpost = (_u_), \
-    .permit = ((uint32_t)(_m_) > 0xffffu ? 0xfu : \
-               ((uint32_t)(_m_) > 0xffu ? 0x3u : 0x1u)) \
+    .permit = ot_alert_mask_to_permit(_m_) \
 }
 /* clang-format on */
 #define R_ACC_MP(_r_, _w_, _m_, _p_) R_ACC_MPA(_r_, _w_, _m_, _p_, 0)
@@ -361,10 +371,10 @@ static void ot_alert_set_class_state(OtAlertState *s, unsigned nclass,
 
     if (state >= STATE_PHASE0 && state <= STATE_PHASE3) {
         unsigned phase = state - STATE_PHASE0;
-        uint32_t trig_phase =
-            ot_shadow_reg_peek(
-                &s->regs.classes[nclass].crashdump_trigger_shadowed) &
-            CLASS_CRASHDUMP_TRIGGER_SHADOWED_MASK;
+        const OtShadowReg *trig_reg =
+            &s->regs.classes[nclass].crashdump_trigger_shadowed;
+        uint32_t trig_phase = ot_shadow_reg_peek(trig_reg) &
+                              CLASS_CRASHDUMP_TRIGGER_SHADOWED_MASK;
         if (phase == trig_phase) {
             if (s->crashdump_latched == 0) {
                 ot_alert_build_crashdump(s, s->latched_dump);
@@ -812,10 +822,9 @@ static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
         if (accu_trig && ot_alert_is_class_enabled(s, nclass)) {
             ot_alert_enter_phase0(s, nclass);
         } else {
-            bool timeout_en =
-                ((DVAL(s->regs.intr->state) & DVAL(s->regs.intr->enable)) >>
-                 nclass) &
-                0x1u;
+            uint32_t irq_level =
+                DVAL(s->regs.intr->state) & DVAL(s->regs.intr->enable);
+            bool timeout_en = ((irq_level >> nclass) & 0x1u) != 0;
             uint32_t timeout =
                 ot_shadow_reg_peek(&aclass->timeout_cyc_shadowed);
             if (timeout_en && timeout && ot_alert_is_class_enabled(s, nclass)) {
