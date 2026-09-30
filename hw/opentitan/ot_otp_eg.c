@@ -399,6 +399,34 @@ static_assert(OTP_PART_COUNT <= 64, "Maximum part count reached");
 
 static_assert(OTP_BYTE_ADDR_WIDTH == R_DIRECT_ACCESS_ADDRESS_ADDRESS_LENGTH,
               "OTP byte address width mismatch");
+typedef struct {
+    const OtOTPPartDesc *part_descs;
+    uint64_t regs_size;
+    bool has_partition_status_reg;
+    bool has_dai_zeroize_cmd;
+} OtOTPEgConfig;
+
+static const OtOTPEgConfig OTP_EG_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .part_descs = OT_OTP_PART_DESCS,
+        .regs_size = REGS_SIZE,
+        .has_partition_status_reg = false,
+        .has_dai_zeroize_cmd = false,
+    },
+    [OT_VER_DJ] = {
+        .part_descs = OT_OTP_PART_DESCS,
+        .regs_size = REGS_SIZE,
+        .has_partition_status_reg = false,
+        .has_dai_zeroize_cmd = false,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .part_descs = OT_OTP_PART_DESCS_V2,
+        .regs_size = REGS_SIZE + sizeof(uint32_t),
+        .has_partition_status_reg = true,
+        .has_dai_zeroize_cmd = true,
+    },
+};
+
 struct OtOTPEgState {
     OtOTPEngineState parent_obj;
 
@@ -510,7 +538,7 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
     status =
         FIELD_DP32(status, STATUS, DAI_IDLE, !ot_otp_engine_dai_is_busy(s));
 
-    if (eg->version == OT_VER_EG_2_0_0) {
+    if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
         uint32_t part_err = (status & 0x7ffu) ? 1u : 0u;
         status = part_err | ((status >> 10u) & 0x3feu);
     }
@@ -526,7 +554,7 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    if (eg->version == OT_VER_EG_2_0_0) {
+    if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
         if (addr == 0x14u) {
             uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
             return (0x3u & ~byte_mask) == 0u;
@@ -569,7 +597,7 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     uint32_t val32;
 
-    if (eg->version == OT_VER_EG_2_0_0) {
+    if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
         if (addr == 0x14u) {
             val32 = 0u;
             for (unsigned ix = 0; ix <= (R_ERR_CODE_10 - R_ERR_CODE_0); ix++) {
@@ -659,7 +687,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     (void)size;
     uint32_t val32 = (uint32_t)value;
 
-    if (eg->version == OT_VER_EG_2_0_0) {
+    if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
         if (addr == 0x14u) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: R/O register 0x%03x (PARTITION_STATUS_0)\n",
@@ -759,7 +787,8 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
             c->dai_write(s);
         } else if (FIELD_EX32(val32, OT_OTP_DIRECT_ACCESS_CMD, DIGEST)) {
             c->dai_digest(s);
-        } else if ((eg->version == OT_VER_EG_2_0_0) && (val32 & 0x8u)) {
+        } else if (OTP_EG_CONFIG[eg->version].has_dai_zeroize_cmd &&
+                   (val32 & 0x8u)) {
             s->regs[R_DIRECT_ACCESS_RDATA_0] = 0u;
             s->regs[R_DIRECT_ACCESS_RDATA_1] = 0u;
             c->set_error(s, OTP_ENTRY_DAI, OT_OTP_ACCESS_ERROR);
@@ -1279,8 +1308,8 @@ static void ot_otp_eg_init(Object *obj)
                           NULL);
     }
     g_assert(s->version < OT_VER_COUNT);
-    if (s->version == OT_VER_EG_2_0_0) {
-        es->part_descs = OT_OTP_PART_DESCS_V2;
+    if (es->part_descs != OTP_EG_CONFIG[s->version].part_descs) {
+        es->part_descs = OTP_EG_CONFIG[s->version].part_descs;
         for (unsigned part_ix = 0; part_ix < es->part_count; part_ix++) {
             if (!es->part_descs[part_ix].buffered) {
                 continue;
@@ -1312,11 +1341,9 @@ static void ot_otp_eg_init(Object *obj)
     memory_region_init(&s->mmio.ctrl, obj, TYPE_OT_OTP_EG "-ctrl", 0x1000u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
-    uint64_t regs_size = (s->version == OT_VER_EG_2_0_0) ?
-                             (REGS_SIZE + sizeof(uint32_t)) :
-                             REGS_SIZE;
     memory_region_init_io(&s->mmio.sub.regs, obj, &ot_otp_eg_reg_ops, s,
-                          TYPE_OT_OTP_EG "-regs", regs_size);
+                          TYPE_OT_OTP_EG "-regs",
+                          OTP_EG_CONFIG[s->version].regs_size);
     memory_region_add_subregion(&s->mmio.ctrl, 0u, &s->mmio.sub.regs);
 
     /* @todo it might be worthwhile to use a ROM-kind here */
