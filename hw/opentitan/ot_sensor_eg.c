@@ -142,6 +142,9 @@ REG32(MANUAL_PAD_ATTR_3, 0x70u)
 #define MANUAL_PAD_ATTR_MASK \
     (MANUAL_PAD_ATTR_PULL_EN_MASK | MANUAL_PAD_ATTR_PULL_SELECT_MASK | \
      MANUAL_PAD_ATTR_INPUT_DISABLE_MASK)
+#define SENSOR_RECOV_ALERT_IDX 0u
+#define SENSOR_PERMIT_1B       0x1u
+#define SENSOR_PERMIT_2B       0x3u
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
@@ -240,10 +243,10 @@ static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
 
     uint32_t level = s->regs[R_ALERT_TEST];
     if (recov_events) {
-        level |= (1u << 0u);
+        level |= R_ALERT_TEST_RECOV_ALERT_MASK;
     }
     if (s->regs[R_FATAL_ALERT]) {
-        level |= (1u << 1u);
+        level |= R_ALERT_TEST_FATAL_ALERT_MASK;
     }
 
     for (unsigned ix = 0; ix < ARRAY_SIZE(s->alerts); ix++) {
@@ -260,7 +263,7 @@ static void ot_sensor_eg_update_alerts(OtSensorEgState *s)
         s->ast_alert_latch & alert_en_mask & ~s->regs[R_FATAL_ALERT_EN];
     if (!rem_recov &&
         !(s->regs[R_ALERT_TEST] & R_ALERT_TEST_RECOV_ALERT_MASK)) {
-        ibex_irq_set(&s->alerts[0], 0);
+        ibex_irq_set(&s->alerts[SENSOR_RECOV_ALERT_IDX], 0);
     }
 
     ibex_irq_set(&s->wkup, (int)(bool)((s->ast_alert_latch & alert_en_mask) ||
@@ -283,9 +286,9 @@ static uint8_t ot_sensor_eg_reg_permit(hwaddr reg)
     case R_FATAL_ALERT_EN:
     case R_RECOV_ALERT:
     case R_FATAL_ALERT:
-        return 0x3u;
+        return SENSOR_PERMIT_2B;
     default:
-        return 0x1u;
+        return SENSOR_PERMIT_1B;
     }
 }
 
@@ -301,7 +304,7 @@ static bool ot_sensor_eg_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     return (ot_sensor_eg_reg_permit(reg) & ~reg_be) == 0u;
 }
 
