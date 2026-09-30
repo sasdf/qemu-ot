@@ -117,9 +117,19 @@ REG32(STATUS, 0x84u)
     FIELD(STATUS, ALERT_RECOV_CTRL_UPDATE_ERR, 5u, 1u)
     FIELD(STATUS, ALERT_FATAL_FAULT, 6u, 1u)
 REG32(CTRL_GCM_SHADOWED, 0x88u)
+    FIELD(CTRL_GCM_SHADOWED, PHASE, 0u, 6u)
+    FIELD(CTRL_GCM_SHADOWED, NUM_VALID_BYTES, 6u, 5u)
 /* clang-format on */
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
+
+#define R_CTRL_GCM_SHADOWED_MASK \
+    (R_CTRL_GCM_SHADOWED_PHASE_MASK | R_CTRL_GCM_SHADOWED_NUM_VALID_BYTES_MASK)
+#define R_CTRL_GCM_SHADOWED_RESVAL 0x0401u
+
+#define OT_AES_PERMIT_1B 0x1u
+#define OT_AES_PERMIT_2B 0x3u
+#define OT_AES_PERMIT_4B 0xfu
 
 #define OT_AES_KEYSHARE_BM_MASK ((1u << (PARAM_NUM_REGS_KEY * 2u)) - 1u)
 #define OT_AES_IV_BM_MASK       ((1u << (PARAM_NUM_REGS_IV)) - 1u)
@@ -299,6 +309,43 @@ struct OtAESClass {
     ResettablePhases parent_phases;
 };
 
+typedef enum {
+    OT_AES_OP_ENC = 0x1u,
+    OT_AES_OP_DEC = 0x2u,
+} OtAESOp;
+
+typedef enum {
+    OT_AES_CTRL_MODE_ECB = 0x01u,
+    OT_AES_CTRL_MODE_CBC = 0x02u,
+    OT_AES_CTRL_MODE_CFB = 0x04u,
+    OT_AES_CTRL_MODE_OFB = 0x08u,
+    OT_AES_CTRL_MODE_CTR = 0x10u,
+    OT_AES_CTRL_MODE_GCM = 0x20u,
+    OT_AES_CTRL_MODE_NONE_V1 = 0x20u,
+    OT_AES_CTRL_MODE_NONE_V2 = 0x3fu,
+} OtAESCtrlMode;
+
+typedef enum {
+    OT_AES_KEY_LEN_128 = 0x1u,
+    OT_AES_KEY_LEN_192 = 0x2u,
+    OT_AES_KEY_LEN_256 = 0x4u,
+} OtAESKeyLen;
+
+typedef enum {
+    OT_AES_RESEED_RATE_PER_1 = 0x1u,
+    OT_AES_RESEED_RATE_PER_64 = 0x2u,
+    OT_AES_RESEED_RATE_PER_8K = 0x4u,
+} OtAESReseedRate;
+
+typedef enum {
+    OT_AES_GCM_PHASE_INIT = 0x01u,
+    OT_AES_GCM_PHASE_RESTORE = 0x02u,
+    OT_AES_GCM_PHASE_AAD = 0x04u,
+    OT_AES_GCM_PHASE_TEXT = 0x08u,
+    OT_AES_GCM_PHASE_SAVE = 0x10u,
+    OT_AES_GCM_PHASE_TAG = 0x20u,
+} OtAESGcmPhase;
+
 typedef struct {
     uint32_t none_mode;
     uint32_t ctrl_res_val;
@@ -307,17 +354,17 @@ typedef struct {
 
 static const OtAESConfig AES_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
-        .none_mode = 0x20u,
+        .none_mode = OT_AES_CTRL_MODE_NONE_V1,
         .ctrl_res_val = 0x1181u,
         .has_gcm = false,
     },
     [OT_VER_DJ] = {
-        .none_mode = 0x3fu,
+        .none_mode = OT_AES_CTRL_MODE_NONE_V2,
         .ctrl_res_val = 0x11fdu,
         .has_gcm = true,
     },
     [OT_VER_EG_2_0_0] = {
-        .none_mode = 0x3fu,
+        .none_mode = OT_AES_CTRL_MODE_NONE_V2,
         .ctrl_res_val = 0x11fdu,
         .has_gcm = true,
     },
@@ -409,36 +456,39 @@ static void ot_aes_update_alert(OtAESState *s)
 static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
 {
     uint32_t op = FIELD_EX32(val, CTRL_SHADOWED, OPERATION);
-    if (op != 0x1u && op != 0x2u) {
-        op = 0x1u;
+    if (op != OT_AES_OP_ENC && op != OT_AES_OP_DEC) {
+        op = OT_AES_OP_ENC;
     }
     uint32_t mode = FIELD_EX32(val, CTRL_SHADOWED, MODE);
     uint32_t none_mode = AES_CONFIG[s->version].none_mode;
     switch (mode) {
-    case 0x01u:
-    case 0x02u:
-    case 0x04u:
-    case 0x08u:
-    case 0x10u:
+    case OT_AES_CTRL_MODE_ECB:
+    case OT_AES_CTRL_MODE_CBC:
+    case OT_AES_CTRL_MODE_CFB:
+    case OT_AES_CTRL_MODE_OFB:
+    case OT_AES_CTRL_MODE_CTR:
         break;
-    case 0x20u:
+    case OT_AES_CTRL_MODE_GCM:
         if (AES_CONFIG[s->version].has_gcm && s->gcm_supported) {
             break;
         }
         mode = none_mode;
         break;
-    case 0x3fu:
+    case OT_AES_CTRL_MODE_NONE_V2:
     default:
         mode = none_mode;
         break;
     }
     uint32_t key_len = FIELD_EX32(val, CTRL_SHADOWED, KEY_LEN);
-    if (key_len != 0x1u && key_len != 0x2u && key_len != 0x4u) {
-        key_len = 0x4u;
+    if (key_len != OT_AES_KEY_LEN_128 && key_len != OT_AES_KEY_LEN_192 &&
+        key_len != OT_AES_KEY_LEN_256) {
+        key_len = OT_AES_KEY_LEN_256;
     }
     uint32_t reseed = FIELD_EX32(val, CTRL_SHADOWED, PRNG_RESEED_RATE);
-    if (reseed != 0x1u && reseed != 0x2u && reseed != 0x4u) {
-        reseed = 0x1u;
+    if (reseed != OT_AES_RESEED_RATE_PER_1 &&
+        reseed != OT_AES_RESEED_RATE_PER_64 &&
+        reseed != OT_AES_RESEED_RATE_PER_8K) {
+        reseed = OT_AES_RESEED_RATE_PER_1;
     }
     uint32_t out = 0u;
     out = FIELD_DP32(out, CTRL_SHADOWED, OPERATION, op);
@@ -500,7 +550,7 @@ static inline void ot_aes_load_reseed_rate(OtAESState *s)
     unsigned reseed;
 
     switch (rate) {
-    case 0x4u:
+    case OT_AES_RESEED_RATE_PER_8K:
         /* should be "approximately" 8192 */
         reseed = 8192u;
         break;
@@ -1318,7 +1368,7 @@ static uint64_t ot_aes_read(void *opaque, hwaddr addr, unsigned size)
         if (s->gcm_supported) {
             val32 = ot_shadow_reg_read(&r->ctrl_gcm);
         } else {
-            val32 = 0x00000401u;
+            val32 = R_CTRL_GCM_SHADOWED_RESVAL;
         }
         break;
     default:
@@ -1517,25 +1567,28 @@ static void ot_aes_write(void *opaque, hwaddr addr, uint64_t val64,
         if (!ot_aes_is_idle(s)) {
             break;
         }
-        val32 &= 0x7ffu;
-        uint32_t phase = val32 & 0x3fu;
-        uint32_t num_bytes = (val32 >> 6u) & 0x1fu;
+        val32 &= R_CTRL_GCM_SHADOWED_MASK;
+        uint32_t phase = FIELD_EX32(val32, CTRL_GCM_SHADOWED, PHASE);
+        uint32_t num_bytes =
+            FIELD_EX32(val32, CTRL_GCM_SHADOWED, NUM_VALID_BYTES);
         switch (phase) {
-        case 0x01u:
-        case 0x02u:
-        case 0x04u:
-        case 0x08u:
-        case 0x10u:
-        case 0x20u:
+        case OT_AES_GCM_PHASE_INIT:
+        case OT_AES_GCM_PHASE_RESTORE:
+        case OT_AES_GCM_PHASE_AAD:
+        case OT_AES_GCM_PHASE_TEXT:
+        case OT_AES_GCM_PHASE_SAVE:
+        case OT_AES_GCM_PHASE_TAG:
             break;
         default:
-            phase = 0x01u;
+            phase = OT_AES_GCM_PHASE_INIT;
             break;
         }
-        if (num_bytes == 0u || num_bytes > 16u) {
-            num_bytes = 16u;
+        if (num_bytes == 0u || num_bytes > OT_AES_DATA_SIZE) {
+            num_bytes = OT_AES_DATA_SIZE;
         }
-        val32 = (num_bytes << 6u) | phase;
+        val32 = FIELD_DP32(0u, CTRL_GCM_SHADOWED, PHASE, phase);
+        val32 =
+            FIELD_DP32(val32, CTRL_GCM_SHADOWED, NUM_VALID_BYTES, num_bytes);
         switch (ot_shadow_reg_write(&r->ctrl_gcm, val32)) {
         case OT_SHADOW_REG_STAGED:
         case OT_SHADOW_REG_COMMITTED:
@@ -1566,14 +1619,14 @@ static bool ot_aes_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & OT_AES_PERMIT_4B;
     uint32_t permit;
     if (reg == R_CTRL_SHADOWED || reg == R_CTRL_GCM_SHADOWED) {
-        permit = 0x3u;
+        permit = OT_AES_PERMIT_2B;
     } else if (reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) {
-        permit = 0xfu;
+        permit = OT_AES_PERMIT_4B;
     } else {
-        permit = 0x1u;
+        permit = OT_AES_PERMIT_1B;
     }
     return (permit & ~be) == 0u;
 }
@@ -1623,7 +1676,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
 
     ot_shadow_reg_init(&r->ctrl, AES_CONFIG[s->version].ctrl_res_val);
     ot_shadow_reg_init(&r->ctrl_aux, 1u);
-    ot_shadow_reg_init(&r->ctrl_gcm, 0x0401u);
+    ot_shadow_reg_init(&r->ctrl_gcm, R_CTRL_GCM_SHADOWED_RESVAL);
     r->ctrl_aux_regwen = 1u;
     r->trigger = 0xeu;
     r->status = 0u;
