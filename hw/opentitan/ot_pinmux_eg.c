@@ -32,6 +32,7 @@
 #include "qom/object.h"
 #include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
+#include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
@@ -841,7 +842,8 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_attr, MIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_MIO_PAD_ATTR;
             g_assert(pad_no < R_MIO_PAD_ATTR);
-            val32 &= (s->version >= 2u) ? 0x00000083u : MIO_PAD_ATTR_MASK;
+            val32 &= (s->version == OT_VER_EG_2_0_0) ? 0x00000083u :
+                                                       MIO_PAD_ATTR_MASK;
             regs->mio_pad_attr[pad_no] = val32;
             ot_pinmux_eg_update_pads(s);
             ot_gpio_eg_notify_sysrst_change();
@@ -858,7 +860,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_attr, DIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_DIO_PAD_ATTR;
             g_assert(pad_no < PARAM_N_DIO_PADS);
-            if (s->version >= 2u) {
+            if (s->version == OT_VER_EG_2_0_0) {
                 val32 &= (pad_no == 12u || pad_no == 13u) ? 0x00000081u :
                                                             0x00000083u;
             } else {
@@ -1147,14 +1149,23 @@ static void ot_pinmux_eg_init(Object *obj)
 }
 
 static const Property ot_pinmux_eg_properties[] = {
-    DEFINE_PROP_UINT8("version", OtPinmuxEgState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtPinmuxEgState, version, OT_VER_EG_1_0_0),
 };
+
+static void ot_pinmux_eg_realize(DeviceState *dev, Error **errp)
+{
+    OtPinmuxEgState *s = OT_PINMUX_EG(dev);
+    (void)errp;
+
+    g_assert(s->version < OT_VER_COUNT);
+}
 
 static void ot_pinmux_eg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     (void)data;
 
+    dc->realize = &ot_pinmux_eg_realize;
     device_class_set_props(dc, ot_pinmux_eg_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 
