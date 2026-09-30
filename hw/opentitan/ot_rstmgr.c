@@ -161,7 +161,14 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #undef REG_NAME_ENTRY
 /* clang-format on */
 
-#define OT_RSTMGR_SW_RESET_MAX 8u
+#define OT_RSTMGR_SW_RESET_MAX    8u
+#define RSTMGR_CPU_INFO_SLOTS     8u
+#define RSTMGR_ALERT_INFO_SLOTS   9u
+#define RSTMGR_SW_RESET_DELAY_NS  1000
+#define RSTMGR_CPU_STOP_POLL_US   100
+#define RSTMGR_CPU_STOP_SETTLE_US 1000
+#define RSTMGR_PERMIT_1B          0x1u
+#define RSTMGR_PERMIT_4B          0xfu
 
 struct OtRstMgrState {
     SysBusDevice parent_obj;
@@ -175,8 +182,8 @@ struct OtRstMgrState {
     CPUState *cpu;
 
     uint32_t *regs;
-    uint32_t cpu_info_dump[8];
-    uint32_t alert_info_dump[9];
+    uint32_t cpu_info_dump[RSTMGR_CPU_INFO_SLOTS];
+    uint32_t alert_info_dump[RSTMGR_ALERT_INFO_SLOTS];
     bool por; /* Power-On Reset property */
 
     char *ot_id;
@@ -351,7 +358,8 @@ static void ot_rstmgr_sw_reset_timer_cb(void *opaque)
     }
 }
 
-extern void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8]);
+extern void riscv_cpu_get_crash_dump(CPUState *cs,
+                                     uint32_t dump[RSTMGR_CPU_INFO_SLOTS]);
 
 static void ot_rstmgr_reset_bus(void *opaque)
 {
@@ -372,9 +380,9 @@ static void ot_rstmgr_reset_bus(void *opaque)
         bql_unlock();
         while (!s->cpu->stopped) {
             qemu_cpu_kick(s->cpu);
-            g_usleep(100);
+            g_usleep(RSTMGR_CPU_STOP_POLL_US);
         }
-        g_usleep(1000);
+        g_usleep(RSTMGR_CPU_STOP_SETTLE_US);
         replay_mutex_lock();
         bql_lock();
         qemu_notify_event();
@@ -545,7 +553,7 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->regs[reg];
         break;
     case R_ALERT_INFO_ATTR:
-        val32 = 9u;
+        val32 = RSTMGR_ALERT_INFO_SLOTS;
         break;
     case R_ALERT_INFO: {
         uint32_t idx =
@@ -556,7 +564,7 @@ static uint64_t ot_rstmgr_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     }
     case R_CPU_INFO_ATTR:
-        val32 = 8u;
+        val32 = RSTMGR_CPU_INFO_SLOTS;
         break;
     case R_CPU_INFO: {
         /*
@@ -619,7 +627,8 @@ static void ot_rstmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
              */
             if (!timer_pending(s->sw_reset_timer)) {
                 timer_mod(s->sw_reset_timer,
-                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+                          qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                              RSTMGR_SW_RESET_DELAY_NS);
             }
             OtPwrMgrState *pwrmgr = (OtPwrMgrState *)
                 object_resolve_path_type("", TYPE_OT_PWRMGR, NULL);
@@ -738,8 +747,11 @@ static bool ot_rstmgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     hwaddr reg = R32_OFF(addr);
-    uint8_t permit = (reg == R_ALERT_INFO || reg == R_CPU_INFO) ? 0xfu : 0x1u;
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    uint8_t permit = (reg == R_ALERT_INFO || reg == R_CPU_INFO) ?
+                         RSTMGR_PERMIT_4B :
+                         RSTMGR_PERMIT_1B;
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
     return (permit & ~reg_be) == 0u;
 }
 
