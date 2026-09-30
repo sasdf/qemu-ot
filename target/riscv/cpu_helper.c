@@ -2421,10 +2421,11 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             }
         }
 
-        if (cause == RISCV_EXCP_LOAD_ACCESS_FAULT ||
-            cause == RISCV_EXCP_STORE_AMO_ACCESS_FAULT ||
-            cause == RISCV_EXCP_LOAD_ADDR_MIS ||
-            cause == RISCV_EXCP_STORE_AMO_ADDR_MIS) {
+        bool is_access_fault = cause == RISCV_EXCP_LOAD_ACCESS_FAULT ||
+                               cause == RISCV_EXCP_STORE_AMO_ACCESS_FAULT;
+        bool is_misaligned = cause == RISCV_EXCP_LOAD_ADDR_MIS ||
+                             cause == RISCV_EXCP_STORE_AMO_ADDR_MIS;
+        if (is_access_fault || is_misaligned) {
             env->last_data_addr = tval;
         }
         if (env->sync_exc_seen) {
@@ -2639,8 +2640,9 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             env->pc = env->rnmi_excpvec;
         } else {
             target_ulong vec_cause = is_ibex_nmi ? 31 : cause;
-            env->pc = (env->mtvec >> 2 << 2) +
-                      ((async && (env->mtvec & 3) == 1) ? vec_cause * 4 : 0);
+            bool is_vectored = async && (env->mtvec & 3) == 1;
+            target_ulong vec_offset = is_vectored ? (vec_cause * 4) : 0;
+            env->pc = (env->mtvec >> 2 << 2) + vec_offset;
         }
         riscv_cpu_set_mode(env, PRV_M, virt);
         src = env->mepc;
