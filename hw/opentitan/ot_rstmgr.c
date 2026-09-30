@@ -232,8 +232,8 @@ typedef struct {
     OtRstMgrResettable sw_resettable_devices[OT_RSTMGR_SW_RESET_MAX];
 } OtRstMgrConfig;
 
-static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
-    [OT_RSTMGR_VERSION_EG_1_0_0] = {
+static const OtRstMgrConfig RSTMGR_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
         .reset_request_codes = {
             [OT_RSTMGR_RESET_POR] = BIT(0),
             [OT_RSTMGR_RESET_LOW_POWER] = BIT(1),
@@ -256,7 +256,7 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [7u] = { TYPE_OT_I2C, 2u },
         }
     },
-    [OT_RSTMGR_VERSION_DJ] = {
+    [OT_VER_DJ] = {
         .reset_request_codes = {
             [OT_RSTMGR_RESET_POR] = BIT(0),
             [OT_RSTMGR_RESET_LOW_POWER] = BIT(1),
@@ -271,6 +271,29 @@ static const OtRstMgrConfig RSTMGR_CONFIG[OT_RSTMGR_VERSION_COUNT] = {
             [0u] = { TYPE_OT_SPI_DEVICE, 0u },
             [1u] = { TYPE_OT_SPI_HOST, 0u },
             [2u] = { TYPE_OT_I2C, 0u },
+        }
+    },
+    [OT_VER_EG_2_0_0] = {
+        .reset_request_codes = {
+            [OT_RSTMGR_RESET_POR] = BIT(0),
+            [OT_RSTMGR_RESET_LOW_POWER] = BIT(1),
+            [OT_RSTMGR_RESET_SW] = BIT(2),
+            [OT_RSTMGR_RESET_SYSCTRL] = BIT(3),
+            [OT_RSTMGR_RESET_AON_TIMER] = BIT(4),
+            [OT_RSTMGR_RESET_SENSOR] = BIT(5),
+            [OT_RSTMGR_RESET_PWRMGR] = BIT(5),
+            [OT_RSTMGR_RESET_ALERT_HANDLER] = BIT(6),
+            [OT_RSTMGR_RESET_RV_DM] = BIT(7),
+        },
+        .sw_resettable_devices = {
+            [0u] = { TYPE_OT_SPI_DEVICE, 0u },
+            [1u] = { TYPE_OT_SPI_HOST, 0u },
+            [2u] = { TYPE_OT_SPI_HOST, 1u },
+            [3u] = { TYPE_OT_USBDEV, 0u },
+            [4u] = { TYPE_OT_USBDEV, 0u, true },
+            [5u] = { TYPE_OT_I2C, 0u },
+            [6u] = { TYPE_OT_I2C, 1u },
+            [7u] = { TYPE_OT_I2C, 2u },
         }
     },
 };
@@ -788,7 +811,8 @@ static void ot_rstmgr_reset_enter(Object *obj, ResetType type)
          * TODO: remove this version check when USBDEV and I2C are implemented
          * and connected to the `rstmgr`.
          */
-        if (rst->typename || s->version == OT_RSTMGR_VERSION_EG_1_0_0) {
+        if (rst->typename || s->version == OT_VER_EG_1_0_0 ||
+            s->version == OT_VER_EG_2_0_0) {
             s->regs[R_SW_RST_REGWEN_0 + devix] = SW_RST_REGWEN_EN_MASK;
             s->regs[R_SW_RST_CTRL_N_0 + devix] = SW_RST_CTRL_VAL_MASK;
         }
@@ -829,7 +853,7 @@ static void ot_rstmgr_realize(DeviceState *dev, Error **errp)
     (void)errp;
 
     g_assert(s->ot_id);
-    g_assert(s->version < OT_RSTMGR_VERSION_COUNT);
+    g_assert(s->version < OT_VER_COUNT);
 
     /* only used to store initial reset reason state; never reset it */
     s->por = true;
