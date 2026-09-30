@@ -364,8 +364,9 @@ static void ot_sram_ctrl_reseed(OtSramCtrlState *s)
         ot_sram_ctrl_apply_scr_key(s, new_key);
         if (!s->noinit && s->init_sram_bm) {
             size_t cell_slot_count = ot_sram_ctrl_get_slot_count(s->wsize);
-            memset(s->init_sram_bm, 0xff, cell_slot_count * sizeof(uint64_t));
-            memset(s->init_slot_bm, 0xff,
+            memset(s->init_sram_bm, UINT8_MAX,
+                   cell_slot_count * sizeof(uint64_t));
+            memset(s->init_slot_bm, UINT8_MAX,
                    s->init_slot_count * sizeof(uint64_t));
             unsigned slot_offset = ot_sram_ctrl_get_u64_offset(cell_slot_count);
             if (slot_offset) {
@@ -794,7 +795,7 @@ static bool ot_sram_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)size;
     (void)attrs;
-    return !is_write || (addr & 3u) == 0u;
+    return !is_write || (addr & (sizeof(uint32_t) - 1u)) == 0u;
 }
 
 static const MemoryRegionOps ot_sram_ctrl_regs_ops = {
