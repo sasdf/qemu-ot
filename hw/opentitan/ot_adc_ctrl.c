@@ -223,9 +223,9 @@ static void ot_adc_ctrl_eval_sample(OtAdcCtrlState *s, uint32_t chn0_val,
         bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
         bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
 
-        bool match_k = (en0 || en1) &&
-                       (!en0 || ot_adc_ctrl_filter_match_chn(f0, chn0_val)) &&
-                       (!en1 || ot_adc_ctrl_filter_match_chn(f1, chn1_val));
+        bool m0 = !en0 || ot_adc_ctrl_filter_match_chn(f0, chn0_val);
+        bool m1 = !en1 || ot_adc_ctrl_filter_match_chn(f1, chn1_val);
+        bool match_k = (en0 || en1) && m0 && m1;
         if (!match_k) {
             continue;
         }
@@ -261,10 +261,11 @@ static void ot_adc_ctrl_fsm_timer_cb(void *opaque)
             bool en0 = (f0 & FILTER_CTL_EN_MASK) != 0u;
             bool en1 = (f1 & FILTER_CTL_EN_MASK) != 0u;
 
-            bool match_k =
-                (en0 || en1) &&
-                (!en0 || ot_adc_ctrl_filter_match_chn(f0, DEFAULT_CHN0_VAL)) &&
-                (!en1 || ot_adc_ctrl_filter_match_chn(f1, DEFAULT_CHN1_VAL));
+            bool m0 =
+                !en0 || ot_adc_ctrl_filter_match_chn(f0, DEFAULT_CHN0_VAL);
+            bool m1 =
+                !en1 || ot_adc_ctrl_filter_match_chn(f1, DEFAULT_CHN1_VAL);
+            bool match_k = (en0 || en1) && m0 && m1;
             if (match_k) {
                 any_match = true;
             }
@@ -348,14 +349,17 @@ static bool ot_adc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t permit =
-        (reg == R_ADC_PD_CTL ||
-         (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1)) ?
-            0xfu :
-        (reg == R_ADC_SAMPLE_CTL ||
-         (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS)) ?
-            0x3u :
-            0x1u;
+    bool is_full_word =
+        (reg == R_ADC_PD_CTL) ||
+        (reg >= R_ADC_CHN0_FILTER_CTL_0 && reg <= R_ADC_CHN_VAL_1);
+    bool is_half_word = (reg == R_ADC_SAMPLE_CTL) ||
+                        (reg >= R_ADC_WAKEUP_CTL && reg <= R_ADC_INTR_STATUS);
+    uint8_t permit = 0x1u;
+    if (is_full_word) {
+        permit = 0xfu;
+    } else if (is_half_word) {
+        permit = 0x3u;
+    }
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
     return !is_write || (permit & ~reg_be) == 0u;
 }
