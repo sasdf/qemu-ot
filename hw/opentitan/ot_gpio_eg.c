@@ -629,8 +629,9 @@ static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
     OtGpioEgState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    unsigned regs_count =
-        (s->version >= 2u) ? REGS_COUNT : (R_CTRL_EN_INPUT_FILTER + 1u);
+    unsigned regs_count = (s->version == OT_VER_EG_2_0_0) ?
+                              REGS_COUNT :
+                              (R_CTRL_EN_INPUT_FILTER + 1u);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     uint8_t permit =
         (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) ? 0x1u : 0xfu;
@@ -1619,7 +1620,7 @@ static const MemoryRegionOps ot_gpio_eg_regs_ops = {
 
 static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtGpioEgState, ot_id),
-    DEFINE_PROP_UINT8("version", OtGpioEgState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtGpioEgState, version, OT_VER_EG_1_0_0),
     DEFINE_PROP_UINT32("in", OtGpioEgState, reset_in, 0u),
     DEFINE_PROP_UINT32("out", OtGpioEgState, reset_out, 0u),
     DEFINE_PROP_UINT32("oe", OtGpioEgState, reset_oe, 0u),
@@ -1726,6 +1727,7 @@ static void ot_gpio_eg_realize(DeviceState *dev, Error **errp)
     (void)errp;
 
     g_assert(s->ot_id);
+    g_assert(s->version < OT_VER_COUNT);
 
     qemu_chr_fe_set_handlers(&s->chr, &ot_gpio_eg_chr_can_receive,
                              &ot_gpio_eg_chr_receive,
