@@ -167,10 +167,6 @@ REG32(MAIN_SM_STATE, 0x5cu)
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_ACMD_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_CMD_SEQ_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_RESEED_CNT_ALERT_MASK)
-#define ERR_CODE_MASK_V1         0x77f0ffffu
-#define ERR_CODE_MASK_V2         0x76700003u
-#define FATAL_LOC_EVENTS_MASK_V1 0x07f00000u
-#define FATAL_LOC_EVENTS_MASK_V2 0x06700000u
 
 #define OT_CSRNG_AES_KEY_SIZE   32u /* 256 bits */
 #define OT_CSRNG_AES_BLOCK_SIZE 16u /* 128 bits */
@@ -416,20 +412,20 @@ typedef struct {
 static const OtCSRNGConfig CSRNG_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV1,
-        .err_code_mask = ERR_CODE_MASK_V1,
-        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V1,
+        .err_code_mask = 0x77f0ffffu,
+        .fatal_loc_events_mask = 0x07f00000u,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
     },
     [OT_VER_DJ] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV1,
-        .err_code_mask = ERR_CODE_MASK_V1,
-        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V1,
+        .err_code_mask = 0x77f0ffffu,
+        .fatal_loc_events_mask = 0x07f00000u,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
     },
     [OT_VER_EG_2_0_0] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV2,
-        .err_code_mask = ERR_CODE_MASK_V2,
-        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V2,
+        .err_code_mask = 0x76700003u,
+        .fatal_loc_events_mask = 0x06700000u,
         .disabled_err_mask = 0u,
     },
 };
