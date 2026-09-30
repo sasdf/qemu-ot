@@ -1277,7 +1277,8 @@ static void ot_otp_eg_reset_enter(Object *obj, ResetType type)
     }
 }
 
-static int ot_otp_eg_check_global_v2(void *opaque, QemuOpts *opts, Error **errp)
+static int
+ot_otp_eg_check_global_version(void *opaque, QemuOpts *opts, Error **errp)
 {
     (void)errp;
     uint8_t *version = opaque;
@@ -1285,8 +1286,8 @@ static int ot_otp_eg_check_global_v2(void *opaque, QemuOpts *opts, Error **errp)
     const char *prop = qemu_opt_get(opts, "property");
     const char *val = qemu_opt_get(opts, "value");
     if (driver && prop && val && !strcmp(driver, "ot-earlgrey-soc") &&
-        !strcmp(prop, "version") && strtoul(val, NULL, 0) == OT_VER_EG_2_0_0) {
-        *version = OT_VER_EG_2_0_0;
+        !strcmp(prop, "version")) {
+        *version = (uint8_t)strtoul(val, NULL, 0);
     }
     return 0;
 }
@@ -1304,23 +1305,21 @@ static void ot_otp_eg_init(Object *obj)
     }
     QemuOptsList *globlist = qemu_find_opts("global");
     if (globlist) {
-        qemu_opts_foreach(globlist, &ot_otp_eg_check_global_v2, &s->version,
-                          NULL);
+        qemu_opts_foreach(globlist, &ot_otp_eg_check_global_version,
+                          &s->version, NULL);
     }
     g_assert(s->version < OT_VER_COUNT);
-    if (es->part_descs != OTP_EG_CONFIG[s->version].part_descs) {
-        es->part_descs = OTP_EG_CONFIG[s->version].part_descs;
+    const OtOTPEgConfig *cfg = &OTP_EG_CONFIG[s->version];
+    if (es->part_descs != cfg->part_descs) {
+        es->part_descs = cfg->part_descs;
         for (unsigned part_ix = 0; part_ix < es->part_count; part_ix++) {
-            if (!es->part_descs[part_ix].buffered) {
+            const OtOTPPartDesc *pdesc = &es->part_descs[part_ix];
+            if (!pdesc->buffered) {
                 continue;
             }
-            size_t part_words =
-                (es->part_descs[part_ix].size -
-                 (es->part_descs[part_ix].hw_digest ||
-                          es->part_descs[part_ix].sw_digest ?
-                      sizeof(uint64_t) :
-                      0u)) /
-                sizeof(uint32_t);
+            bool has_digest = pdesc->hw_digest || pdesc->sw_digest;
+            size_t digest_size = has_digest ? sizeof(uint64_t) : 0u;
+            size_t part_words = (pdesc->size - digest_size) / sizeof(uint32_t);
             g_free(es->part_ctrls[part_ix].buffer.data);
             es->part_ctrls[part_ix].buffer.data = g_new0(uint32_t, part_words);
         }
@@ -1342,8 +1341,7 @@ static void ot_otp_eg_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
     memory_region_init_io(&s->mmio.sub.regs, obj, &ot_otp_eg_reg_ops, s,
-                          TYPE_OT_OTP_EG "-regs",
-                          OTP_EG_CONFIG[s->version].regs_size);
+                          TYPE_OT_OTP_EG "-regs", cfg->regs_size);
     memory_region_add_subregion(&s->mmio.ctrl, 0u, &s->mmio.sub.regs);
 
     /* @todo it might be worthwhile to use a ROM-kind here */
