@@ -41,6 +41,10 @@
 #define CPUCTRLSTS_SYNC_EXC_SEEN     0x040
 #define CPUCTRLSTS_DOUBLE_FAULT_SEEN 0x080
 #define CPUCTRLSTS_IC_SCR_KEY_VALID  0x100
+#define CPUCTRLSTS_WRITE_MASK \
+    (CPUCTRLSTS_ICACHE_ENABLE | CPUCTRLSTS_DATA_IND_TIMING | \
+     CPUCTRLSTS_DUMMY_INSTR_EN | CPUCTRLSTS_DUMMY_INSTR_MASK | \
+     CPUCTRLSTS_SYNC_EXC_SEEN | CPUCTRLSTS_DOUBLE_FAULT_SEEN)
 
 static RISCVException read_cpuctrlsts(CPURISCVState *env, int csrno,
                                       target_ulong *val)
@@ -69,7 +73,7 @@ static RISCVException write_cpuctrlsts(CPURISCVState *env, int csrno,
      * bit 7 and sync_exc_seen at bit 6) is directly written from
      * csr_wdata_int[7:0], while bit 8 (ic_scr_key_valid) is read-only.
      */
-    env->cpuctrlsts = val & 0xffu;
+    env->cpuctrlsts = val & CPUCTRLSTS_WRITE_MASK;
     env->sync_exc_seen = (val & CPUCTRLSTS_SYNC_EXC_SEEN) != 0;
     return RISCV_EXCP_NONE;
 }
@@ -155,6 +159,13 @@ static RISCVException read_mcounteren(CPURISCVState *env, int csrno,
     return RISCV_EXCP_NONE;
 }
 
+#define MCOUNTEREN_CY   (1u << 0)
+#define MCOUNTEREN_IR   (1u << 2)
+#define MCOUNTEREN_HPM3 (1u << 3)
+#define MCOUNTEREN_HPM4 (1u << 4)
+#define IBEX_MCOUNTEREN_MASK \
+    (MCOUNTEREN_CY | MCOUNTEREN_IR | MCOUNTEREN_HPM3 | MCOUNTEREN_HPM4)
+
 static RISCVException write_mcounteren(CPURISCVState *env, int csrno,
                                        target_ulong val, uintptr_t ra)
 {
@@ -167,7 +178,7 @@ static RISCVException write_mcounteren(CPURISCVState *env, int csrno,
      * Earlgrey top_earlgrey.sv sets RvCoreIbexMHPMCounterNum = 2,
      * giving mcounteren WARL mask 0x0000001d (CY, IR, HPM3, HPM4; TM=0).
      */
-    env->mcounteren = val & 0x1du;
+    env->mcounteren = val & IBEX_MCOUNTEREN_MASK;
     return RISCV_EXCP_NONE;
 }
 
