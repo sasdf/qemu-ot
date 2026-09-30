@@ -58,6 +58,7 @@
 #define USBDEV_PARAM_REG_WIDTH   32u
 
 #define USBDEV_ALL_EP_MASK ((1u << USBDEV_PARAM_N_ENDPOINTS) - 1u)
+#define USBDEV_EP0_MASK    (1u << 0u)
 
 /*
  * The following are not parameters of the IP but hardcoded
@@ -77,6 +78,10 @@
 
 /* Time in microseconds of a frame (fixed by spec). */
 #define OT_USBDEV_FRAME_TIME_US 1000u
+
+/* Packet pacing delays in nanoseconds on virtual clock */
+#define OT_USBDEV_PACKET_PACE_NS 500000LL
+#define OT_USBDEV_FAST_PACE_NS   20000LL
 
 /* Standard constants */
 #define OT_USBDEV_SETUP_PACKET_SIZE 8u
@@ -145,6 +150,8 @@ REG32(RXFIFO, 0x28u)
  */
 REG32(RXENABLE_SETUP, 0x2cu)
 REG32(RXENABLE_OUT, 0x30u)
+    FIELD(RXENABLE_OUT, OUT, 0u, USBDEV_PARAM_N_ENDPOINTS)
+    FIELD(RXENABLE_OUT, PRESERVE, 16u, USBDEV_PARAM_N_ENDPOINTS)
 REG32(SET_NAK_OUT, 0x34u)
 REG32(IN_SENT, 0x38u)
 REG32(OUT_STALL, 0x3cu)
@@ -277,6 +284,46 @@ REG32(COUNT_ERRORS, 0xa8u)
     (R_USBCTRL_ENABLE_MASK | R_USBCTRL_DEVICE_ADDRESS_MASK)
 
 #define USBDEV_CONFIGIN_RW1C_MASK (CONFIGIN_PEND_MASK | CONFIGIN_SENDING_MASK)
+
+#define USBDEV_PHY_CONFIG_RW_MASK \
+    (R_PHY_CONFIG_USE_DIFF_RCVR_MASK | R_PHY_CONFIG_TX_USE_D_SE0_MASK | \
+     R_PHY_CONFIG_EOP_SINGLE_BIT_MASK | R_PHY_CONFIG_PINFLIP_MASK | \
+     R_PHY_CONFIG_USB_REF_DISABLE_MASK | R_PHY_CONFIG_TX_OSC_TEST_MODE_MASK)
+
+#define USBDEV_PHY_PINS_DRIVE_RW_MASK \
+    (R_PHY_PINS_DRIVE_DP_O_MASK | R_PHY_PINS_DRIVE_DN_O_MASK | \
+     R_PHY_PINS_DRIVE_D_O_MASK | R_PHY_PINS_DRIVE_SE0_O_MASK | \
+     R_PHY_PINS_DRIVE_OE_O_MASK | R_PHY_PINS_DRIVE_RX_ENABLE_O_MASK | \
+     R_PHY_PINS_DRIVE_DP_PULLUP_EN_O_MASK | \
+     R_PHY_PINS_DRIVE_DN_PULLUP_EN_O_MASK | R_PHY_PINS_DRIVE_EN_MASK)
+
+#define USBDEV_COUNT_OUT_RW_MASK \
+    (R_COUNT_OUT_DATATOG_OUT_MASK | R_COUNT_OUT_DROP_RX_MASK | \
+     R_COUNT_OUT_DROP_AVOUT_MASK | R_COUNT_OUT_IGN_AVSETUP_MASK | \
+     R_COUNT_OUT_ENDPOINTS_MASK)
+
+#define USBDEV_COUNT_IN_RW_MASK \
+    (R_COUNT_IN_NODATA_MASK | R_COUNT_IN_NAK_MASK | R_COUNT_IN_TIMEOUT_MASK | \
+     R_COUNT_IN_ENDPOINTS_MASK)
+
+#define USBDEV_COUNT_NODATA_IN_RW_MASK R_COUNT_NODATA_IN_ENDPOINTS_MASK
+
+#define USBDEV_COUNT_ERRORS_RW_MASK \
+    (R_COUNT_ERRORS_PID_INVALID_MASK | R_COUNT_ERRORS_BITSTUFF_MASK | \
+     R_COUNT_ERRORS_CRC16_MASK | R_COUNT_ERRORS_CRC5_MASK)
+
+#define USBDEV_NUM_COUNT_REGS ((R_COUNT_ERRORS - R_COUNT_OUT) + 1u)
+
+#define USBDEV_PERMIT_1B 0x1u
+#define USBDEV_PERMIT_2B 0x3u
+#define USBDEV_PERMIT_3B 0x7u
+#define USBDEV_PERMIT_4B 0xfu
+
+typedef enum {
+    USBDEV_PINMUX_SENSE_PAD = -1,
+    USBDEV_PINMUX_SENSE_ZERO = 0,
+    USBDEV_PINMUX_SENSE_ONE = 1,
+} OtUsbdevPinmuxSense;
 
 static_assert(USBDEV_INTR_MASK == (1u << USBDEV_INTR_NUM) - 1u,
               "Interrupt mask mismatch");
@@ -1179,10 +1226,11 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
      * and the host VBUS control.
      */
     bool vbus_sense;
-    if (s->pinmux_vbus_sense == 1 && !s->usb_server.client_connected) {
+    if (s->pinmux_vbus_sense == USBDEV_PINMUX_SENSE_ONE &&
+        !s->usb_server.client_connected) {
         vbus_sense = true;
-    } else if (s->pinmux_vbus_sense == 0 && !s->usb_server.vbus_connected &&
-               !s->vbus_override) {
+    } else if (s->pinmux_vbus_sense == USBDEV_PINMUX_SENSE_ZERO &&
+               !s->usb_server.vbus_connected && !s->vbus_override) {
         vbus_sense = false;
     } else {
         vbus_sense = s->vbus_gate;
@@ -1574,7 +1622,7 @@ static void ot_usbdev_simulate_setup(OtUsbdevState *s, uint8_t ep,
     ot_usbdev_complete_transfer_out(s, ep, OT_USBDEV_SERVER_STATUS_CANCELLED,
                                     "cancelled by setup packet");
 
-    ot_usbdev_pace_usb_chr(s, 500000LL);
+    ot_usbdev_pace_usb_chr(s, OT_USBDEV_PACKET_PACE_NS);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
 }
@@ -1753,7 +1801,7 @@ static void ot_usbdev_advance_transfer_in(OtUsbdevState *s, uint8_t epnum)
             FIELD_DP32(0u, IN_DATA_TOGGLE, STATUS, 1u << epnum);
     }
     s->regs[R_IN_SENT] |= 1u << epnum;
-    ot_usbdev_pace_usb_chr(s, 500000LL);
+    ot_usbdev_pace_usb_chr(s, OT_USBDEV_PACKET_PACE_NS);
     ot_usbdev_update_irqs(s);
 
     /* Check for overflow */
@@ -1813,7 +1861,7 @@ again:
      * we cannot proceed yet.
      */
     if (!xfer->pending || !ot_usbdev_is_ep_out_enabled(s, epnum) ||
-        (epnum == 0u && (s->regs[R_IN_SENT] & 1u) != 0u)) {
+        (epnum == 0u && (s->regs[R_IN_SENT] & USBDEV_EP0_MASK) != 0u)) {
         return progressed;
     }
 
@@ -1869,7 +1917,7 @@ again:
         s->regs[R_RXENABLE_OUT] &= ~(1u << epnum);
     }
 
-    ot_usbdev_pace_usb_chr(s, 500000LL);
+    ot_usbdev_pace_usb_chr(s, OT_USBDEV_PACKET_PACE_NS);
     ot_usbdev_update_fifos_status(s);
     ot_usbdev_update_irqs(s);
     progressed = true;
@@ -2065,17 +2113,18 @@ static const struct {
     uint8_t rxenable_out_permit;
 } USBDEV_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = { .rxenable_preserve = false,
-                          .rxenable_out_permit = 0x3u },
-    [OT_VER_DJ] = { .rxenable_preserve = false, .rxenable_out_permit = 0x3u },
+                          .rxenable_out_permit = USBDEV_PERMIT_2B },
+    [OT_VER_DJ] = { .rxenable_preserve = false,
+                    .rxenable_out_permit = USBDEV_PERMIT_2B },
     [OT_VER_EG_2_0_0] = { .rxenable_preserve = true,
-                          .rxenable_out_permit = 0xfu },
+                          .rxenable_out_permit = USBDEV_PERMIT_4B },
 };
 
 static void
 ot_usbdev_update_ep_enabled(OtUsbdevState *s, hwaddr reg, uint32_t val32)
 {
     if (reg == R_RXENABLE_OUT && USBDEV_CONFIG[s->version].rxenable_preserve) {
-        uint32_t preserve = (val32 >> 16) & USBDEV_ALL_EP_MASK;
+        uint32_t preserve = FIELD_EX32(val32, RXENABLE_OUT, PRESERVE);
         uint32_t current = s->regs[reg];
         uint32_t updated = val32 & USBDEV_ALL_EP_MASK;
         val32 = (current & preserve) | (updated & ~preserve);
@@ -2126,22 +2175,22 @@ static uint8_t ot_usbdev_reg_permit(const OtUsbdevState *s, hwaddr reg)
     case R_USBCTRL:
     case R_RXFIFO:
     case R_PHY_PINS_SENSE ... R_PHY_PINS_DRIVE:
-        return 0x7u;
+        return USBDEV_PERMIT_3B;
     case R_EP_OUT_ENABLE ... R_EP_IN_ENABLE:
     case R_RXENABLE_SETUP:
     case R_SET_NAK_OUT ... R_IN_STALL:
     case R_OUT_ISO:
     case R_IN_ISO:
     case R_WAKE_EVENTS:
-        return 0x3u;
+        return USBDEV_PERMIT_2B;
     case R_USBSTAT:
     case R_CONFIGIN_0 ... R_CONFIGIN_11:
     case R_OUT_DATA_TOGGLE:
     case R_IN_DATA_TOGGLE:
     case R_COUNT_OUT ... R_COUNT_ERRORS:
-        return 0xfu;
+        return USBDEV_PERMIT_4B;
     default:
-        return 0x1u;
+        return USBDEV_PERMIT_1B;
     }
 }
 
@@ -2160,7 +2209,7 @@ static bool ot_usbdev_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     return (ot_usbdev_reg_permit(s, reg) & ~reg_be) == 0u;
 }
 
@@ -2227,9 +2276,9 @@ static uint64_t ot_usbdev_read(void *opaque, hwaddr addr, unsigned size)
             ot_usbdev_update_ep_xfers(s, /* dir_in */ false,
                                       USBDEV_ALL_EP_MASK);
             if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
-                s->usb_pace_until_ns >
-                    qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
-                ot_usbdev_pace_usb_chr(s, 20000LL);
+                s->usb_pace_until_ns > qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                           OT_USBDEV_FAST_PACE_NS) {
+                ot_usbdev_pace_usb_chr(s, OT_USBDEV_FAST_PACE_NS);
             }
         }
         break;
@@ -2315,7 +2364,7 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
                       __func__, s->ot_id, (uint32_t)addr, REG_NAME(reg));
         break;
     case R_PHY_CONFIG:
-        s->regs[R_PHY_CONFIG] = val32 & 0xe7u;
+        s->regs[R_PHY_CONFIG] = val32 & USBDEV_PHY_CONFIG_RW_MASK;
         break;
     case R_USBCTRL:
         ot_usbdev_write_usbctrl(s, val32);
@@ -2368,13 +2417,13 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         /* register is rw1c */
         s->regs[reg] &= ~val32;
         ot_usbdev_update_irqs(s);
-        if (val32 & 1u) {
+        if (val32 & USBDEV_EP0_MASK) {
             ot_usbdev_advance_transfer_out(s, 0u);
         }
         if (ot_fifo32_is_empty(&s->rx_fifo) && s->regs[R_IN_SENT] == 0u &&
             s->usb_pace_until_ns >
-                qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 20000LL) {
-            ot_usbdev_pace_usb_chr(s, 20000LL);
+                qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + OT_USBDEV_FAST_PACE_NS) {
+            ot_usbdev_pace_usb_chr(s, OT_USBDEV_FAST_PACE_NS);
         }
         break;
     case R_SET_NAK_OUT:
@@ -2413,7 +2462,7 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     }
     case R_PHY_PINS_DRIVE:
-        s->regs[reg] = val32 & 0x000100ffu;
+        s->regs[reg] = val32 & USBDEV_PHY_PINS_DRIVE_RW_MASK;
         ot_usbdev_update_aon_wake(s);
         break;
     case R_OUT_ISO:
@@ -2437,12 +2486,18 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_COUNT_NODATA_IN:
     case R_COUNT_ERRORS:
     default: {
-        static const uint32_t count_rw_masks[4] = { 0x0ffff000u, 0x0fffe000u,
-                                                    0x0fff0000u, 0x78000000u };
+        static const uint32_t count_rw_masks[USBDEV_NUM_COUNT_REGS] = {
+            USBDEV_COUNT_OUT_RW_MASK,
+            USBDEV_COUNT_IN_RW_MASK,
+            USBDEV_COUNT_NODATA_IN_RW_MASK,
+            USBDEV_COUNT_ERRORS_RW_MASK,
+        };
         g_assert(reg >= R_COUNT_OUT && reg <= R_COUNT_ERRORS);
         uint32_t rw_mask = count_rw_masks[reg - R_COUNT_OUT];
 
-        uint32_t count = (val32 & (1u << 31)) ? 0u : (s->regs[reg] & 0xffu);
+        uint32_t count = (val32 & R_COUNT_OUT_RST_MASK) ?
+                             0u :
+                             (s->regs[reg] & R_COUNT_OUT_COUNT_MASK);
         s->regs[reg] = (val32 & rw_mask) | count;
         break;
     }
@@ -2458,7 +2513,8 @@ static bool ot_usbdev_buffer_accepts(void *opaque, hwaddr addr, unsigned size,
         ot_common_stall_cpu_on_unclocked_mmio(DEVICE(s),
                                               USBDEV_BUFFER_OFFSET + addr);
     }
-    return !is_write || (size == 4u && (addr & 3u) == 0u);
+    return !is_write ||
+           (size == sizeof(uint32_t) && (addr & (sizeof(uint32_t) - 1u)) == 0u);
 }
 
 static uint64_t ot_usbdev_buffer_read(void *opaque, hwaddr addr, unsigned size)
@@ -3337,7 +3393,7 @@ static void ot_usbdev_init(Object *obj)
     OtUsbdevState *s = OT_USBDEV(obj);
 
     s->pclk = 1u;
-    s->pinmux_vbus_sense = -1;
+    s->pinmux_vbus_sense = USBDEV_PINMUX_SENSE_PAD;
     for (unsigned idx = 0u; idx < ARRAY_SIZE(s->irqs); idx++) {
         ibex_sysbus_init_irq(obj, &s->irqs[idx]);
     }
