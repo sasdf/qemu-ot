@@ -995,7 +995,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi0"),
             IBEX_DEV_UINT_PROP("bus-num", 0),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_SPI_HOST1] = {
@@ -1016,7 +1016,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi1"),
             IBEX_DEV_UINT_PROP("bus-num", 1),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io_div2"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_USBDEV] = {
@@ -2093,7 +2093,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi0"),
             IBEX_DEV_UINT_PROP("bus-num", 0),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io"),
-            IBEX_DEV_UINT_PROP("version", 3u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_SPI_HOST1] = {
@@ -2101,7 +2101,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi1"),
             IBEX_DEV_UINT_PROP("bus-num", 1),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io_div2"),
-            IBEX_DEV_UINT_PROP("version", 3u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_I2C0] = {
@@ -2197,22 +2197,6 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("edn-ep", 0u),
             IBEX_DEV_UINT_PROP("kmac-app", 0u)
-        ),
-    },
-    [OT_EG_SOC_DEV_SPI_HOST0] = {
-        .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi0"),
-            IBEX_DEV_UINT_PROP("bus-num", 0),
-            IBEX_DEV_STRING_PROP("clock-name", "peri.io"),
-            IBEX_DEV_UINT_PROP("version", 3u)
-        ),
-    },
-    [OT_EG_SOC_DEV_SPI_HOST1] = {
-        .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "spi1"),
-            IBEX_DEV_UINT_PROP("bus-num", 1),
-            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div2"),
-            IBEX_DEV_UINT_PROP("version", 3u)
         ),
     },
     [OT_EG_SOC_DEV_CSRNG] = {

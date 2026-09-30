@@ -394,6 +394,26 @@ struct OtSPIHostState {
     uint8_t version; /* HW version */
 };
 
+typedef struct {
+    bool cmd_14b_layout;
+    uint8_t cmd_write_permit;
+} OtSPIHostConfig;
+
+static const OtSPIHostConfig SPI_HOST_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .cmd_14b_layout = true,
+        .cmd_write_permit = 0x3u,
+    },
+    [OT_VER_DJ] = {
+        .cmd_14b_layout = false,
+        .cmd_write_permit = 0xfu,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .cmd_14b_layout = false,
+        .cmd_write_permit = 0xfu,
+    },
+};
+
 /* ------------------------------------------------------------------------ */
 /* FIFOs */
 /* ------------------------------------------------------------------------ */
@@ -1422,7 +1442,7 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] = val32;
         break;
     case R_COMMAND: {
-        if (s->version < 3u) {
+        if (SPI_HOST_CONFIG[s->version].cmd_14b_layout) {
             /*
              * Earlgrey v1 (v2 IP) uses 14-bit COMMAND layout:
              *   LEN[8:0], CSAAT[9], SPEED[11:10], DIRECTION[13:12]
@@ -1660,7 +1680,7 @@ static bool ot_spi_host_accepts(void *opaque, hwaddr addr, unsigned size,
     if (is_write && reg != R_TXDATA) {
         uint8_t permit;
         if (reg == R_COMMAND) {
-            permit = (s->version >= 3u) ? 0xfu : 0x3u;
+            permit = SPI_HOST_CONFIG[s->version].cmd_write_permit;
         } else if (reg >= R_CONTROL && reg < R_COMMAND) {
             permit = 0xfu;
         } else {
@@ -1698,7 +1718,7 @@ static const Property ot_spi_host_properties[] = {
                        FSM_START_DELAY_NS),
     DEFINE_PROP_UINT32("completion-delay", OtSPIHostState, completion_delay_ns,
                        0),
-    DEFINE_PROP_UINT8("version", OtSPIHostState, version, 0),
+    DEFINE_PROP_UINT8("version", OtSPIHostState, version, UINT8_MAX),
 };
 
 static void ot_spi_host_reset_enter(Object *obj, ResetType type)
@@ -1757,7 +1777,7 @@ static void ot_spi_host_realize(DeviceState *dev, Error **errp)
     g_assert(s->clock_src);
     OBJECT_CHECK(IbexClockSrcIf, s->clock_src, TYPE_IBEX_CLOCK_SRC_IF);
 
-    g_assert(s->version > 1u); /* only supports v2 onward */
+    g_assert(s->version < OT_VER_COUNT);
 
     s->cs_lines = g_new0(IbexIRQ, (size_t)s->num_cs);
 
