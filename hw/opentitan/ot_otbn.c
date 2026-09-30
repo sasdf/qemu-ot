@@ -201,6 +201,45 @@ struct OtOTBNClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    uint32_t imem_size;
+    uint32_t dmem_pub_size;
+    uint32_t dmem_size;
+    uint32_t ctrl_mask;
+    bool has_wfi_resume;
+    bool has_scratch;
+} OtOTBNConfig;
+
+/* clang-format off */
+static const OtOTBNConfig OTBN_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .imem_size = OT_OTBN_IMEM_SIZE,
+        .dmem_pub_size = OT_OTBN_DMEM_SIZE,
+        .dmem_size = 4u << 10u,
+        .ctrl_mask = R_CTRL_SW_ERRS_FATAL_MASK,
+        .has_wfi_resume = false,
+        .has_scratch = false,
+    },
+    [OT_VER_DJ] = {
+        .imem_size = OT_OTBN_IMEM_SIZE,
+        .dmem_pub_size = OT_OTBN_DMEM_SIZE,
+        .dmem_size = 4u << 10u,
+        .ctrl_mask = R_CTRL_SW_ERRS_FATAL_MASK,
+        .has_wfi_resume = false,
+        .has_scratch = false,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .imem_size = OT_OTBN_V2_IMEM_SIZE,
+        .dmem_pub_size = OT_OTBN_V2_DMEM_SIZE,
+        .dmem_size = 32u << 10u,
+        .ctrl_mask = R_CTRL_SW_ERRS_FATAL_MASK | R_CTRL_WFI_ENABLED_MASK |
+                     R_CTRL_URND_CTRL_ENABLED_MASK,
+        .has_wfi_resume = true,
+        .has_scratch = true,
+    },
+};
+/* clang-format on */
+
 #ifdef OT_OTBN_DEBUG
 #define OT_OTBN_HEXSTR_SIZE  (OT_OTBN_KEY_SIZE * 2u + 2u)
 #define TRACE_OTBN(msg, ...) qemu_log("%s: " msg "\n", __func__, ##__VA_ARGS__);
@@ -474,7 +513,7 @@ static void ot_otbn_proxy_entropy_req_bh(void *opaque)
 
 static void ot_otbn_handle_command(OtOTBNState *s, unsigned command)
 {
-    if (s->version == OT_VER_EG_2_0_0 &&
+    if (OTBN_CONFIG[s->version].has_wfi_resume &&
         command == (unsigned)OT_OTBN_CMD_RESUME) {
         if (s->lc_escalated ||
             ot_otbn_proxy_get_status(s->proxy) != OT_OTBN_STATUS_PAUSED) {
@@ -751,7 +790,7 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_CMD:
         val32 &= R_CMD_CMD_MASK;
-        if (s->version == OT_VER_EG_2_0_0 &&
+        if (OTBN_CONFIG[s->version].has_wfi_resume &&
             val32 == (uint32_t)OT_OTBN_CMD_RESUME) {
             ot_otbn_handle_command(s, (unsigned)val32);
             break;
@@ -767,10 +806,7 @@ static void ot_otbn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             trace_ot_otbn_deny(s->ot_id, pc, "write denied: not idle");
             break;
         }
-        val32 &= (s->version == OT_VER_EG_2_0_0) ?
-                     (R_CTRL_SW_ERRS_FATAL_MASK | R_CTRL_WFI_ENABLED_MASK |
-                      R_CTRL_URND_CTRL_ENABLED_MASK) :
-                     R_CTRL_SW_ERRS_FATAL_MASK;
+        val32 &= OTBN_CONFIG[s->version].ctrl_mask;
         ot_otbn_proxy_set_ctrl(s->proxy, val32);
         ot_otbn_update_alert(s);
         break;
@@ -1101,16 +1137,9 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
     g_assert(s->rnds[OT_OTBN_RND].ep != UINT8_MAX);
     g_assert(s->version < OT_VER_COUNT);
 
-    uint32_t imem_size = (s->version == OT_VER_EG_2_0_0) ?
-                             OT_OTBN_V2_IMEM_SIZE :
-                             OT_OTBN_IMEM_SIZE;
-    uint32_t dmem_pub_size =
-        (s->version == OT_VER_EG_2_0_0) ? OT_OTBN_V2_DMEM_SIZE :
-                                          OT_OTBN_DMEM_SIZE;
-    uint32_t dmem_size =
-        (s->version == OT_VER_EG_2_0_0) ? (32u << 10u) : (4u << 10u);
+    const OtOTBNConfig *cfg = &OTBN_CONFIG[s->version];
 
-    if (s->version == OT_VER_EG_2_0_0) {
+    if (cfg->has_scratch) {
         memory_region_init_io(&s->scratch_regs, OBJECT(dev),
                               &ot_otbn_scratch_ops, s, TYPE_OT_OTBN ".scratch",
                               OT_OTBN_SCRATCH_SIZE);
@@ -1123,7 +1152,7 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
      * controlled and checksum to be computed in-order
      */
     memory_region_init_io(&s->imem, OBJECT(dev), &ot_otbn_imem_ops, s,
-                          TYPE_OT_OTBN ".imem", imem_size);
+                          TYPE_OT_OTBN ".imem", cfg->imem_size);
     memory_region_add_subregion(&s->mmio, OT_OTBN_IMEM_BASE, &s->imem);
 
     /*
@@ -1131,14 +1160,14 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
      * controlled and checksum to be computed in-order
      */
     memory_region_init_io(&s->dmem, OBJECT(dev), &ot_otbn_dmem_ops, s,
-                          TYPE_OT_OTBN ".dmem", dmem_pub_size);
+                          TYPE_OT_OTBN ".dmem", cfg->dmem_pub_size);
     memory_region_add_subregion(&s->mmio, OT_OTBN_DMEM_BASE, &s->dmem);
 
     s->proxy =
         ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
                           &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],
-                          &ot_otbn_signal_on_completion, s, imem_size,
-                          dmem_size, dmem_pub_size);
+                          &ot_otbn_signal_on_completion, s, cfg->imem_size,
+                          cfg->dmem_size, cfg->dmem_pub_size);
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_clock_input,
                             OT_OTBN_CLOCK_INPUT, 1);
