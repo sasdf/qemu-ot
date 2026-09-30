@@ -299,6 +299,30 @@ struct OtAESClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    uint32_t none_mode;
+    uint32_t ctrl_res_val;
+    bool has_gcm;
+} OtAESConfig;
+
+static const OtAESConfig AES_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .none_mode = 0x20u,
+        .ctrl_res_val = 0x1181u,
+        .has_gcm = false,
+    },
+    [OT_VER_DJ] = {
+        .none_mode = 0x3fu,
+        .ctrl_res_val = 0x11fdu,
+        .has_gcm = true,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .none_mode = 0x3fu,
+        .ctrl_res_val = 0x11fdu,
+        .has_gcm = true,
+    },
+};
+
 #ifdef DEBUG_AES
 #define trace_ot_aes_buf(_s_, _a_, _m_, _b_) \
     trace_ot_aes_buffer((_s_)->ot_id, (_a_), (_m_), \
@@ -389,7 +413,7 @@ static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
         op = 0x1u;
     }
     uint32_t mode = FIELD_EX32(val, CTRL_SHADOWED, MODE);
-    uint32_t none_mode = (s->version == OT_VER_EG_2_0_0) ? 0x3fu : 0x20u;
+    uint32_t none_mode = AES_CONFIG[s->version].none_mode;
     switch (mode) {
     case 0x01u:
     case 0x02u:
@@ -398,7 +422,7 @@ static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
     case 0x10u:
         break;
     case 0x20u:
-        if (s->version == OT_VER_EG_2_0_0 && s->gcm_supported) {
+        if (AES_CONFIG[s->version].has_gcm && s->gcm_supported) {
             break;
         }
         mode = none_mode;
@@ -1536,17 +1560,21 @@ static bool ot_aes_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     OtAESState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (s->version == OT_VER_EG_1_0_0 && reg == R_CTRL_GCM_SHADOWED) {
+    if (!AES_CONFIG[s->version].has_gcm && reg == R_CTRL_GCM_SHADOWED) {
         return false;
     }
     if (!is_write) {
         return true;
     }
     uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
-    uint32_t permit =
-        (reg == R_CTRL_SHADOWED || reg == R_CTRL_GCM_SHADOWED) ?
-            0x3u :
-            ((reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) ? 0xfu : 0x1u);
+    uint32_t permit;
+    if (reg == R_CTRL_SHADOWED || reg == R_CTRL_GCM_SHADOWED) {
+        permit = 0x3u;
+    } else if (reg >= R_KEY_SHARE0_0 && reg <= R_DATA_OUT_3) {
+        permit = 0xfu;
+    } else {
+        permit = 0x1u;
+    }
     return (permit & ~be) == 0u;
 }
 
@@ -1593,8 +1621,7 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     memset(r, 0, sizeof(*r));
     memset(s->sl_key, 0, sizeof(*s->sl_key));
 
-    ot_shadow_reg_init(&r->ctrl,
-                       (s->version == OT_VER_EG_2_0_0) ? 0x11fdu : 0x1181u);
+    ot_shadow_reg_init(&r->ctrl, AES_CONFIG[s->version].ctrl_res_val);
     ot_shadow_reg_init(&r->ctrl_aux, 1u);
     ot_shadow_reg_init(&r->ctrl_gcm, 0x0401u);
     r->ctrl_aux_regwen = 1u;
