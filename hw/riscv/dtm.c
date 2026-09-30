@@ -300,8 +300,10 @@ static void riscv_dtm_tap_dmi_capture(TapDataHandler *tdh)
      * In Capture-DR, the DTM updates data with the result from [the previous
      * update] operation, updating op if the current op isn’t sticky.
      */
-    tdh->value = (((uint64_t)s->address) << (32u + 2u)) |
-                 (((uint64_t)s->data) << 2u) | ((uint64_t)(s->dmistat & 0b11));
+    uint64_t addr_bits = ((uint64_t)s->address) << R_DMI_ADDRESS_SHIFT;
+    uint64_t data_bits = ((uint64_t)s->data) << R_DMI_DATA_SHIFT;
+    uint64_t op_bits = (uint64_t)(s->dmistat & R_DMI_OP_MASK);
+    tdh->value = addr_bits | data_bits | op_bits;
 }
 
 static void riscv_dtm_tap_dmi_update(TapDataHandler *tdh)
