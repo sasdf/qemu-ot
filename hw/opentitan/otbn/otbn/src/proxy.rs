@@ -61,7 +61,12 @@ pub struct Proxy {
 
 impl Default for Proxy {
     fn default() -> Self {
-        Self::with_sizes(otbn::IMEM_SIZE, otbn::DMEM_SIZE, otbn::DMEM_PUB_SIZE, false)
+        Self::with_sizes(
+            otbn::IMEM_SIZE,
+            otbn::DMEM_SIZE,
+            otbn::DMEM_PUB_SIZE,
+            false,
+        )
     }
 }
 
@@ -204,9 +209,10 @@ impl Proxy {
     }
 
     fn lock_illegal_bus_access(&mut self) {
-        self.registers
-            .fatal_bits
-            .fetch_or(otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(), Ordering::Relaxed);
+        self.registers.fatal_bits.fetch_or(
+            otbn::ErrBits::ILLEGAL_BUS_ACCESS.bits(),
+            Ordering::Relaxed,
+        );
         self.registers
             .status
             .store(otbn::Status::Locked as u32, Ordering::Relaxed);
@@ -548,7 +554,10 @@ pub extern "C" fn ot_otbn_proxy_execute(proxy: Option<&mut Proxy>, dump: bool) -
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_resume(proxy: Option<&mut Proxy>, dump: bool) -> c_int {
+pub extern "C" fn ot_otbn_proxy_resume(
+    proxy: Option<&mut Proxy>,
+    dump: bool,
+) -> c_int {
     if proxy.unwrap().resume(dump) {
         0
     } else {
@@ -611,7 +620,10 @@ pub extern "C" fn ot_otbn_proxy_get_instruction_count(proxy: Option<&mut Proxy>)
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_instruction_count(proxy: Option<&mut Proxy>, _value: u32) {
+pub extern "C" fn ot_otbn_proxy_set_instruction_count(
+    proxy: Option<&mut Proxy>,
+    _value: u32,
+) {
     let proxy = proxy.unwrap();
     let status = proxy.get_status();
     if status == otbn::Status::Idle || status == otbn::Status::Locked {
@@ -631,7 +643,10 @@ pub extern "C" fn ot_otbn_proxy_get_err_bits(proxy: Option<&mut Proxy>) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_err_bits(proxy: Option<&mut Proxy>, _value: u32) {
+pub extern "C" fn ot_otbn_proxy_set_err_bits(
+    proxy: Option<&mut Proxy>,
+    _value: u32,
+) {
     let proxy = proxy.unwrap();
     let status = proxy.get_status();
     if status == otbn::Status::Idle || status == otbn::Status::Locked {
@@ -652,7 +667,10 @@ pub extern "C" fn ot_otbn_proxy_get_ctrl(proxy: Option<&mut Proxy>) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn ot_otbn_proxy_set_ctrl(proxy: Option<&mut Proxy>, value: u32) {
+pub extern "C" fn ot_otbn_proxy_set_ctrl(
+    proxy: Option<&mut Proxy>,
+    value: u32,
+) {
     let proxy = proxy.unwrap();
     if proxy.get_status() == otbn::Status::Idle {
         proxy.registers.ctrl.store(value, Ordering::Relaxed)
