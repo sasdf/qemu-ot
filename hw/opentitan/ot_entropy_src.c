@@ -410,6 +410,64 @@ static const char *REG_HI_NAMES[REGS_HI_COUNT] = {
 #define ES_SWREAD_FIFO_WORD_COUNT      ES_WORD_COUNT
 #define ES_FINAL_FIFO_WORD_COUNT       (ES_WORD_COUNT * ES_FINAL_FIFO_DEPTH)
 #define ES_HEXBUF_SIZE                 ((8U * 2u + 1u) * ES_WORD_COUNT + 4u)
+#define ES_GET_ENTROPY_MAX_RETRIES     128u
+#define ES_RNG_SYMBOLS_PER_WORD        (32u / RNG_BUS_WIDTH)
+#define ES_FAIL_COUNT_MAX              0xfu
+#define ES_ALERT_FAIL_SUMMARY_MAX      UINT16_MAX
+#define ES_ALERT_FAIL_SUMMARY_SAT      (UINT16_MAX - 1u)
+#define ERR_CODE_MAX_BIT               30u
+
+/* Simulated statistical health-test parameters */
+#define ES_SIM_HT_REPCNT_VAL     14u
+#define ES_SIM_HT_REPCNTS_VAL    4u
+#define ES_SIM_HT_STARTUP_PKTS   2u
+#define ES_SIM_HT_VAR_INITIAL    8u
+#define ES_SIM_HT_VAR_STEADY     18u
+#define ES_SIM_HT_SCOPE_MARGIN   16u
+#define ES_SIM_HT_MARKOV_DIV     4u
+#define ES_SIM_HT_BUCKET_DIV     16u
+#define ES_SIM_HT_BUCKET_OFFSET  16u
+#define ES_SIM_HT_ADAPTP_MIN_WIN 32u
+#define ES_SIM_HT_MARKOV_MIN_WIN 64u
+
+/* Subword write byte-enable permits (entropy_src_reg_pkg) */
+#define ES_REG_PERMIT_1B 0x1u
+#define ES_REG_PERMIT_2B 0x3u
+#define ES_REG_PERMIT_4B 0xfu
+
+/* Version-specific register layout & reset values */
+#define REGS_HI_V2_BASE     0x20u
+#define REGS_HI_V3_BASE     0x1cu
+#define REV_V2_RESET        0x10303u
+#define CONF_V2_RESET       0x2649999u
+#define CONF_V3_RESET       0x999999u
+#define HT_WINDOWS_V2_RESET 0x600200u
+#define HT_WINDOWS_V3_RESET 0x1800200u
+#define HT_THRESH_V2_RESET  UINT32_MAX
+#define HT_THRESH_V3_RESET  UINT16_MAX
+
+/* Version 3 ("hi" region) raw register indices */
+#define R_HI_V3_THRESHOLD_ONEWAY   5u
+#define R_HI_V3_REPCNT_THRESHOLD   6u
+#define R_HI_V3_EXTHT_LO_THRESHOLD 14u
+#define R_HI_V3_HT_WATERMARK_NUM   15u
+#define R_HI_V3_HT_WATERMARK       16u
+#define R_HI_V3_REPCNT_TOTAL_FAILS 17u
+#define R_HI_V3_POST_WM_OFFSET \
+    (R_REPCNT_TOTAL_FAILS - R_HI_V3_REPCNT_TOTAL_FAILS)
+#define R_V3_HT_WATERMARK_NUM_MASK 0xfu
+
+typedef enum {
+    HT_WM_REPCNT_HI = 0u,
+    HT_WM_REPCNTS_HI = 1u,
+    HT_WM_ADAPTP_HI = 2u,
+    HT_WM_ADAPTP_LO = 3u,
+    HT_WM_BUCKET_HI = 4u,
+    HT_WM_MARKOV_HI = 5u,
+    HT_WM_MARKOV_LO = 6u,
+    HT_WM_EXTHT_HI = 7u,
+    HT_WM_EXTHT_LO = 8u,
+} OtEntropySrcWatermarkNum;
 
 /*
  * see hw/ip/edn/doc/#multiple-edns-in-boot-time-request-mode
@@ -511,7 +569,7 @@ typedef struct {
 
 static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
-        .regs_hi_base = 0x20u,
+        .regs_hi_base = REGS_HI_V2_BASE,
         .conf_wmask = R_CONF_FIPS_ENABLE_MASK | R_CONF_FIPS_FLAG_MASK |
                       R_CONF_RNG_FIPS_MASK | R_CONF_RNG_BIT_ENABLE_MASK |
                       R_CONF_V2_RNG_BIT_SEL_MASK |
@@ -519,39 +577,39 @@ static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
                       R_CONF_V2_ENTROPY_DATA_REG_ENABLE_MASK,
         .conf_threshold_scope_shift = R_CONF_V2_THRESHOLD_SCOPE_SHIFT,
         .conf_entropy_data_en_shift = R_CONF_V2_ENTROPY_DATA_REG_ENABLE_SHIFT,
-        .conf_reset_val = 0x2649999u,
-        .ht_windows_reset_val = 0x600200u,
-        .ht_hi_thresh_reset_val = 0xffffffffu,
-        .ht_lo_watermark_reset_val = 0xffffffffu,
+        .conf_reset_val = CONF_V2_RESET,
+        .ht_windows_reset_val = HT_WINDOWS_V2_RESET,
+        .ht_hi_thresh_reset_val = HT_THRESH_V2_RESET,
+        .ht_lo_watermark_reset_val = HT_THRESH_V2_RESET,
         .repcnt_hi_watermark_reset_val = 0u,
         .has_rev_reg = true,
         .has_bypass_thresholds = true,
         .has_threshold_oneway = false,
     },
     [OT_VER_DJ] = {
-        .regs_hi_base = 0x1cu,
+        .regs_hi_base = REGS_HI_V3_BASE,
         .conf_wmask = UINT32_MAX,
         .conf_threshold_scope_shift = R_CONF_V3_THRESHOLD_SCOPE_SHIFT,
         .conf_entropy_data_en_shift = R_CONF_V3_ENTROPY_DATA_REG_ENABLE_SHIFT,
-        .conf_reset_val = 0x999999u,
-        .ht_windows_reset_val = 0x1800200u,
-        .ht_hi_thresh_reset_val = 0xffffu,
+        .conf_reset_val = CONF_V3_RESET,
+        .ht_windows_reset_val = HT_WINDOWS_V3_RESET,
+        .ht_hi_thresh_reset_val = HT_THRESH_V3_RESET,
         .ht_lo_watermark_reset_val = 0u,
-        .repcnt_hi_watermark_reset_val = 0x9u,
+        .repcnt_hi_watermark_reset_val = OT_MULTIBITBOOL4_FALSE,
         .has_rev_reg = false,
         .has_bypass_thresholds = false,
         .has_threshold_oneway = true,
     },
     [OT_VER_EG_2_0_0] = {
-        .regs_hi_base = 0x1cu,
+        .regs_hi_base = REGS_HI_V3_BASE,
         .conf_wmask = UINT32_MAX,
         .conf_threshold_scope_shift = R_CONF_V3_THRESHOLD_SCOPE_SHIFT,
         .conf_entropy_data_en_shift = R_CONF_V3_ENTROPY_DATA_REG_ENABLE_SHIFT,
-        .conf_reset_val = 0x999999u,
-        .ht_windows_reset_val = 0x1800200u,
-        .ht_hi_thresh_reset_val = 0xffffu,
+        .conf_reset_val = CONF_V3_RESET,
+        .ht_windows_reset_val = HT_WINDOWS_V3_RESET,
+        .ht_hi_thresh_reset_val = HT_THRESH_V3_RESET,
         .ht_lo_watermark_reset_val = 0u,
-        .repcnt_hi_watermark_reset_val = 0x9u,
+        .repcnt_hi_watermark_reset_val = OT_MULTIBITBOOL4_FALSE,
         .has_rev_reg = false,
         .has_bypass_thresholds = false,
         .has_threshold_oneway = true,
@@ -645,7 +703,7 @@ static int ot_entropy_src_get_entropy(
     if (!ot_entropy_src_is_fw_ov_mode(ess)) {
         ess->last_ht_failed = false;
         for (unsigned retry = 0;
-             retry < 128u &&
+             retry < ES_GET_ENTROPY_MAX_RETRIES &&
              ot_fifo32_num_used(&ess->final_fifo) < ES_WORD_COUNT &&
              ot_entropy_src_can_consume_entropy(ess) && !ess->last_ht_failed;
              retry++) {
@@ -892,7 +950,7 @@ static void ot_entropy_src_disable(OtEntropySrcState *s)
     s->last_ht_failed = false;
     s->obs_fifo_en = ot_entropy_src_is_fw_ov_mode(s);
     s->regs_hi[R_FW_OV_RD_FIFO_OVERFLOW] &= ~R_FW_OV_RD_FIFO_OVERFLOW_VAL_MASK;
-    s->regs_hi[R_DEBUG_STATUS] = 0x10000u;
+    s->regs_hi[R_DEBUG_STATUS] = R_DEBUG_STATUS_MAIN_SM_IDLE_MASK;
     ot_entropy_src_change_state(s, ENTROPY_SRC_IDLE);
     ot_entropy_src_update_irqs(s);
 }
@@ -973,27 +1031,29 @@ static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
 
     uint8_t ed_en =
         (uint8_t)((s->regs_hi[R_CONF] >> cfg->conf_entropy_data_en_shift) &
-                  0xfu);
+                  OT_MULTIBITBOOL4_MASK);
     if (ot_entropy_src_mb4_is_invalid(ed_en)) {
         alerts |= R_RECOV_ALERT_STS_ENTROPY_DATA_REG_ENABLE_FIELD_ALERT_MASK;
     }
 
     uint8_t scope =
         (uint8_t)((s->regs_hi[R_CONF] >> cfg->conf_threshold_scope_shift) &
-                  0xfu);
+                  OT_MULTIBITBOOL4_MASK);
     if (ot_entropy_src_mb4_is_invalid(scope)) {
         alerts |= R_RECOV_ALERT_STS_THRESHOLD_SCOPE_FIELD_ALERT_MASK;
     }
 
     if (cfg->has_threshold_oneway) {
-        uint8_t oneway = (uint8_t)(s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu);
+        uint8_t oneway = (uint8_t)(s->regs_hi[R_REPCNT_HI_WATERMARKS] &
+                                   OT_MULTIBITBOOL4_MASK);
         if (ot_entropy_src_mb4_is_invalid(oneway)) {
             alerts |= R_RECOV_ALERT_STS_THRESHOLD_ONEWAY_FIELD_ALERT_MASK;
         }
     }
 
-    if ((uint16_t)s->regs_hi[R_ALERT_THRESHOLD] !=
-        (uint16_t)(~(s->regs_hi[R_ALERT_THRESHOLD] >> 16u))) {
+    uint32_t alert_th = s->regs_hi[R_ALERT_THRESHOLD];
+    if ((uint16_t)alert_th !=
+        (uint16_t)(~(alert_th >> R_ALERT_THRESHOLD_INV_SHIFT))) {
         alerts |= R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK;
     }
 
@@ -1205,7 +1265,7 @@ static bool ot_entropy_src_is_entropy_data_enabled(const OtEntropySrcState *s)
     const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
     uint8_t val =
         (uint8_t)((s->regs_hi[R_CONF] >> cfg->conf_entropy_data_en_shift) &
-                  0xfu);
+                  OT_MULTIBITBOOL4_MASK);
     return val == OT_MULTIBITBOOL4_TRUE;
 }
 
@@ -1246,21 +1306,22 @@ ot_entropy_src_update_watermark(OtEntropySrcState *s, unsigned reg, bool bypass,
     if (!ENTROPY_SRC_CONFIG[s->version].has_bypass_thresholds) {
         return;
     }
-    unsigned shift = bypass ? 16u : 0u;
-    uint16_t cur = (uint16_t)((s->regs_hi[reg] >> shift) & 0xffffu);
+    unsigned shift = bypass ? WATERMARK_BYPASS_SHIFT : WATERMARK_FIPS_SHIFT;
+    uint16_t cur = (uint16_t)((s->regs_hi[reg] >> shift) & WATERMARK_FIPS_MASK);
     uint16_t next = low_watermark ? MIN(cur, val) : MAX(cur, val);
-    s->regs_hi[reg] =
-        (s->regs_hi[reg] & ~(0xffffu << shift)) | ((uint32_t)next << shift);
+    s->regs_hi[reg] = (s->regs_hi[reg] & ~(WATERMARK_FIPS_MASK << shift)) |
+                      ((uint32_t)next << shift);
 }
 
 static void
 ot_entropy_src_inc_alert_fail_count(OtEntropySrcState *s, unsigned shift)
 {
-    uint32_t count = (s->regs_hi[R_ALERT_FAIL_COUNTS] >> shift) & 0xfu;
-    if (count < 0xfu) {
+    uint32_t count =
+        (s->regs_hi[R_ALERT_FAIL_COUNTS] >> shift) & ES_FAIL_COUNT_MAX;
+    if (count < ES_FAIL_COUNT_MAX) {
         count += 1u;
         s->regs_hi[R_ALERT_FAIL_COUNTS] =
-            (s->regs_hi[R_ALERT_FAIL_COUNTS] & ~(0xfu << shift)) |
+            (s->regs_hi[R_ALERT_FAIL_COUNTS] & ~(ES_FAIL_COUNT_MAX << shift)) |
             (count << shift);
     }
 }
@@ -1270,10 +1331,12 @@ ot_entropy_src_eval_health_tests(OtEntropySrcState *s, unsigned window_symbols)
 {
     const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
     bool bypass = ot_entropy_src_is_bypass_mode(s);
-    unsigned shift = (cfg->has_bypass_thresholds && bypass) ? 16u : 0u;
+    unsigned shift = (cfg->has_bypass_thresholds && bypass) ?
+                         THRESHOLDS_BYPASS_SHIFT :
+                         THRESHOLDS_FIPS_SHIFT;
     uint8_t scope_mb4 =
         (uint8_t)((s->regs_hi[R_CONF] >> cfg->conf_threshold_scope_shift) &
-                  0xfu);
+                  OT_MULTIBITBOOL4_MASK);
     bool scope = (scope_mb4 == OT_MULTIBITBOOL4_TRUE);
 
     uint16_t repcnt_hi = (uint16_t)(s->regs_hi[R_REPCNT_THRESHOLDS] >> shift);
@@ -1292,28 +1355,37 @@ ot_entropy_src_eval_health_tests(OtEntropySrcState *s, unsigned window_symbols)
      * Simulated typical statistical counts for ideal RNG noise over
      * window_symbols symbols (each symbol is 4 bits across 4 RNG lines).
      */
-    uint16_t repcnt_val = 14u;
-    uint16_t repcnts_val = 4u;
-    unsigned var = (s->packet_count < 2u) ? 8u : 18u;
+    uint16_t repcnt_val = ES_SIM_HT_REPCNT_VAL;
+    uint16_t repcnts_val = ES_SIM_HT_REPCNTS_VAL;
+    unsigned var = (s->packet_count < ES_SIM_HT_STARTUP_PKTS) ?
+                       ES_SIM_HT_VAR_INITIAL :
+                       ES_SIM_HT_VAR_STEADY;
     uint16_t adaptp_hi_val;
     uint16_t adaptp_lo_val;
     uint16_t markov_hi_val;
     uint16_t markov_lo_val;
     if (scope) {
-        adaptp_hi_val = (uint16_t)(window_symbols * 2u + 16u);
-        adaptp_lo_val = (uint16_t)(window_symbols * 2u - 16u);
-        markov_hi_val = (uint16_t)(window_symbols + 16u);
-        markov_lo_val =
-            (uint16_t)(window_symbols > 16u ? window_symbols - 16u : 1u);
+        adaptp_hi_val =
+            (uint16_t)(window_symbols * 2u + ES_SIM_HT_SCOPE_MARGIN);
+        adaptp_lo_val =
+            (uint16_t)(window_symbols * 2u - ES_SIM_HT_SCOPE_MARGIN);
+        markov_hi_val = (uint16_t)(window_symbols + ES_SIM_HT_SCOPE_MARGIN);
+        markov_lo_val = (uint16_t)(window_symbols > ES_SIM_HT_SCOPE_MARGIN ?
+                                       window_symbols - ES_SIM_HT_SCOPE_MARGIN :
+                                       1u);
     } else {
         adaptp_hi_val = (uint16_t)(window_symbols / 2u + var);
-        adaptp_lo_val =
-            (uint16_t)(window_symbols > 32u ? window_symbols / 2u - var : 1u);
-        markov_hi_val = (uint16_t)(window_symbols / 4u + var);
+        adaptp_lo_val = (uint16_t)(window_symbols > ES_SIM_HT_ADAPTP_MIN_WIN ?
+                                       window_symbols / 2u - var :
+                                       1u);
+        markov_hi_val = (uint16_t)(window_symbols / ES_SIM_HT_MARKOV_DIV + var);
         markov_lo_val =
-            (uint16_t)(window_symbols > 64u ? window_symbols / 4u - var : 1u);
+            (uint16_t)(window_symbols > ES_SIM_HT_MARKOV_MIN_WIN ?
+                           window_symbols / ES_SIM_HT_MARKOV_DIV - var :
+                           1u);
     }
-    uint16_t bucket_val = (uint16_t)(window_symbols / 16u + 16u);
+    uint16_t bucket_val = (uint16_t)(window_symbols / ES_SIM_HT_BUCKET_DIV +
+                                     ES_SIM_HT_BUCKET_OFFSET);
 
     ot_entropy_src_update_watermark(s, R_REPCNT_HI_WATERMARKS, bypass,
                                     repcnt_val, false);
@@ -1444,9 +1516,11 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
 
         uint32_t windows_reg = s->regs_hi[R_HEALTH_TEST_WINDOWS];
         unsigned window_symbols =
-            bypass ? (windows_reg >> 16u) : (windows_reg & 0xffffu);
+            bypass ?
+                FIELD_EX32(windows_reg, HEALTH_TEST_WINDOWS, BYPASS_WINDOW) :
+                FIELD_EX32(windows_reg, HEALTH_TEST_WINDOWS, FIPS_WINDOW);
 
-        s->ht_symbol_count += 8u;
+        s->ht_symbol_count += ES_RNG_SYMBOLS_PER_WORD;
         if (s->ht_symbol_count >= window_symbols) {
             s->ht_symbol_count = 0u;
             bool ht_fail = ot_entropy_src_eval_health_tests(s, window_symbols);
@@ -1471,8 +1545,9 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
                 uint16_t alert_thresh_inv =
                     (uint16_t)~FIELD_EX32(s->regs_hi[R_ALERT_THRESHOLD],
                                           ALERT_THRESHOLD, INV);
-                uint32_t max_cnt =
-                    (alert_thresh == 0xffffu) ? 0xfffeu : 0xffffu;
+                uint32_t max_cnt = (alert_thresh == ES_ALERT_FAIL_SUMMARY_MAX) ?
+                                       ES_ALERT_FAIL_SUMMARY_SAT :
+                                       ES_ALERT_FAIL_SUMMARY_MAX;
                 if (s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] < max_cnt) {
                     s->regs_hi[R_ALERT_SUMMARY_FAIL_COUNTS] += 1u;
                 }
@@ -1769,25 +1844,25 @@ static hwaddr ot_entropy_src_hi_reg_map(const OtEntropySrcState *s, hwaddr reg)
     if (reg <= R_HEALTH_TEST_WINDOWS) {
         return reg;
     }
-    if (reg == 5u) {
+    if (reg == R_HI_V3_THRESHOLD_ONEWAY) {
         /* THRESHOLD_ONEWAY in v3 (reuses R_REPCNT_HI_WATERMARKS slot) */
         return R_REPCNT_HI_WATERMARKS;
     }
-    if (reg >= 6u && reg <= 14u) {
+    if (reg >= R_HI_V3_REPCNT_THRESHOLD && reg <= R_HI_V3_EXTHT_LO_THRESHOLD) {
         /* REPCNT_THRESHOLD .. EXTHT_LO_THRESHOLD */
         return reg - 1u;
     }
-    if (reg == 15u) {
+    if (reg == R_HI_V3_HT_WATERMARK_NUM) {
         /* HT_WATERMARK_NUM (reuses R_REPCNTS_HI_WATERMARKS slot) */
         return R_REPCNTS_HI_WATERMARKS;
     }
-    if (reg == 16u) {
+    if (reg == R_HI_V3_HT_WATERMARK) {
         /* HT_WATERMARK (reuses R_ADAPTP_HI_WATERMARKS slot) */
         return R_ADAPTP_HI_WATERMARKS;
     }
-    if (reg >= 17u) {
+    if (reg >= R_HI_V3_REPCNT_TOTAL_FAILS) {
         /* REPCNT_TOTAL_FAILS .. ERR_CODE_TEST */
-        return reg + 6u;
+        return reg + R_HI_V3_POST_WM_OFFSET;
     }
     return reg;
 }
@@ -2047,16 +2122,19 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     trace_ot_entropy_src_io_write(s->ot_id, ot_entropy_src_hi_reg_addr(s, addr),
                                   REG_HI_NAME(reg), val32, pc);
 
-    if (cfg->has_threshold_oneway && R32_OFF(addr) == 5u) {
+    if (cfg->has_threshold_oneway &&
+        R32_OFF(addr) == R_HI_V3_THRESHOLD_ONEWAY) {
         /*
          * THRESHOLD_ONEWAY (u_threshold_oneway: SwAccessW1S with Mubi = 1'b1,
          * prim_mubi_pkg::mubi4_or_hi(q, wd)). Note: threshold_oneway_pfa sets
          * RECOV_ALERT_STS.THRESHOLD_ONEWAY_FIELD_ALERT without driving
          * recov_alert_state (entropy_src_core.sv:1967-1986).
          */
-        uint32_t cur = s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu;
-        uint32_t wr = val32 & 0xfu;
-        uint32_t next = ((cur | wr) & 0x6u) | ((cur & wr) & 0x9u);
+        uint32_t cur =
+            s->regs_hi[R_REPCNT_HI_WATERMARKS] & OT_MULTIBITBOOL4_MASK;
+        uint32_t wr = val32 & OT_MULTIBITBOOL4_MASK;
+        uint32_t next = ((cur | wr) & OT_MULTIBITBOOL4_TRUE) |
+                        ((cur & wr) & OT_MULTIBITBOOL4_FALSE);
         s->regs_hi[R_REPCNT_HI_WATERMARKS] = next;
         if (ot_entropy_src_mb4_is_invalid((uint8_t)next)) {
             s->regs_hi[R_RECOV_ALERT_STS] |=
@@ -2064,10 +2142,12 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         }
         return;
     }
-    if (cfg->has_threshold_oneway && R32_OFF(addr) == 15u) {
+    if (cfg->has_threshold_oneway &&
+        R32_OFF(addr) == R_HI_V3_HT_WATERMARK_NUM) {
         /* HT_WATERMARK_NUM */
         if (s->regs_lo[R_REGWEN]) {
-            s->regs_hi[R_REPCNTS_HI_WATERMARKS] = val32 & 0xfu;
+            s->regs_hi[R_REPCNTS_HI_WATERMARKS] =
+                val32 & R_V3_HT_WATERMARK_NUM_MASK;
         }
         return;
     }
@@ -2105,19 +2185,21 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                     s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_REPCNTS_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
-                    s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
+                    s->regs_hi[R_ADAPTP_LO_WATERMARKS] = HT_THRESH_V2_RESET;
                     s->regs_hi[R_EXTHT_HI_WATERMARKS] = 0u;
-                    s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
+                    s->regs_hi[R_EXTHT_LO_WATERMARKS] = HT_THRESH_V2_RESET;
                     s->regs_hi[R_BUCKET_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_MARKOV_HI_WATERMARKS] = 0u;
-                    s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
+                    s->regs_hi[R_MARKOV_LO_WATERMARKS] = HT_THRESH_V2_RESET;
                 } else {
-                    uint32_t wm_num =
-                        s->regs_hi[R_REPCNTS_HI_WATERMARKS] & 0xfu;
-                    if (wm_num == 3u || wm_num == 6u || wm_num == 8u) {
-                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0xffffu;
-                    } else if (wm_num == 0u || wm_num == 1u) {
-                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0x0001u;
+                    uint32_t wm_num = s->regs_hi[R_REPCNTS_HI_WATERMARKS] &
+                                      R_V3_HT_WATERMARK_NUM_MASK;
+                    if (wm_num == HT_WM_ADAPTP_LO ||
+                        wm_num == HT_WM_MARKOV_LO || wm_num == HT_WM_EXTHT_LO) {
+                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = HT_THRESH_V3_RESET;
+                    } else if (wm_num == HT_WM_REPCNT_HI ||
+                               wm_num == HT_WM_REPCNTS_HI) {
+                        s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 1u;
                     } else {
                         s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
                     }
@@ -2166,7 +2248,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
             CHECK_MULTIBOOT(s, hi, CONF, RNG_FIPS);
             CHECK_MULTIBOOT(s, hi, CONF, RNG_BIT_ENABLE);
             uint8_t ed_en =
-                (uint8_t)((val32 >> cfg->conf_entropy_data_en_shift) & 0xfu);
+                (uint8_t)((val32 >> cfg->conf_entropy_data_en_shift) &
+                          OT_MULTIBITBOOL4_MASK);
             if (!ot_entropy_src_check_multibitboot(
                     s, ed_en, ALERT_STATUS_BIT(ENTROPY_DATA_REG_ENABLE))) {
                 qemu_log_mask(LOG_GUEST_ERROR,
@@ -2174,7 +2257,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                               __func__, s->ot_id, ed_en);
             }
             uint8_t scope =
-                (uint8_t)((val32 >> cfg->conf_threshold_scope_shift) & 0xfu);
+                (uint8_t)((val32 >> cfg->conf_threshold_scope_shift) &
+                          OT_MULTIBITBOOL4_MASK);
             if (!ot_entropy_src_check_multibitboot(s, scope,
                                                    ALERT_STATUS_BIT(
                                                        THRESHOLD_SCOPE))) {
@@ -2204,17 +2288,22 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_HI_THRESHOLDS:
     case R_EXTHT_HI_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
-            uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+            uint16_t cur_lo =
+                (uint16_t)(s->regs_hi[reg] & THRESHOLDS_FIPS_MASK);
+            uint16_t wr_lo = (uint16_t)(val32 & THRESHOLDS_FIPS_MASK);
             if (cfg->has_bypass_thresholds) {
-                uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
-                uint16_t wr_hi = (uint16_t)(val32 >> 16u);
+                uint16_t cur_hi =
+                    (uint16_t)(s->regs_hi[reg] >> THRESHOLDS_BYPASS_SHIFT);
+                uint16_t wr_hi = (uint16_t)(val32 >> THRESHOLDS_BYPASS_SHIFT);
                 uint16_t new_lo = MIN(cur_lo, wr_lo);
                 uint16_t new_hi = MIN(cur_hi, wr_hi);
-                s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+                s->regs_hi[reg] =
+                    ((uint32_t)new_hi << THRESHOLDS_BYPASS_SHIFT) |
+                    (uint32_t)new_lo;
             } else {
-                bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
-                               OT_MULTIBITBOOL4_FALSE);
+                bool oneway =
+                    ((s->regs_hi[R_REPCNT_HI_WATERMARKS] &
+                      OT_MULTIBITBOOL4_MASK) != OT_MULTIBITBOOL4_FALSE);
                 s->regs_hi[reg] =
                     oneway ? (uint32_t)MIN(cur_lo, wr_lo) : (uint32_t)wr_lo;
             }
@@ -2225,17 +2314,22 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_LO_THRESHOLDS:
     case R_EXTHT_LO_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
-            uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
+            uint16_t cur_lo =
+                (uint16_t)(s->regs_hi[reg] & THRESHOLDS_FIPS_MASK);
+            uint16_t wr_lo = (uint16_t)(val32 & THRESHOLDS_FIPS_MASK);
             if (cfg->has_bypass_thresholds) {
-                uint16_t cur_hi = (uint16_t)(s->regs_hi[reg] >> 16u);
-                uint16_t wr_hi = (uint16_t)(val32 >> 16u);
+                uint16_t cur_hi =
+                    (uint16_t)(s->regs_hi[reg] >> THRESHOLDS_BYPASS_SHIFT);
+                uint16_t wr_hi = (uint16_t)(val32 >> THRESHOLDS_BYPASS_SHIFT);
                 uint16_t new_lo = MAX(cur_lo, wr_lo);
                 uint16_t new_hi = MAX(cur_hi, wr_hi);
-                s->regs_hi[reg] = ((uint32_t)new_hi << 16u) | (uint32_t)new_lo;
+                s->regs_hi[reg] =
+                    ((uint32_t)new_hi << THRESHOLDS_BYPASS_SHIFT) |
+                    (uint32_t)new_lo;
             } else {
-                bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
-                               OT_MULTIBITBOOL4_FALSE);
+                bool oneway =
+                    ((s->regs_hi[R_REPCNT_HI_WATERMARKS] &
+                      OT_MULTIBITBOOL4_MASK) != OT_MULTIBITBOOL4_FALSE);
                 s->regs_hi[reg] =
                     oneway ? (uint32_t)MAX(cur_lo, wr_lo) : (uint32_t)wr_lo;
             }
@@ -2245,7 +2339,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_ALERT_THRESHOLD:
         if (s->regs_lo[R_REGWEN]) {
             s->regs_hi[reg] = val32;
-            if ((uint16_t)(val32) != (uint16_t)(~(val32 >> 16u))) {
+            if ((uint16_t)(val32) !=
+                (uint16_t)(~(val32 >> R_ALERT_THRESHOLD_INV_SHIFT))) {
                 ot_entropy_src_trigger_recov_alert(
                     s, R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK);
             }
@@ -2331,7 +2426,8 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_ERR_CODE_TEST: {
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs_hi[R_ERR_CODE_TEST] = val32;
-        uint32_t err_bit = (val32 < 31u) ? ((1u << val32) & ERR_CODE_MASK) : 0u;
+        uint32_t err_bit =
+            (val32 < ERR_CODE_MAX_BIT) ? ((1u << val32) & ERR_CODE_MASK) : 0u;
         s->regs_hi[R_ERR_CODE] |= err_bit;
         if (err_bit & ERR_CODE_LOCAL_ESCALATE_MASK) {
             ot_entropy_src_change_state(s, ENTROPY_SRC_ERROR);
@@ -2388,7 +2484,7 @@ static bool ot_entropy_src_lo_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)size;
     (void)attrs;
-    return !is_write || (addr & 3u) == 0u;
+    return !is_write || (addr & (sizeof(uint32_t) - 1u)) == 0u;
 }
 
 static bool ot_entropy_src_rev_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -2397,7 +2493,7 @@ static bool ot_entropy_src_rev_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)addr;
     (void)attrs;
-    return !is_write || size == 4u;
+    return !is_write || size == sizeof(uint32_t);
 }
 
 static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -2415,10 +2511,13 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint8_t permit;
-    if (cfg->has_threshold_oneway && (raw_reg == 5u || raw_reg == 15u)) {
-        permit = 0x1u;
-    } else if (cfg->has_threshold_oneway && raw_reg >= 6u && raw_reg <= 16u) {
-        permit = 0x3u;
+    if (cfg->has_threshold_oneway && (raw_reg == R_HI_V3_THRESHOLD_ONEWAY ||
+                                      raw_reg == R_HI_V3_HT_WATERMARK_NUM)) {
+        permit = ES_REG_PERMIT_1B;
+    } else if (cfg->has_threshold_oneway &&
+               raw_reg >= R_HI_V3_REPCNT_THRESHOLD &&
+               raw_reg <= R_HI_V3_HT_WATERMARK) {
+        permit = ES_REG_PERMIT_2B;
     } else {
         switch (reg) {
         case R_MODULE_ENABLE:
@@ -2428,18 +2527,19 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
         case R_OBSERVE_FIFO_THRESH:
         case R_OBSERVE_FIFO_DEPTH:
         case R_ERR_CODE_TEST:
-            permit = 0x1u;
+            permit = ES_REG_PERMIT_1B;
             break;
         case R_ALERT_SUMMARY_FAIL_COUNTS:
         case R_MAIN_SM_STATE:
-            permit = 0x3u;
+            permit = ES_REG_PERMIT_2B;
             break;
         default:
-            permit = 0xfu;
+            permit = ES_REG_PERMIT_4B;
             break;
         }
     }
-    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t mask =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
     return !(permit & ~mask);
 }
 
@@ -2500,7 +2600,7 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
 
     if (cfg->has_rev_reg) {
         memset(s->regs_rev, 0, REGS_REV_SIZE);
-        s->regs_rev[R_REV] = 0x10303u;
+        s->regs_rev[R_REV] = REV_V2_RESET;
     }
 
     s->regs_lo[R_ME_REGWEN] = 0x00000001u;
