@@ -217,7 +217,7 @@ static bool ot_plic_ext_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)size;
     (void)attrs;
-    return !is_write || (addr & 3u) == 0u;
+    return !is_write || (addr & (sizeof(uint32_t) - 1u)) == 0u;
 }
 
 static const Property ot_plic_ext_properties[] = {
