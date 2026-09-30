@@ -134,6 +134,7 @@ typedef struct FlashPartInfo {
 #define JEDEC_NUMONYX 0x20
 #define JEDEC_WINBOND 0xEF
 #define JEDEC_SPANSION 0x01
+#define JEDEC_GIGADEVICE 0xC8
 
 /* Numonyx (Micron) Configuration register macros */
 #define VCFG_DUMMY 0x1
@@ -554,7 +555,7 @@ static inline Manufacturer get_man(Flash *s)
     case 0x20:
         return MAN_NUMONYX;
     case 0xEF:
-    case 0xC8:
+    case JEDEC_GIGADEVICE:
         return MAN_WINBOND;
     case 0x01:
         return MAN_SPANSION;
