@@ -23,6 +23,23 @@ use crate::{ExceptionCause, PRNG};
 
 /// OTBN wide register width
 const WLEN: usize = size_of::<U256>() * 8;
+const WLEN_BITS: u32 = WLEN as u32;
+const INSN_BYTES: u32 = size_of::<u32>() as u32;
+const CTRL_WFI_EN_MASK: u32 = 0x2;
+const VEC_LANE_BITS: u32 = 32;
+const VEC_WORD_LANES: usize = WLEN / (VEC_LANE_BITS as usize);
+const BN_SHV_AMT_MASK: usize = 0x1f;
+const BN_SHV_DIR_SHIFT: u32 = 5;
+const BN_PACK_SHIFT_SEL_SHIFT: u32 = 2;
+const BN_PACK_SHIFT_SEL_MASK: u32 = 0x3;
+const BN_PACK_SHIFT_STEP_BITS: u32 = 64;
+const BN_PACK_CHUNK_BITS: usize = 24;
+const BN_PACK_CHUNK_MASK: u32 = 0xff_ffff;
+const BN_PACK_DENSE_ALIGN_BITS: u32 = 64;
+const BN_TRN_ELEN_MASK: u32 = 0b11;
+const BN_TRN_MAX_ELEN_LOG2: u32 = 2;
+const BN_MULVL_LANE_SHIFT: u32 = 3;
+const BN_MULVL_LANE_MASK: u32 = 0x7;
 
 /// Different traps that can occur during instruction execution
 #[derive(Debug, PartialEq, Eq)]
@@ -876,9 +893,9 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
 
     fn process_wfi(&mut self) -> Self::InstructionResult {
         self.check_v2_isa()?;
-        if (self.hart_state.csr_set.get_ctrl() & 0x2) != 0 {
+        if (self.hart_state.csr_set.get_ctrl() & CTRL_WFI_EN_MASK) != 0 {
             self.check_loop_end()?;
-            self.hart_state.pc += 4;
+            self.hart_state.pc += INSN_BYTES;
             Err(InstructionTrap::Exception(ExceptionCause::EWfi, None))
         } else {
             Err(InstructionTrap::Exception(
@@ -1415,11 +1432,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let word_a = (a >> (i * 32) as u32).as_u32();
-            let word_b = (b >> (i * 32) as u32).as_u32();
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let word_a = (a >> shift).as_u32();
+            let word_b = (b >> shift).as_u32();
             let word_res = word_a.wrapping_add(word_b);
-            res |= ethnum::U256::from(word_res) << (i * 32) as u32;
+            res |= ethnum::U256::from(word_res) << shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1432,12 +1450,13 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
         let wm = m.as_u32();
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32();
-            let wb = (b >> (i * 32) as u32).as_u32();
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32();
+            let wb = (b >> shift).as_u32();
             let (wres, over) = wa.overflowing_add(wb);
             let wres2 = if over || wres >= wm { wres.wrapping_sub(wm) } else { wres };
-            res |= ethnum::U256::from(wres2) << (i * 32) as u32;
+            res |= ethnum::U256::from(wres2) << shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1448,11 +1467,12 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let word_a = (a >> (i * 32) as u32).as_u32();
-            let word_b = (b >> (i * 32) as u32).as_u32();
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let word_a = (a >> shift).as_u32();
+            let word_b = (b >> shift).as_u32();
             let word_res = word_a.wrapping_sub(word_b);
-            res |= ethnum::U256::from(word_res) << (i * 32) as u32;
+            res |= ethnum::U256::from(word_res) << shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1465,12 +1485,13 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
         let wm = m.as_u32();
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32();
-            let wb = (b >> (i * 32) as u32).as_u32();
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32();
+            let wb = (b >> shift).as_u32();
             let (wres, over) = wa.overflowing_sub(wb);
             let wres2 = if over { wres.wrapping_add(wm) } else { wres };
-            res |= ethnum::U256::from(wres2) << (i * 32) as u32;
+            res |= ethnum::U256::from(wres2) << shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1479,17 +1500,18 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
     fn process_bn_shv(&mut self, dec_insn: insn_format::RType) -> Self::InstructionResult {
         self.check_v2_isa()?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let shift_amt = (dec_insn.rs1 & 0x1f) as u32;
-        let shift_right = ((dec_insn.funct7 >> 5) & 0b1) != 0;
+        let shift_amt = (dec_insn.rs1 & BN_SHV_AMT_MASK) as u32;
+        let shift_right = ((dec_insn.funct7 >> BN_SHV_DIR_SHIFT) & 0b1) != 0;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wb = (b >> (i * 32) as u32).as_u32();
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wb = (b >> shift).as_u32();
             let wres = if shift_right {
                 wb >> shift_amt
             } else {
                 wb << shift_amt
             };
-            res |= ethnum::U256::from(wres) << (i * 32) as u32;
+            res |= ethnum::U256::from(wres) << shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1499,21 +1521,25 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         self.check_v2_isa()?;
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let shift_amt = ((dec_insn.funct7 >> 2) & 0x3) * 64;
+        let shift_amt = ((dec_insn.funct7 >> BN_PACK_SHIFT_SEL_SHIFT)
+            & BN_PACK_SHIFT_SEL_MASK)
+            * BN_PACK_SHIFT_STEP_BITS;
         let mut a_dense = ethnum::U256::ZERO;
         let mut b_dense = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32() & 0xff_ffff;
-            let wb = (b >> (i * 32) as u32).as_u32() & 0xff_ffff;
-            a_dense |= ethnum::U256::from(wa) << (i * 24) as u32;
-            b_dense |= ethnum::U256::from(wb) << (i * 24) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let lane_shift = (i as u32) * VEC_LANE_BITS;
+            let chunk_shift = (i * BN_PACK_CHUNK_BITS) as u32;
+            let wa = (a >> lane_shift).as_u32() & BN_PACK_CHUNK_MASK;
+            let wb = (b >> lane_shift).as_u32() & BN_PACK_CHUNK_MASK;
+            a_dense |= ethnum::U256::from(wa) << chunk_shift;
+            b_dense |= ethnum::U256::from(wb) << chunk_shift;
         }
-        let lo256 = b_dense << 64u32;
+        let lo256 = b_dense << BN_PACK_DENSE_ALIGN_BITS;
         let hi256 = a_dense;
         let res = if shift_amt == 0 {
             lo256
         } else {
-            (lo256 >> shift_amt) | (hi256 << (256u32 - shift_amt))
+            (lo256 >> shift_amt) | (hi256 << (WLEN_BITS - shift_amt))
         };
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1523,16 +1549,20 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         self.check_v2_isa()?;
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let shift_amt = ((dec_insn.funct7 >> 2) & 0x3) * 64;
+        let shift_amt = ((dec_insn.funct7 >> BN_PACK_SHIFT_SEL_SHIFT)
+            & BN_PACK_SHIFT_SEL_MASK)
+            * BN_PACK_SHIFT_STEP_BITS;
         let shifted = if shift_amt == 0 {
             b
         } else {
-            (b >> shift_amt) | (a << (256u32 - shift_amt))
+            (b >> shift_amt) | (a << (WLEN_BITS - shift_amt))
         };
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let chunk24 = (shifted >> (i * 24) as u32).as_u32() & 0xff_ffff;
-            res |= ethnum::U256::from(chunk24) << (i * 32) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let chunk_shift = (i * BN_PACK_CHUNK_BITS) as u32;
+            let lane_shift = (i as u32) * VEC_LANE_BITS;
+            let chunk24 = (shifted >> chunk_shift).as_u32() & BN_PACK_CHUNK_MASK;
+            res |= ethnum::U256::from(chunk24) << lane_shift;
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1542,21 +1572,25 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         self.check_v2_isa()?;
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let elen = dec_insn.funct7 & 0b11;
-        let mut va = [0u32; 8];
-        let mut vb = [0u32; 8];
-        for i in 0..8 {
-            va[i] = (a >> (i * 32) as u32).as_u32();
-            vb[i] = (b >> (i * 32) as u32).as_u32();
+        let elen = (dec_insn.funct7 & BN_TRN_ELEN_MASK).min(BN_TRN_MAX_ELEN_LOG2);
+        let group_words = 1usize << elen;
+        let pair_words = group_words * 2;
+        let mut va = [0u32; VEC_WORD_LANES];
+        let mut vb = [0u32; VEC_WORD_LANES];
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            va[i] = (a >> shift).as_u32();
+            vb[i] = (b >> shift).as_u32();
         }
-        let vr = match elen {
-            0 => [va[0], vb[0], va[2], vb[2], va[4], vb[4], va[6], vb[6]],
-            1 => [va[0], va[1], vb[0], vb[1], va[4], va[5], vb[4], vb[5]],
-            _ => [va[0], va[1], va[2], va[3], vb[0], vb[1], vb[2], vb[3]],
-        };
         let mut res = ethnum::U256::ZERO;
-        for (i, &ri) in vr.iter().enumerate() {
-            res |= ethnum::U256::from(ri) << (i * 32) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let src_idx = (i / pair_words) * pair_words + (i % group_words);
+            let ri = if ((i / group_words) & 1) == 0 {
+                va[src_idx]
+            } else {
+                vb[src_idx]
+            };
+            res |= ethnum::U256::from(ri) << ((i as u32) * VEC_LANE_BITS);
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1566,21 +1600,26 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         self.check_v2_isa()?;
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let elen = dec_insn.funct7 & 0b11;
-        let mut va = [0u32; 8];
-        let mut vb = [0u32; 8];
-        for i in 0..8 {
-            va[i] = (a >> (i * 32) as u32).as_u32();
-            vb[i] = (b >> (i * 32) as u32).as_u32();
+        let elen = (dec_insn.funct7 & BN_TRN_ELEN_MASK).min(BN_TRN_MAX_ELEN_LOG2);
+        let group_words = 1usize << elen;
+        let pair_words = group_words * 2;
+        let mut va = [0u32; VEC_WORD_LANES];
+        let mut vb = [0u32; VEC_WORD_LANES];
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            va[i] = (a >> shift).as_u32();
+            vb[i] = (b >> shift).as_u32();
         }
-        let vr = match elen {
-            0 => [va[1], vb[1], va[3], vb[3], va[5], vb[5], va[7], vb[7]],
-            1 => [va[2], va[3], vb[2], vb[3], va[6], va[7], vb[6], vb[7]],
-            _ => [va[4], va[5], va[6], va[7], vb[4], vb[5], vb[6], vb[7]],
-        };
         let mut res = ethnum::U256::ZERO;
-        for (i, &ri) in vr.iter().enumerate() {
-            res |= ethnum::U256::from(ri) << (i * 32) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let src_idx =
+                (i / pair_words) * pair_words + group_words + (i % group_words);
+            let ri = if ((i / group_words) & 1) == 0 {
+                va[src_idx]
+            } else {
+                vb[src_idx]
+            };
+            res |= ethnum::U256::from(ri) << ((i as u32) * VEC_LANE_BITS);
         }
         self.hart_state.write_wide_register(dec_insn.rd, res)?;
         Ok(false)
@@ -1591,10 +1630,11 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32();
-            let wb = (b >> (i * 32) as u32).as_u32();
-            res |= ethnum::U256::from(wa.wrapping_mul(wb)) << (i * 32) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32();
+            let wb = (b >> shift).as_u32();
+            res |= ethnum::U256::from(wa.wrapping_mul(wb)) << shift;
         }
         let urnd = self.hart_state.read_wsr(csrs::WSRAddr::urnd.into()).unwrap();
         self.hart_state.write_wsr(csrs::WSRAddr::acc.into(), urnd)?;
@@ -1606,12 +1646,13 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         self.check_v2_isa()?;
         let a = self.hart_state.read_wide_register(dec_insn.rs1)?;
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
-        let lane_idx = (dec_insn.funct7 >> 3) & 0x7;
-        let wb = (b >> (lane_idx * 32)).as_u32();
+        let lane_idx = (dec_insn.funct7 >> BN_MULVL_LANE_SHIFT) & BN_MULVL_LANE_MASK;
+        let wb = (b >> (lane_idx * VEC_LANE_BITS)).as_u32();
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32();
-            res |= ethnum::U256::from(wa.wrapping_mul(wb)) << (i * 32) as u32;
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32();
+            res |= ethnum::U256::from(wa.wrapping_mul(wb)) << shift;
         }
         let urnd = self.hart_state.read_wsr(csrs::WSRAddr::urnd.into()).unwrap();
         self.hart_state.write_wsr(csrs::WSRAddr::acc.into(), urnd)?;
@@ -1625,16 +1666,17 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
         let q = m.as_u32() as u64;
-        let mu = (m >> 32u32).as_u32() as u64;
+        let mu = (m >> VEC_LANE_BITS).as_u32() as u64;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32() as u64;
-            let wb = (b >> (i * 32) as u32).as_u32() as u64;
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32() as u64;
+            let wb = (b >> shift).as_u32() as u64;
             let c = wa * wb;
             let tmp1 = (c as u32) as u64;
             let tmp2 = ((tmp1.wrapping_mul(mu)) as u32) as u64;
-            let wres = ((c + tmp2 * q) >> 32) as u32;
-            res |= ethnum::U256::from(wres) << (i * 32) as u32;
+            let wres = ((c + tmp2 * q) >> VEC_LANE_BITS) as u32;
+            res |= ethnum::U256::from(wres) << shift;
         }
         let urnd = self.hart_state.read_wsr(csrs::WSRAddr::urnd.into()).unwrap();
         self.hart_state.write_wsr(csrs::WSRAddr::acc.into(), urnd)?;
@@ -1648,17 +1690,18 @@ impl<'a, M: Memory> insn_proc::InstructionProcessor for InstructionExecutor<'a, 
         let b = self.hart_state.read_wide_register(dec_insn.rs2)?;
         let m = self.hart_state.read_wsr(csrs::WSRAddr::r#mod.into()).unwrap();
         let q = m.as_u32() as u64;
-        let mu = (m >> 32u32).as_u32() as u64;
-        let lane_idx = (dec_insn.funct7 >> 3) & 0x7;
-        let wb = (b >> (lane_idx * 32)).as_u32() as u64;
+        let mu = (m >> VEC_LANE_BITS).as_u32() as u64;
+        let lane_idx = (dec_insn.funct7 >> BN_MULVL_LANE_SHIFT) & BN_MULVL_LANE_MASK;
+        let wb = (b >> (lane_idx * VEC_LANE_BITS)).as_u32() as u64;
         let mut res = ethnum::U256::ZERO;
-        for i in 0..8 {
-            let wa = (a >> (i * 32) as u32).as_u32() as u64;
+        for i in 0..VEC_WORD_LANES {
+            let shift = (i as u32) * VEC_LANE_BITS;
+            let wa = (a >> shift).as_u32() as u64;
             let c = wa * wb;
             let tmp1 = (c as u32) as u64;
             let tmp2 = ((tmp1.wrapping_mul(mu)) as u32) as u64;
-            let wres = ((c + tmp2 * q) >> 32) as u32;
-            res |= ethnum::U256::from(wres) << (i * 32) as u32;
+            let wres = ((c + tmp2 * q) >> VEC_LANE_BITS) as u32;
+            res |= ethnum::U256::from(wres) << shift;
         }
         let urnd = self.hart_state.read_wsr(csrs::WSRAddr::urnd.into()).unwrap();
         self.hart_state.write_wsr(csrs::WSRAddr::acc.into(), urnd)?;
