@@ -81,8 +81,8 @@ extern int ot_otbn_proxy_execute(OTBNProxy proxy, bool dumpstate);
 extern int ot_otbn_proxy_resume(OTBNProxy proxy, bool dumpstate);
 extern int ot_otbn_proxy_wipe_memory(OTBNProxy proxy, bool doi);
 extern bool ot_otbn_proxy_acknowledge_execution(OTBNProxy proxy);
-extern uint32_t
-ot_otbn_proxy_read_memory(OTBNProxy proxy, bool doi, uint32_t addr, bool *valid);
+extern uint32_t ot_otbn_proxy_read_memory(OTBNProxy proxy, bool doi,
+                                          uint32_t addr, bool *valid);
 extern bool ot_otbn_proxy_write_memory(OTBNProxy proxy, bool doi, uint32_t addr,
                                        uint32_t val);
 extern enum OtOTBNStatus ot_otbn_proxy_get_status(OTBNProxy proxy);

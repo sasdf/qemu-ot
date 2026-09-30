@@ -111,6 +111,20 @@ REG32(LOAD_CHECKSUM, 0x28u)
 #define OT_OTBN_SCRATCH_COUNT 4u
 #define OT_OTBN_SCRATCH_SIZE  (OT_OTBN_SCRATCH_COUNT * sizeof(uint32_t))
 
+#define OT_OTBN_WIPE_DELAY_NS      100000ULL
+#define OT_OTBN_EXEC_MIN_DELAY_NS  500000ULL
+#define OT_OTBN_EXEC_MAX_DELAY_NS  2000000ULL
+#define OT_OTBN_INSN_CYCLE_NS      10ULL
+#define OT_OTBN_SYNC_MAX_INSN_CNT  5000u
+#define OT_OTBN_SYNC_MAX_POLLS     50
+#define OT_OTBN_SYNC_POLL_SLEEP_US 10
+
+typedef enum {
+    OTBN_REG_PERMIT_1B = 0x1u,
+    OTBN_REG_PERMIT_3B = 0x7u,
+    OTBN_REG_PERMIT_4B = 0xfu,
+} OtOTBNRegPermit;
+
 #define OT_OTBN_CLOCK_ACTIVE "clock-active"
 #define OT_OTBN_CLOCK_INPUT  "clock-in"
 
@@ -396,13 +410,14 @@ static void ot_otbn_proxy_completion_bh(void *opaque)
              * the status register before the actual completion is signalled
              * from the OTBN working thread.
              */
-            uint64_t delay_ns = 100000ULL;
+            uint64_t delay_ns = OT_OTBN_WIPE_DELAY_NS;
             if (last_cmd == OT_OTBN_CMD_EXECUTE ||
                 last_cmd == OT_OTBN_CMD_RESUME) {
                 uint32_t insncount =
                     ot_otbn_proxy_get_instruction_count(s->proxy);
-                delay_ns = MIN(2000000ULL,
-                               MAX(500000ULL, (uint64_t)insncount * 10ULL));
+                uint64_t exec_ns = (uint64_t)insncount * OT_OTBN_INSN_CYCLE_NS;
+                delay_ns = MIN(OT_OTBN_EXEC_MAX_DELAY_NS,
+                               MAX(OT_OTBN_EXEC_MIN_DELAY_NS, exec_ns));
             }
             int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             int64_t min_end_ns = s->exec_start_ns + (int64_t)delay_ns;
@@ -625,13 +640,15 @@ static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
 
     int64_t elapsed_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns;
     uint32_t insn_cnt = ot_otbn_proxy_get_instruction_count(s->proxy);
-    bool exec_in_progress = (elapsed_ns >= 500000LL) && (insn_cnt < 5000u);
+    bool exec_in_progress =
+        (elapsed_ns >= (int64_t)OT_OTBN_EXEC_MIN_DELAY_NS) &&
+        (insn_cnt < OT_OTBN_SYNC_MAX_INSN_CNT);
     bool wait_for_worker =
         (status != OT_OTBN_STATUS_IDLE) &&
         ((status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) || exec_in_progress);
 
     if (wait_for_worker) {
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < OT_OTBN_SYNC_MAX_POLLS; i++) {
             do {
                 qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
             } while (aio_bh_poll(qemu_get_aio_context()) > 0);
@@ -642,7 +659,7 @@ static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
                 s->rnds[OT_OTBN_RND].entropy_requested) {
                 break;
             }
-            g_usleep(10);
+            g_usleep(OT_OTBN_SYNC_POLL_SLEEP_US);
         }
         do {
             qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
@@ -656,12 +673,12 @@ static uint8_t ot_otbn_reg_permit(hwaddr reg)
 {
     switch (reg) {
     case R_ERR_BITS:
-        return 0x7u;
+        return OTBN_REG_PERMIT_3B;
     case R_INSN_CNT:
     case R_LOAD_CHECKSUM:
-        return 0xfu;
+        return OTBN_REG_PERMIT_4B;
     default:
-        return 0x1u;
+        return OTBN_REG_PERMIT_1B;
     }
 }
 
@@ -674,7 +691,7 @@ static bool ot_otbn_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     hwaddr reg = R32_OFF(addr);
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     return (ot_otbn_reg_permit(reg) & ~reg_be) == 0u;
 }
 
@@ -918,7 +935,8 @@ static bool ot_otbn_mem_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
-    return !is_write || (size == 4u && (addr & 3u) == 0u);
+    return !is_write ||
+           (size == sizeof(uint32_t) && (addr & (sizeof(uint32_t) - 1u)) == 0u);
 }
 
 static uint64_t ot_otbn_scratch_read(void *opaque, hwaddr addr, unsigned size)
