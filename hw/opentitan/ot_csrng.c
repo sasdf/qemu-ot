@@ -1927,7 +1927,8 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case R_MAIN_SM_STATE: {
         const uint8_t *fsm_codes =
-            (s->version >= 2u) ? OtCSRNGFsmStateCodeV2 : OtCSRNGFsmStateCodeV1;
+            (s->version == OT_VER_EG_2_0_0) ? OtCSRNGFsmStateCodeV2 :
+                                              OtCSRNGFsmStateCodeV1;
         switch (s->state) {
         case CSRNG_IDLE ... CSRNG_ERROR:
             val32 = fsm_codes[s->state];
@@ -2147,12 +2148,14 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs[R_ERR_CODE_TEST] = val32;
         uint32_t err_code_mask =
-            (s->version >= 2u) ? ERR_CODE_MASK_V2 : ERR_CODE_MASK_V1;
+            (s->version == OT_VER_EG_2_0_0) ? ERR_CODE_MASK_V2 :
+                                              ERR_CODE_MASK_V1;
         uint32_t fatal_loc_mask =
-            (s->version >= 2u) ? FATAL_LOC_EVENTS_MASK_V2 :
-                                 FATAL_LOC_EVENTS_MASK_V1;
+            (s->version == OT_VER_EG_2_0_0) ? FATAL_LOC_EVENTS_MASK_V2 :
+                                              FATAL_LOC_EVENTS_MASK_V1;
         uint32_t disabled_err_mask =
-            (s->version >= 2u) ? 0u : R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
+            (s->version == OT_VER_EG_2_0_0) ? 0u :
+                                              R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
         uint32_t err_bit = (1u << val32) & err_code_mask;
         uint32_t err_en_mask =
             ot_csrng_is_ctrl_enabled(s) ? err_code_mask : disabled_err_mask;
@@ -2194,7 +2197,7 @@ static const Property ot_csrng_properties[] = {
                      TYPE_OT_ENTROPY_SRC, OtEntropySrcState *),
     DEFINE_PROP_LINK("otp-ctrl", OtCSRNGState, otp_ctrl, TYPE_OT_OTP_IF,
                      DeviceState *),
-    DEFINE_PROP_UINT8("version", OtCSRNGState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtCSRNGState, version, OT_VER_EG_1_0_0),
 };
 
 static const MemoryRegionOps ot_csrng_regs_ops = {
@@ -2234,8 +2237,8 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->regs[R_INT_STATE_READ_ENABLE_REGWEN] = 0x1u;
     s->regs[R_INT_STATE_READ_ENABLE] = 0x7u;
     s->regs[R_MAIN_SM_STATE] =
-        (s->version >= 2u) ? OtCSRNGFsmStateCodeV2[CSRNG_IDLE] :
-                             OtCSRNGFsmStateCodeV1[CSRNG_IDLE];
+        (s->version == OT_VER_EG_2_0_0) ? OtCSRNGFsmStateCodeV2[CSRNG_IDLE] :
+                                          OtCSRNGFsmStateCodeV1[CSRNG_IDLE];
     s->enabled = false;
     s->waiting_for_entropy = false;
     s->sw_app_granted = false;
@@ -2275,6 +2278,7 @@ static void ot_csrng_realize(DeviceState *dev, Error **errp)
 
     g_assert(s->entropy_src);
     g_assert(s->otp_ctrl);
+    g_assert(s->version < OT_VER_COUNT);
 
     (void)OBJECT_CHECK(OtOTPIf, s->otp_ctrl, TYPE_OT_OTP_IF);
 }
