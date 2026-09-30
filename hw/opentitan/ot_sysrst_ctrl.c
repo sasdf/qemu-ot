@@ -25,6 +25,96 @@
 #include "hw/sysbus.h"
 #include "system/replay.h"
 
+#define SYSRST_NUM_COMBOS           4u
+#define SYSRST_AON_PERIOD_NS        4000LL
+#define SYSRST_ULP_STEP_NS          5000LL
+#define SYSRST_COMBO_RST_DELAY_NS   3000000LL
+#define SYSRST_DIO_PAD_EC_RST_L     10u
+#define SYSRST_DIO_PAD_FLASH_WP_L   11u
+#define SYSRST_KEY_INTR_INPUT_COUNT 7u
+#define SYSRST_KEY_INTR_EDGE_MASK   0x7fu
+#define SYSRST_KEY_INTR_ALL_MASK    0x3fffu
+#define SYSRST_COMBO_SEL_MASK       0x1fu
+#define SYSRST_DEBOUNCE_MASK        0xffffu
+#define SYSRST_PIN_ALLOW1_SHIFT     8u
+#define SYSRST_POLL_YIELD_THRESHOLD 16u
+#define SYSRST_POLL_YIELD_US        50
+#define SYSRST_WORD_ALIGN_MASK      3u
+#define SYSRST_WORD_BYTES           4u
+#define SYSRST_MMIO_SIZE            0x100u
+
+#define SYSRST_PERMIT_1B 0x1u
+#define SYSRST_PERMIT_2B 0x3u
+#define SYSRST_PERMIT_3B 0x7u
+#define SYSRST_PERMIT_4B 0xfu
+
+#define SYSRST_REG_MASK_32B            0xffffffffu
+#define SYSRST_REG_MASK_AUTO_BLOCK_DEB 0x0001ffffu
+#define SYSRST_REG_MASK_16B            0x0000ffffu
+#define SYSRST_REG_MASK_KEY_INTR       0x00003fffu
+#define SYSRST_REG_MASK_KEY_INVERT     0x00000fffu
+#define SYSRST_REG_MASK_PIN_OUT        0x000000ffu
+#define SYSRST_REG_MASK_AUTO_BLOCK_OUT 0x00000077u
+#define SYSRST_REG_MASK_COMBO_SEL      0x0000001fu
+#define SYSRST_REG_MASK_COMBO_OUT      0x0000000fu
+#define SYSRST_REG_MASK_1B             0x00000001u
+
+#define SYSRST_DEBOUNCE_DEFAULT_RESVAL 2000u
+#define SYSRST_ULP_DEBOUNCE_RESVAL     8000u
+#define SYSRST_PIN_OUT_DEFAULT_RESVAL  0x82u
+
+enum OtSysrstCtrlPinOut {
+    SYSRST_PIN_OUT_BAT_DISABLE = 0,
+    SYSRST_PIN_OUT_EC_RST_L = 1,
+    SYSRST_PIN_OUT_PWRB = 2,
+    SYSRST_PIN_OUT_KEY0 = 3,
+    SYSRST_PIN_OUT_KEY1 = 4,
+    SYSRST_PIN_OUT_KEY2 = 5,
+    SYSRST_PIN_OUT_Z3_WAKEUP = 6,
+    SYSRST_PIN_OUT_FLASH_WP_L = 7,
+    SYSRST_PIN_OUT_COUNT = 8,
+};
+
+enum OtSysrstCtrlPinInBit {
+    SYSRST_PIN_IN_PWRB = 0,
+    SYSRST_PIN_IN_KEY0 = 1,
+    SYSRST_PIN_IN_KEY1 = 2,
+    SYSRST_PIN_IN_KEY2 = 3,
+    SYSRST_PIN_IN_LID_OPEN = 4,
+    SYSRST_PIN_IN_AC_PRESENT = 5,
+    SYSRST_PIN_IN_EC_RST_L = 6,
+    SYSRST_PIN_IN_FLASH_WP_L = 7,
+};
+
+enum OtSysrstCtrlComboBit {
+    SYSRST_COMBO_IN_KEY0 = 0,
+    SYSRST_COMBO_IN_KEY1 = 1,
+    SYSRST_COMBO_IN_KEY2 = 2,
+    SYSRST_COMBO_IN_PWRB = 3,
+    SYSRST_COMBO_IN_AC_PRESENT = 4,
+};
+
+enum OtSysrstCtrlKeyIntrBit {
+    SYSRST_KEY_INTR_IN_PWRB = 0,
+    SYSRST_KEY_INTR_IN_KEY0 = 1,
+    SYSRST_KEY_INTR_IN_KEY1 = 2,
+    SYSRST_KEY_INTR_IN_KEY2 = 3,
+    SYSRST_KEY_INTR_IN_AC_PRESENT = 4,
+    SYSRST_KEY_INTR_IN_EC_RST_L = 5,
+    SYSRST_KEY_INTR_IN_FLASH_WP_L = 6,
+};
+
+enum OtSysrstCtrlOutsel {
+    SYSRST_OUTSEL_BAT_DISABLE = 72u,
+    SYSRST_OUTSEL_KEY0_OUT = 73u,
+    SYSRST_OUTSEL_KEY1_OUT = 74u,
+    SYSRST_OUTSEL_KEY2_OUT = 75u,
+    SYSRST_OUTSEL_PWRB_OUT = 76u,
+    SYSRST_OUTSEL_Z3_WAKEUP = 77u,
+    SYSRST_OUTSEL_DIO_EC_RST_L = 100u,
+    SYSRST_OUTSEL_DIO_FLASH_WP_L = 101u,
+};
+
 /* clang-format off */
 REG32(INTR_STATE, 0x0u)
     FIELD(INTR_STATE, EVENT_DETECTED, 0u, 1u)
@@ -43,6 +133,18 @@ REG32(ULP_STATUS, 0x28u)
 REG32(WKUP_STATUS, 0x2cu)
     FIELD(WKUP_STATUS, WAKEUP_STS, 0u, 1u)
 REG32(KEY_INVERT_CTL, 0x30u)
+    FIELD(KEY_INVERT_CTL, KEY0_IN, 0u, 1u)
+    FIELD(KEY_INVERT_CTL, KEY0_OUT, 1u, 1u)
+    FIELD(KEY_INVERT_CTL, KEY1_IN, 2u, 1u)
+    FIELD(KEY_INVERT_CTL, KEY1_OUT, 3u, 1u)
+    FIELD(KEY_INVERT_CTL, KEY2_IN, 4u, 1u)
+    FIELD(KEY_INVERT_CTL, KEY2_OUT, 5u, 1u)
+    FIELD(KEY_INVERT_CTL, PWRB_IN, 6u, 1u)
+    FIELD(KEY_INVERT_CTL, PWRB_OUT, 7u, 1u)
+    FIELD(KEY_INVERT_CTL, AC_PRESENT, 8u, 1u)
+    FIELD(KEY_INVERT_CTL, BAT_DISABLE, 9u, 1u)
+    FIELD(KEY_INVERT_CTL, LID_OPEN, 10u, 1u)
+    FIELD(KEY_INVERT_CTL, Z3_WAKEUP, 11u, 1u)
 REG32(PIN_ALLOWED_CTL, 0x34u)
 REG32(PIN_OUT_CTL, 0x38u)
 REG32(PIN_OUT_VALUE, 0x3cu)
@@ -50,7 +152,15 @@ REG32(PIN_IN_VALUE, 0x40u)
 REG32(KEY_INTR_CTL, 0x44u)
 REG32(KEY_INTR_DEBOUNCE_CTL, 0x48u)
 REG32(AUTO_BLOCK_DEBOUNCE_CTL, 0x4cu)
+    FIELD(AUTO_BLOCK_DEBOUNCE_CTL, DEBOUNCE_TIMER, 0u, 16u)
+    FIELD(AUTO_BLOCK_DEBOUNCE_CTL, AUTO_BLOCK_ENABLE, 16u, 1u)
 REG32(AUTO_BLOCK_OUT_CTL, 0x50u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY0_OUT_SEL, 0u, 1u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY1_OUT_SEL, 1u, 1u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY2_OUT_SEL, 2u, 1u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY0_OUT_VALUE, 4u, 1u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY1_OUT_VALUE, 5u, 1u)
+    FIELD(AUTO_BLOCK_OUT_CTL, KEY2_OUT_VALUE, 6u, 1u)
 REG32(COM_PRE_SEL_CTL_0, 0x54u)
 REG32(COM_PRE_DET_CTL_0, 0x64u)
 REG32(COM_SEL_CTL_0, 0x74u)
@@ -84,7 +194,7 @@ struct OtSysrstCtrlState {
     uint32_t last_key_invert_ctl;
     uint32_t last_read_pin_in;
     uint32_t poll_count;
-    bool combo_precond_valid[4];
+    bool combo_precond_valid[SYSRST_NUM_COMBOS];
     bool ulp_ac_latched;
     bool bat_disable_hw;
     bool ec_rst_l_hw;
@@ -101,48 +211,52 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     uint32_t raw = s->pin_in_raw;
     uint32_t inv = s->regs[R_KEY_INVERT_CTL];
 
-    uint32_t pwrb_int =
-        ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) ^ ((inv >> 6u) & 1u);
-    uint32_t key0_int =
-        ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) ^ ((inv >> 0u) & 1u);
-    uint32_t key1_int =
-        ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) ^ ((inv >> 2u) & 1u);
-    uint32_t key2_int =
-        ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) ^ ((inv >> 4u) & 1u);
+    uint32_t pwrb_int = ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) ^
+                        FIELD_EX32(inv, KEY_INVERT_CTL, PWRB_IN);
+    uint32_t key0_int = ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) ^
+                        FIELD_EX32(inv, KEY_INVERT_CTL, KEY0_IN);
+    uint32_t key1_int = ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) ^
+                        FIELD_EX32(inv, KEY_INVERT_CTL, KEY1_IN);
+    uint32_t key2_int = ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) ^
+                        FIELD_EX32(inv, KEY_INVERT_CTL, KEY2_IN);
 
-    bool ab_en = (s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] >> 16u) & 1u;
+    bool ab_en = (bool)FIELD_EX32(s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL],
+                                  AUTO_BLOCK_DEBOUNCE_CTL, AUTO_BLOCK_ENABLE);
     bool ab_cond = ab_en && (pwrb_int == 0u);
     uint32_t ab_ctl = s->regs[R_AUTO_BLOCK_OUT_CTL];
 
-    uint32_t hw_in[8];
-    hw_in[0] = s->bat_disable_hw ? 1u : 0u;
-    hw_in[1] = s->ec_rst_l_hw ? 1u : 0u;
-    hw_in[2] = pwrb_int;
-    hw_in[3] = key0_int;
-    if (ab_cond && ((ab_ctl >> 0u) & 1u)) {
-        hw_in[3] = (ab_ctl >> 4u) & 1u;
+    uint32_t hw_in[SYSRST_PIN_OUT_COUNT];
+    hw_in[SYSRST_PIN_OUT_BAT_DISABLE] = s->bat_disable_hw ? 1u : 0u;
+    hw_in[SYSRST_PIN_OUT_EC_RST_L] = s->ec_rst_l_hw ? 1u : 0u;
+    hw_in[SYSRST_PIN_OUT_PWRB] = pwrb_int;
+    hw_in[SYSRST_PIN_OUT_KEY0] = key0_int;
+    if (ab_cond && FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY0_OUT_SEL)) {
+        hw_in[SYSRST_PIN_OUT_KEY0] =
+            FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY0_OUT_VALUE);
     }
-    hw_in[4] = key1_int;
-    if (ab_cond && ((ab_ctl >> 1u) & 1u)) {
-        hw_in[4] = (ab_ctl >> 5u) & 1u;
+    hw_in[SYSRST_PIN_OUT_KEY1] = key1_int;
+    if (ab_cond && FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY1_OUT_SEL)) {
+        hw_in[SYSRST_PIN_OUT_KEY1] =
+            FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY1_OUT_VALUE);
     }
-    hw_in[5] = key2_int;
-    if (ab_cond && ((ab_ctl >> 2u) & 1u)) {
-        hw_in[5] = (ab_ctl >> 6u) & 1u;
+    hw_in[SYSRST_PIN_OUT_KEY2] = key2_int;
+    if (ab_cond && FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY2_OUT_SEL)) {
+        hw_in[SYSRST_PIN_OUT_KEY2] =
+            FIELD_EX32(ab_ctl, AUTO_BLOCK_OUT_CTL, KEY2_OUT_VALUE);
     }
-    hw_in[6] = s->z3_wakeup_hw ? 1u : 0u;
-    hw_in[7] = 0u; /* flash_wp_l has no passthrough input */
+    hw_in[SYSRST_PIN_OUT_Z3_WAKEUP] = s->z3_wakeup_hw ? 1u : 0u;
+    hw_in[SYSRST_PIN_OUT_FLASH_WP_L] = 0u;
 
     uint32_t out_ctl = s->regs[R_PIN_OUT_CTL];
     uint32_t out_val = s->regs[R_PIN_OUT_VALUE];
     uint32_t allow_ctl = s->regs[R_PIN_ALLOWED_CTL];
 
     uint32_t out = 0;
-    for (unsigned b = 0; b < 8u; b++) {
+    for (unsigned b = 0; b < SYSRST_PIN_OUT_COUNT; b++) {
         bool en = (out_ctl >> b) & 1u;
         bool val = (out_val >> b) & 1u;
         bool allow0 = (allow_ctl >> b) & 1u;
-        bool allow1 = (allow_ctl >> (b + 8u)) & 1u;
+        bool allow1 = (allow_ctl >> (b + SYSRST_PIN_ALLOW1_SHIFT)) & 1u;
         uint32_t bit_out = hw_in[b];
         if (en && allow0 && !val) {
             bit_out = 0u;
@@ -153,12 +267,14 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     }
 
     /* Apply output inversion per sysrst_ctrl.sv lines 303-311 */
-    out ^= ((inv >> 9u) & 1u) << 0u; /* bat_disable */
-    out ^= ((inv >> 7u) & 1u) << 2u; /* pwrb_out */
-    out ^= ((inv >> 1u) & 1u) << 3u; /* key0_out */
-    out ^= ((inv >> 3u) & 1u) << 4u; /* key1_out */
-    out ^= ((inv >> 5u) & 1u) << 5u; /* key2_out */
-    out ^= ((inv >> 11u) & 1u) << 6u; /* z3_wakeup */
+    out ^= FIELD_EX32(inv, KEY_INVERT_CTL, BAT_DISABLE)
+           << SYSRST_PIN_OUT_BAT_DISABLE;
+    out ^= FIELD_EX32(inv, KEY_INVERT_CTL, PWRB_OUT) << SYSRST_PIN_OUT_PWRB;
+    out ^= FIELD_EX32(inv, KEY_INVERT_CTL, KEY0_OUT) << SYSRST_PIN_OUT_KEY0;
+    out ^= FIELD_EX32(inv, KEY_INVERT_CTL, KEY1_OUT) << SYSRST_PIN_OUT_KEY1;
+    out ^= FIELD_EX32(inv, KEY_INVERT_CTL, KEY2_OUT) << SYSRST_PIN_OUT_KEY2;
+    out ^=
+        FIELD_EX32(inv, KEY_INVERT_CTL, Z3_WAKEUP) << SYSRST_PIN_OUT_Z3_WAKEUP;
 
     return out;
 }
@@ -170,22 +286,22 @@ int ot_sysrst_ctrl_get_outsel_level(const OtSysrstCtrlState *s, uint32_t outsel)
     }
     uint32_t out = ot_sysrst_ctrl_get_pin_outputs(s);
     switch (outsel) {
-    case 72u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonBatDisable */
-        return (int)((out >> 0u) & 1u);
-    case 73u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey0Out */
-        return (int)((out >> 3u) & 1u);
-    case 74u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey1Out */
-        return (int)((out >> 4u) & 1u);
-    case 75u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey2Out */
-        return (int)((out >> 5u) & 1u);
-    case 76u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonPwrbOut */
-        return (int)((out >> 2u) & 1u);
-    case 77u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonZ3Wakeup */
-        return (int)((out >> 6u) & 1u);
-    case 100u: /* DIO ec_rst_l */
-        return (int)((out >> 1u) & 1u);
-    case 101u: /* DIO flash_wp_l */
-        return (int)((out >> 7u) & 1u);
+    case SYSRST_OUTSEL_BAT_DISABLE:
+        return (int)((out >> SYSRST_PIN_OUT_BAT_DISABLE) & 1u);
+    case SYSRST_OUTSEL_KEY0_OUT:
+        return (int)((out >> SYSRST_PIN_OUT_KEY0) & 1u);
+    case SYSRST_OUTSEL_KEY1_OUT:
+        return (int)((out >> SYSRST_PIN_OUT_KEY1) & 1u);
+    case SYSRST_OUTSEL_KEY2_OUT:
+        return (int)((out >> SYSRST_PIN_OUT_KEY2) & 1u);
+    case SYSRST_OUTSEL_PWRB_OUT:
+        return (int)((out >> SYSRST_PIN_OUT_PWRB) & 1u);
+    case SYSRST_OUTSEL_Z3_WAKEUP:
+        return (int)((out >> SYSRST_PIN_OUT_Z3_WAKEUP) & 1u);
+    case SYSRST_OUTSEL_DIO_EC_RST_L:
+        return (int)((out >> SYSRST_PIN_OUT_EC_RST_L) & 1u);
+    case SYSRST_OUTSEL_DIO_FLASH_WP_L:
+        return (int)((out >> SYSRST_PIN_OUT_FLASH_WP_L) & 1u);
     default:
         return 0;
     }
@@ -197,19 +313,23 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     uint32_t out = ot_sysrst_ctrl_get_pin_outputs(s);
     uint32_t val = 0;
 
-    val |= ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) << 0u;
-    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) << 1u;
-    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) << 2u;
-    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) << 3u;
-    val |= ((raw >> OT_SYSRST_CTRL_IN_LID_OPEN) & 1u) << 4u;
-    val |= ((raw >> OT_SYSRST_CTRL_IN_AC_PRESENT) & 1u) << 5u;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) << SYSRST_PIN_IN_PWRB;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY0) & 1u) << SYSRST_PIN_IN_KEY0;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY1) & 1u) << SYSRST_PIN_IN_KEY1;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) << SYSRST_PIN_IN_KEY2;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_LID_OPEN) & 1u) << SYSRST_PIN_IN_LID_OPEN;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_AC_PRESENT) & 1u)
+           << SYSRST_PIN_IN_AC_PRESENT;
 
-    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & (out >> 1u)) & 1u;
-    uint32_t wp_wire =
-        ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & (out >> 7u)) & 1u;
+    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) &
+                        (out >> SYSRST_PIN_OUT_EC_RST_L)) &
+                       1u;
+    uint32_t wp_wire = ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) &
+                        (out >> SYSRST_PIN_OUT_FLASH_WP_L)) &
+                       1u;
 
-    uint32_t ec_attr = ot_pinmux_eg_get_dio_pad_attr(10u);
-    uint32_t wp_attr = ot_pinmux_eg_get_dio_pad_attr(11u);
+    uint32_t ec_attr = ot_pinmux_eg_get_dio_pad_attr(SYSRST_DIO_PAD_EC_RST_L);
+    uint32_t wp_attr = ot_pinmux_eg_get_dio_pad_attr(SYSRST_DIO_PAD_FLASH_WP_L);
 
     uint32_t ec_raw =
         (ec_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK) ? 0u : ec_wire;
@@ -219,7 +339,8 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     uint32_t ec_in = ec_raw ^ (ec_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
     uint32_t wp_in = wp_raw ^ (wp_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
 
-    val |= (ec_in << 6u) | (wp_in << 7u);
+    val |=
+        (ec_in << SYSRST_PIN_IN_EC_RST_L) | (wp_in << SYSRST_PIN_IN_FLASH_WP_L);
 
     return val;
 }
@@ -228,22 +349,34 @@ static void ot_sysrst_ctrl_get_inverted(uint32_t pin_in_val, uint32_t inv,
                                         uint32_t *combo_in,
                                         uint32_t *key_intr_in)
 {
-    uint32_t pwrb = ((pin_in_val >> 0u) & 1u) ^ ((inv >> 6u) & 1u);
-    uint32_t key0 = ((pin_in_val >> 1u) & 1u) ^ ((inv >> 0u) & 1u);
-    uint32_t key1 = ((pin_in_val >> 2u) & 1u) ^ ((inv >> 2u) & 1u);
-    uint32_t key2 = ((pin_in_val >> 3u) & 1u) ^ ((inv >> 4u) & 1u);
-    uint32_t ac = ((pin_in_val >> 5u) & 1u) ^ ((inv >> 8u) & 1u);
-    uint32_t ec_rst_l = (pin_in_val >> 6u) & 1u;
-    uint32_t flash_wp_l = (pin_in_val >> 7u) & 1u;
+    uint32_t pwrb = ((pin_in_val >> SYSRST_PIN_IN_PWRB) & 1u) ^
+                    FIELD_EX32(inv, KEY_INVERT_CTL, PWRB_IN);
+    uint32_t key0 = ((pin_in_val >> SYSRST_PIN_IN_KEY0) & 1u) ^
+                    FIELD_EX32(inv, KEY_INVERT_CTL, KEY0_IN);
+    uint32_t key1 = ((pin_in_val >> SYSRST_PIN_IN_KEY1) & 1u) ^
+                    FIELD_EX32(inv, KEY_INVERT_CTL, KEY1_IN);
+    uint32_t key2 = ((pin_in_val >> SYSRST_PIN_IN_KEY2) & 1u) ^
+                    FIELD_EX32(inv, KEY_INVERT_CTL, KEY2_IN);
+    uint32_t ac = ((pin_in_val >> SYSRST_PIN_IN_AC_PRESENT) & 1u) ^
+                  FIELD_EX32(inv, KEY_INVERT_CTL, AC_PRESENT);
+    uint32_t ec_rst_l = (pin_in_val >> SYSRST_PIN_IN_EC_RST_L) & 1u;
+    uint32_t flash_wp_l = (pin_in_val >> SYSRST_PIN_IN_FLASH_WP_L) & 1u;
 
     if (combo_in) {
-        *combo_in = (key0 << 0u) | (key1 << 1u) | (key2 << 2u) | (pwrb << 3u) |
-                    (ac << 4u);
+        *combo_in =
+            (key0 << SYSRST_COMBO_IN_KEY0) | (key1 << SYSRST_COMBO_IN_KEY1) |
+            (key2 << SYSRST_COMBO_IN_KEY2) | (pwrb << SYSRST_COMBO_IN_PWRB) |
+            (ac << SYSRST_COMBO_IN_AC_PRESENT);
     }
     if (key_intr_in) {
         *key_intr_in =
-            (pwrb << 0u) | (key0 << 1u) | (key1 << 2u) | (key2 << 3u) |
-            (ac << 4u) | (ec_rst_l << 5u) | (flash_wp_l << 6u);
+            (pwrb << SYSRST_KEY_INTR_IN_PWRB) |
+            (key0 << SYSRST_KEY_INTR_IN_KEY0) |
+            (key1 << SYSRST_KEY_INTR_IN_KEY1) |
+            (key2 << SYSRST_KEY_INTR_IN_KEY2) |
+            (ac << SYSRST_KEY_INTR_IN_AC_PRESENT) |
+            (ec_rst_l << SYSRST_KEY_INTR_IN_EC_RST_L) |
+            (flash_wp_l << SYSRST_KEY_INTR_IN_FLASH_WP_L);
     }
 }
 
@@ -315,22 +448,23 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
                                 &curr_key_in);
 
     if (s->regs[R_ULP_CTL] & 1u) {
-        uint32_t prev_pwrb =
-            ((prev_pin_val >> 0u) & 1u) ^ ((prev_inv >> 6u) & 1u);
-        uint32_t curr_pwrb =
-            ((curr_pin_val >> 0u) & 1u) ^ ((curr_inv >> 6u) & 1u);
-        uint32_t prev_lid =
-            ((prev_pin_val >> 4u) & 1u) ^ ((prev_inv >> 10u) & 1u);
-        uint32_t curr_lid =
-            ((curr_pin_val >> 4u) & 1u) ^ ((curr_inv >> 10u) & 1u);
-        uint32_t curr_ac =
-            ((curr_pin_val >> 5u) & 1u) ^ ((curr_inv >> 8u) & 1u);
+        uint32_t prev_pwrb = ((prev_pin_val >> SYSRST_PIN_IN_PWRB) & 1u) ^
+                             FIELD_EX32(prev_inv, KEY_INVERT_CTL, PWRB_IN);
+        uint32_t curr_pwrb = ((curr_pin_val >> SYSRST_PIN_IN_PWRB) & 1u) ^
+                             FIELD_EX32(curr_inv, KEY_INVERT_CTL, PWRB_IN);
+        uint32_t prev_lid = ((prev_pin_val >> SYSRST_PIN_IN_LID_OPEN) & 1u) ^
+                            FIELD_EX32(prev_inv, KEY_INVERT_CTL, LID_OPEN);
+        uint32_t curr_lid = ((curr_pin_val >> SYSRST_PIN_IN_LID_OPEN) & 1u) ^
+                            FIELD_EX32(curr_inv, KEY_INVERT_CTL, LID_OPEN);
+        uint32_t curr_ac = ((curr_pin_val >> SYSRST_PIN_IN_AC_PRESENT) & 1u) ^
+                           FIELD_EX32(curr_inv, KEY_INVERT_CTL, AC_PRESENT);
 
         bool pwrb_h2l = (prev_pwrb == 1u && curr_pwrb == 0u);
         bool lid_l2h = (prev_lid == 0u && curr_lid == 1u);
         bool ac_high = (curr_ac == 1u);
 
-        uint32_t debounce = s->regs[R_ULP_AC_DEBOUNCE_CTL] & 0xffffu;
+        uint32_t debounce =
+            s->regs[R_ULP_AC_DEBOUNCE_CTL] & SYSRST_DEBOUNCE_MASK;
         if (pwrb_h2l || lid_l2h ||
             (ac_high && !s->ulp_ac_latched && debounce == 0u)) {
             s->ulp_ac_latched = true;
@@ -341,7 +475,7 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             if (!s->ulp_ac_latched && !timer_pending(s->ulp_timer)) {
                 timer_mod_ns(s->ulp_timer,
                              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
-                                 (int64_t)(debounce + 1u) * 5000LL);
+                                 (int64_t)(debounce + 1u) * SYSRST_ULP_STEP_NS);
             }
         } else if (!s->ulp_ac_latched) {
             timer_del(s->ulp_timer);
@@ -355,9 +489,10 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
 
     bool trigger_rst = false;
     uint32_t rst_det_cyc = 0;
-    for (unsigned k = 0; k < 4u; k++) {
-        uint32_t pre_sel = s->regs[R_COM_PRE_SEL_CTL_0 + k] & 0x1fu;
-        uint32_t sel = s->regs[R_COM_SEL_CTL_0 + k] & 0x1fu;
+    for (unsigned k = 0; k < SYSRST_NUM_COMBOS; k++) {
+        uint32_t pre_sel =
+            s->regs[R_COM_PRE_SEL_CTL_0 + k] & SYSRST_COMBO_SEL_MASK;
+        uint32_t sel = s->regs[R_COM_SEL_CTL_0 + k] & SYSRST_COMBO_SEL_MASK;
         if (!sel) {
             s->combo_precond_valid[k] = false;
             continue;
@@ -400,13 +535,13 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
             }
             if (out_ctl &
                 (R_COM_OUT_CTL_0_EC_RST_MASK | R_COM_OUT_CTL_0_RST_REQ_MASK)) {
-                uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
+                uint32_t stretch = s->regs[R_EC_RST_CTL] & SYSRST_DEBOUNCE_MASK;
                 if (stretch == 0u) {
                     s->ec_rst_l_hw = true;
                 } else {
                     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
                     timer_mod_ns(s->ec_rst_timer,
-                                 now + (int64_t)stretch * 4000LL);
+                                 now + (int64_t)stretch * SYSRST_AON_PERIOD_NS);
                 }
             }
         }
@@ -414,17 +549,20 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
 
     uint32_t h2l = prev_key_in & ~curr_key_in;
     uint32_t l2h = ~prev_key_in & curr_key_in;
-    uint32_t key_events = (h2l & 0x7fu) | ((l2h & 0x7fu) << 7u);
-    uint32_t active_events = key_events & (s->regs[R_KEY_INTR_CTL] & 0x3fffu);
+    uint32_t key_events =
+        (h2l & SYSRST_KEY_INTR_EDGE_MASK) |
+        ((l2h & SYSRST_KEY_INTR_EDGE_MASK) << SYSRST_KEY_INTR_INPUT_COUNT);
+    uint32_t active_events =
+        key_events & (s->regs[R_KEY_INTR_CTL] & SYSRST_KEY_INTR_ALL_MASK);
     if (active_events) {
         s->regs[R_KEY_INTR_STATUS] |= active_events;
         s->regs[R_WKUP_STATUS] |= R_WKUP_STATUS_WAKEUP_STS_MASK;
     }
 
     if (trigger_rst) {
+        int64_t delay_ns = (rst_det_cyc > 0u) ? SYSRST_COMBO_RST_DELAY_NS : 0LL;
         timer_mod_ns(s->combo_rst_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
-                         (rst_det_cyc > 0u ? 3000000LL : 0LL));
+                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + delay_ns);
     }
 
     ot_sysrst_ctrl_update_outputs(s);
@@ -448,7 +586,8 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
 
     if (timer_pending(s->combo_rst_timer)) {
         timer_mod_ns(s->combo_rst_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 3000000LL);
+                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
+                         SYSRST_COMBO_RST_DELAY_NS);
     }
 
     /*
@@ -457,11 +596,12 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
      * EC_RST_CTL cycles.
      */
     if (irq == OT_SYSRST_CTRL_IN_EC_RST_L && prev_ec_raw && !curr_ec_raw) {
-        uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
+        uint32_t stretch = s->regs[R_EC_RST_CTL] & SYSRST_DEBOUNCE_MASK;
         if (stretch > 0u) {
             s->ec_rst_l_hw = false;
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-            timer_mod_ns(s->ec_rst_timer, now + (int64_t)stretch * 4000LL);
+            timer_mod_ns(s->ec_rst_timer,
+                         now + (int64_t)stretch * SYSRST_AON_PERIOD_NS);
         }
     }
 
@@ -471,36 +611,36 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
 static uint32_t ot_sysrst_ctrl_reg_mask(hwaddr reg)
 {
     switch (reg) {
-    case R_COM_PRE_DET_CTL_0 ...(R_COM_PRE_DET_CTL_0 + 3u):
-    case R_COM_DET_CTL_0 ...(R_COM_DET_CTL_0 + 3u):
-        return 0xffffffffu;
+    case R_COM_PRE_DET_CTL_0 ...(R_COM_PRE_DET_CTL_0 + SYSRST_NUM_COMBOS - 1u):
+    case R_COM_DET_CTL_0 ...(R_COM_DET_CTL_0 + SYSRST_NUM_COMBOS - 1u):
+        return SYSRST_REG_MASK_32B;
     case R_AUTO_BLOCK_DEBOUNCE_CTL:
-        return 0x0001ffffu;
+        return SYSRST_REG_MASK_AUTO_BLOCK_DEB;
     case R_EC_RST_CTL:
     case R_ULP_AC_DEBOUNCE_CTL:
     case R_ULP_LID_DEBOUNCE_CTL:
     case R_ULP_PWRB_DEBOUNCE_CTL:
     case R_PIN_ALLOWED_CTL:
     case R_KEY_INTR_DEBOUNCE_CTL:
-        return 0x0000ffffu;
+        return SYSRST_REG_MASK_16B;
     case R_KEY_INTR_CTL:
     case R_KEY_INTR_STATUS:
-        return 0x00003fffu;
+        return SYSRST_REG_MASK_KEY_INTR;
     case R_KEY_INVERT_CTL:
-        return 0x00000fffu;
+        return SYSRST_REG_MASK_KEY_INVERT;
     case R_PIN_OUT_CTL:
     case R_PIN_OUT_VALUE:
-        return 0x000000ffu;
+        return SYSRST_REG_MASK_PIN_OUT;
     case R_AUTO_BLOCK_OUT_CTL:
-        return 0x00000077u;
-    case R_COM_PRE_SEL_CTL_0 ...(R_COM_PRE_SEL_CTL_0 + 3u):
-    case R_COM_SEL_CTL_0 ...(R_COM_SEL_CTL_0 + 3u):
-        return 0x0000001fu;
-    case R_COM_OUT_CTL_0 ...(R_COM_OUT_CTL_0 + 3u):
+        return SYSRST_REG_MASK_AUTO_BLOCK_OUT;
+    case R_COM_PRE_SEL_CTL_0 ...(R_COM_PRE_SEL_CTL_0 + SYSRST_NUM_COMBOS - 1u):
+    case R_COM_SEL_CTL_0 ...(R_COM_SEL_CTL_0 + SYSRST_NUM_COMBOS - 1u):
+        return SYSRST_REG_MASK_COMBO_SEL;
+    case R_COM_OUT_CTL_0 ...(R_COM_OUT_CTL_0 + SYSRST_NUM_COMBOS - 1u):
     case R_COMBO_INTR_STATUS:
-        return 0x0000000fu;
+        return SYSRST_REG_MASK_COMBO_OUT;
     default:
-        return 0x00000001u;
+        return SYSRST_REG_MASK_1B;
     }
 }
 
@@ -510,22 +650,24 @@ static bool ot_sysrst_ctrl_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (reg >= REGS_COUNT || (addr & 3u) + size > 4u) {
+    if (reg >= REGS_COUNT ||
+        (addr & SYSRST_WORD_ALIGN_MASK) + size > SYSRST_WORD_BYTES) {
         return false;
     }
     if (!is_write) {
         return true;
     }
     uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
-    uint8_t permit = 0x1u;
-    if (mask > 0x1ffffu) {
-        permit = 0xfu;
-    } else if (mask > 0xffffu) {
-        permit = 0x7u;
-    } else if (mask > 0xffu) {
-        permit = 0x3u;
+    uint8_t permit = SYSRST_PERMIT_1B;
+    if (mask > SYSRST_REG_MASK_AUTO_BLOCK_DEB) {
+        permit = SYSRST_PERMIT_4B;
+    } else if (mask > SYSRST_REG_MASK_16B) {
+        permit = SYSRST_PERMIT_3B;
+    } else if (mask > SYSRST_REG_MASK_PIN_OUT) {
+        permit = SYSRST_PERMIT_2B;
     }
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & SYSRST_WORD_ALIGN_MASK));
     return (permit & ~reg_be) == 0u;
 }
 
@@ -539,10 +681,10 @@ static uint64_t ot_sysrst_ctrl_read(void *opaque, hwaddr addr, unsigned size)
         uint32_t val32 = ot_sysrst_ctrl_get_pin_in_value(s);
         if (val32 == s->last_read_pin_in) {
             s->poll_count++;
-            if (s->poll_count > 16u) {
+            if (s->poll_count > SYSRST_POLL_YIELD_THRESHOLD) {
                 bql_unlock();
                 replay_mutex_unlock();
-                g_usleep(50);
+                g_usleep(SYSRST_POLL_YIELD_US);
                 replay_mutex_lock();
                 bql_lock();
                 val32 = ot_sysrst_ctrl_get_pin_in_value(s);
@@ -667,14 +809,14 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
 
     memset(s->regs, 0, sizeof(s->regs));
     s->regs[R_REGWEN] = 1u;
-    s->regs[R_EC_RST_CTL] = 2000u;
-    s->regs[R_ULP_AC_DEBOUNCE_CTL] = 8000u;
-    s->regs[R_ULP_LID_DEBOUNCE_CTL] = 8000u;
-    s->regs[R_ULP_PWRB_DEBOUNCE_CTL] = 8000u;
-    s->regs[R_PIN_ALLOWED_CTL] = 0x82u;
-    s->regs[R_PIN_OUT_CTL] = 0x82u;
-    s->regs[R_KEY_INTR_DEBOUNCE_CTL] = 2000u;
-    s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] = 2000u;
+    s->regs[R_EC_RST_CTL] = SYSRST_DEBOUNCE_DEFAULT_RESVAL;
+    s->regs[R_ULP_AC_DEBOUNCE_CTL] = SYSRST_ULP_DEBOUNCE_RESVAL;
+    s->regs[R_ULP_LID_DEBOUNCE_CTL] = SYSRST_ULP_DEBOUNCE_RESVAL;
+    s->regs[R_ULP_PWRB_DEBOUNCE_CTL] = SYSRST_ULP_DEBOUNCE_RESVAL;
+    s->regs[R_PIN_ALLOWED_CTL] = SYSRST_PIN_OUT_DEFAULT_RESVAL;
+    s->regs[R_PIN_OUT_CTL] = SYSRST_PIN_OUT_DEFAULT_RESVAL;
+    s->regs[R_KEY_INTR_DEBOUNCE_CTL] = SYSRST_DEBOUNCE_DEFAULT_RESVAL;
+    s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] = SYSRST_DEBOUNCE_DEFAULT_RESVAL;
 
     s->last_pin_in_val = ot_sysrst_ctrl_get_pin_in_value(s);
     s->last_key_invert_ctl = 0u;
@@ -689,7 +831,7 @@ static void ot_sysrst_ctrl_init(Object *obj)
     OtSysrstCtrlState *s = OT_SYSRST_CTRL(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_sysrst_ctrl_ops, s,
-                          TYPE_OT_SYSRST_CTRL, 0x100u);
+                          TYPE_OT_SYSRST_CTRL, SYSRST_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     ibex_sysbus_init_irq(obj, &s->irq);
