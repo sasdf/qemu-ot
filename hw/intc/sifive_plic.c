@@ -164,25 +164,28 @@ static void sifive_plic_update(SiFivePLICState *plic)
     }
 }
 
+#define PLIC_PERMIT_1B 0x1u
+#define PLIC_PERMIT_4B 0xfu
+
 static uint32_t sifive_plic_word_permit(const SiFivePLICState *plic,
                                         uint32_t wordid)
 {
     if (wordid == (plic->bitfield_words - 1) && (plic->num_sources & 31)) {
-        uint32_t bytes = ((plic->num_sources & 31) + 7u) >> 3;
+        uint32_t bytes = DIV_ROUND_UP(plic->num_sources & 31, BITS_PER_BYTE);
         return (1u << bytes) - 1u;
     }
-    return 0xfu;
+    return PLIC_PERMIT_4B;
 }
 
 static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
                                 bool is_write, MemTxAttrs attrs)
 {
     SiFivePLICState *plic = opaque;
-    uint32_t reg_be = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t reg_be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     uint32_t permit = 0;
 
     if (addr_between(addr, plic->priority_base, plic->num_sources << 2)) {
-        permit = 0x1u;
+        permit = PLIC_PERMIT_1B;
     } else if (addr_between(addr, plic->pending_base,
                             plic->bitfield_words << 2)) {
         uint32_t wordid = (addr - plic->pending_base) >> 2;
@@ -197,7 +200,7 @@ static bool sifive_plic_accepts(void *opaque, hwaddr addr, unsigned size,
                             plic->num_addrs * plic->context_stride)) {
         uint32_t contextid = addr & (plic->context_stride - 4);
         if (contextid == 0 || contextid == 4) {
-            permit = 0x1u;
+            permit = PLIC_PERMIT_1B;
         }
     }
     return permit != 0 && (!is_write || !(permit & ~reg_be));
@@ -312,7 +315,7 @@ static void sifive_plic_write(void *opaque, hwaddr addr, uint64_t value,
             uint32_t src_bits = (plic->num_sources > 1u) ?
                                     (32u - clz32(plic->num_sources - 1u)) :
                                     1u;
-            value &= (src_bits >= 32u) ? 0xffffffffu : ((1u << src_bits) - 1u);
+            value &= (src_bits >= 32u) ? UINT32_MAX : ((1u << src_bits) - 1u);
             if (value < plic->num_sources &&
                 sifive_plic_is_claimed(plic, value)) {
                 sifive_plic_set_claimed(plic, value, false);
