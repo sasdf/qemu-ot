@@ -468,6 +468,10 @@ int riscv_cpu_vsirq_pending(CPURISCVState *env)
                                     (irqs | irqs_f_vs), env->hviprio);
 }
 
+#define IBEX_RNMI_EXT_IRQ         31
+#define IBEX_RNMI_INT_MCAUSE_BASE 0xffffffe0ULL
+#define IBEX_RNMI_CAUSE_MASK      0x1fULL
+
 static int riscv_cpu_local_irq_pending(CPURISCVState *env)
 {
     uint64_t irqs, pending, mie, hsie, vsie, irqs_f, irqs_f_vs;
@@ -493,7 +497,8 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
             return ctz64(env->rnmip); /* since non-zero */
         }
     } else if (env->rnmip) {
-        return (env->rnmip & (1ULL << 31)) ? 31 : ctz64(env->rnmip);
+        bool has_ext_rnmi = (env->rnmip & (1ULL << IBEX_RNMI_EXT_IRQ)) != 0;
+        return has_ext_rnmi ? IBEX_RNMI_EXT_IRQ : ctz64(env->rnmip);
     }
 
     /* Determine interrupt enable state of all privilege modes */
@@ -2585,7 +2590,7 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             env->mstack_epc = env->mepc;
             env->mstack_cause = env->mcause;
             env->nmi_mode = true;
-            if (cause < 31) {
+            if (cause < IBEX_RNMI_EXT_IRQ) {
                 tval = env->rnmi_int_mtval;
                 if (env->rnmi_int_pending_count > 0) {
                     env->rnmi_int_pending_count--;
@@ -2617,8 +2622,9 @@ void riscv_cpu_do_interrupt(CPUState *cs)
             s = set_field(s, MSTATUS_MDT, 1);
         }
         env->mstatus = s;
-        if (is_ibex_nmi && cause < 31) {
-            env->mcause = 0xffffffe0ULL | (cause & 0x1fULL);
+        if (is_ibex_nmi && cause < IBEX_RNMI_EXT_IRQ) {
+            env->mcause =
+                IBEX_RNMI_INT_MCAUSE_BASE | (cause & IBEX_RNMI_CAUSE_MASK);
         } else {
             env->mcause = cause | ((target_ulong)async << (mxlen - 1));
         }
@@ -2639,7 +2645,7 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         if (nnmi_excep) {
             env->pc = env->rnmi_excpvec;
         } else {
-            target_ulong vec_cause = is_ibex_nmi ? 31 : cause;
+            target_ulong vec_cause = is_ibex_nmi ? IBEX_RNMI_EXT_IRQ : cause;
             bool is_vectored = async && (env->mtvec & 3) == 1;
             target_ulong vec_offset = is_vectored ? (vec_cause * 4) : 0;
             env->pc = (env->mtvec >> 2 << 2) + vec_offset;
@@ -2690,27 +2696,45 @@ void riscv_cpu_do_interrupt(CPUState *cs)
     }
 }
 
-void riscv_cpu_get_crash_dump(CPUState *cs, uint32_t dump[8])
+enum {
+    IBEX_CRASH_DUMP_MTVAL,
+    IBEX_CRASH_DUMP_MEPC,
+    IBEX_CRASH_DUMP_MDAA,
+    IBEX_CRASH_DUMP_MNPC,
+    IBEX_CRASH_DUMP_MCPC,
+    IBEX_CRASH_DUMP_PREV_MTVAL,
+    IBEX_CRASH_DUMP_PREV_MEPC,
+    IBEX_CRASH_DUMP_DOUBLE_FAULT,
+    IBEX_CRASH_DUMP_COUNT,
+};
+
+#define RV_INSN_LEN_MASK 0x3u
+#define RV_INSN_LEN_32   0x3u
+#define RV_INSN_SIZE_16  2u
+#define RV_INSN_SIZE_32  4u
+
+void riscv_cpu_get_crash_dump(CPUState *cs,
+                              uint32_t dump[IBEX_CRASH_DUMP_COUNT])
 {
     RISCVCPU *cpu = RISCV_CPU(cs);
     CPURISCVState *env = &cpu->env;
 
-    dump[0] = env->mtval;
-    dump[1] = env->mepc;
-    dump[2] = env->last_data_addr;
+    dump[IBEX_CRASH_DUMP_MTVAL] = env->mtval;
+    dump[IBEX_CRASH_DUMP_MEPC] = env->mepc;
+    dump[IBEX_CRASH_DUMP_MDAA] = env->last_data_addr;
     if (env->double_fault_seen) {
-        dump[3] = env->pc;
-        dump[4] = env->mepc;
+        dump[IBEX_CRASH_DUMP_MNPC] = env->pc;
+        dump[IBEX_CRASH_DUMP_MCPC] = env->mepc;
     } else if (env->wfi_pc != 0) {
-        dump[3] = env->wfi_pc + 4;
-        dump[4] = env->wfi_pc;
+        dump[IBEX_CRASH_DUMP_MNPC] = env->wfi_pc + RV_INSN_SIZE_32;
+        dump[IBEX_CRASH_DUMP_MCPC] = env->wfi_pc;
     } else {
-        dump[3] = env->pc + 4;
-        dump[4] = env->pc;
+        dump[IBEX_CRASH_DUMP_MNPC] = env->pc + RV_INSN_SIZE_32;
+        dump[IBEX_CRASH_DUMP_MCPC] = env->pc;
     }
-    dump[5] = env->prev_exception_addr;
-    dump[6] = env->prev_exception_pc;
-    dump[7] = env->double_fault_seen ? 1u : 0u;
+    dump[IBEX_CRASH_DUMP_PREV_MTVAL] = env->prev_exception_addr;
+    dump[IBEX_CRASH_DUMP_PREV_MEPC] = env->prev_exception_pc;
+    dump[IBEX_CRASH_DUMP_DOUBLE_FAULT] = env->double_fault_seen ? 1u : 0u;
 }
 
 G_NORETURN void riscv_cpu_stall_on_unclocked_mmio(CPUState *cs,
@@ -2734,7 +2758,8 @@ G_NORETURN void riscv_cpu_retire_load_without_wb(CPUState *cs)
     cpu_restore_state(cs, cs->mem_io_pc);
     uint16_t insn16 =
         address_space_lduw_le(cs->as, env->pc, MEMTXATTRS_UNSPECIFIED, NULL);
-    env->pc += ((insn16 & 3u) == 3u) ? 4u : 2u;
+    bool is_32bit = (insn16 & RV_INSN_LEN_MASK) == RV_INSN_LEN_32;
+    env->pc += is_32bit ? RV_INSN_SIZE_32 : RV_INSN_SIZE_16;
     cpu_loop_exit(cs);
 }
 
