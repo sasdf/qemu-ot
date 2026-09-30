@@ -21,18 +21,47 @@
 
 #define PARAM_NUM_CHANNELS 2u
 #define PARAM_NUM_IRQS     2u
+#define PATTGEN_NUM_PINS   (PARAM_NUM_CHANNELS * 2u)
+
+#define PATTGEN_START_OFFSET_US 10000ULL
+#define PATTGEN_IO_CLK_HZ       6000000ULL
+#define PATTGEN_MIN_DURATION_NS 1000ULL
+
+#define PATTGEN_PERMIT_1B 0x1u
+#define PATTGEN_PERMIT_4B 0xfu
 
 /* clang-format off */
 REG32(INTR_STATE, 0x00u)
+    SHARED_FIELD(INTR_DONE_CH0, 0u, 1u)
+    SHARED_FIELD(INTR_DONE_CH1, 1u, 1u)
 REG32(INTR_ENABLE, 0x04u)
 REG32(INTR_TEST, 0x08u)
 REG32(ALERT_TEST, 0x0cu)
     FIELD(ALERT_TEST, FATAL_FAULT, 0u, 1u)
 REG32(CTRL, 0x10u)
+    FIELD(CTRL, ENABLE_CH0, 0u, 1u)
+    FIELD(CTRL, ENABLE_CH1, 1u, 1u)
+    FIELD(CTRL, POLARITY_CH0, 2u, 1u)
+    FIELD(CTRL, POLARITY_CH1, 3u, 1u)
+    FIELD(CTRL, INACTIVE_LEVEL_PCL_CH0, 4u, 1u)
+    FIELD(CTRL, INACTIVE_LEVEL_PDA_CH0, 5u, 1u)
+    FIELD(CTRL, INACTIVE_LEVEL_PCL_CH1, 6u, 1u)
+    FIELD(CTRL, INACTIVE_LEVEL_PDA_CH1, 7u, 1u)
 REG32(PREDIV_CH0, 0x14u)
 REG32(DATA_CH0_0, 0x1cu)
 REG32(SIZE, 0x2cu)
+    FIELD(SIZE, LEN_CH0, 0u, 6u)
+    FIELD(SIZE, REPS_CH0, 6u, 10u)
+    FIELD(SIZE, LEN_CH1, 16u, 6u)
+    FIELD(SIZE, REPS_CH1, 22u, 10u)
 /* clang-format on */
+
+#define INTR_MASK (INTR_DONE_CH0_MASK | INTR_DONE_CH1_MASK)
+#define CTRL_MASK \
+    (R_CTRL_ENABLE_CH0_MASK | R_CTRL_ENABLE_CH1_MASK | \
+     R_CTRL_POLARITY_CH0_MASK | R_CTRL_POLARITY_CH1_MASK | \
+     R_CTRL_INACTIVE_LEVEL_PCL_CH0_MASK | R_CTRL_INACTIVE_LEVEL_PDA_CH0_MASK | \
+     R_CTRL_INACTIVE_LEVEL_PCL_CH1_MASK | R_CTRL_INACTIVE_LEVEL_PDA_CH1_MASK)
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define R_LAST_REG   (R_SIZE)
@@ -81,21 +110,28 @@ static void ot_pattgen_latch_channel(OtPattgenState *s, unsigned c)
 {
     OtPattgenChan *ch = &s->chan[c];
     uint32_t ctrl = s->regs[R_CTRL];
-    ch->polarity = (bool)((ctrl >> (2u + c)) & 1u);
-    ch->inactive_pcl = (bool)((ctrl >> (4u + 2u * c)) & 1u);
-    ch->inactive_pda = (bool)((ctrl >> (5u + 2u * c)) & 1u);
+    ch->polarity = (bool)((ctrl >> (R_CTRL_POLARITY_CH0_SHIFT + c)) & 1u);
+    ch->inactive_pcl =
+        (bool)((ctrl >> (R_CTRL_INACTIVE_LEVEL_PCL_CH0_SHIFT + 2u * c)) & 1u);
+    ch->inactive_pda =
+        (bool)((ctrl >> (R_CTRL_INACTIVE_LEVEL_PDA_CH0_SHIFT + 2u * c)) & 1u);
     ch->prediv = s->regs[R_PREDIV_CH0 + c];
     uint64_t lo = s->regs[R_DATA_CH0_0 + 2u * c];
     uint64_t hi = s->regs[R_DATA_CH0_0 + 2u * c + 1u];
     ch->data = lo | (hi << 32);
     uint32_t size = s->regs[R_SIZE];
-    ch->len = (size >> (c == 0u ? 0u : 16u)) & 0x3fu;
-    ch->reps = (size >> (c == 0u ? 6u : 22u)) & 0x3ffu;
+    if (c == 0u) {
+        ch->len = FIELD_EX32(size, SIZE, LEN_CH0);
+        ch->reps = FIELD_EX32(size, SIZE, REPS_CH0);
+    } else {
+        ch->len = FIELD_EX32(size, SIZE, LEN_CH1);
+        ch->reps = FIELD_EX32(size, SIZE, REPS_CH1);
+    }
 }
 
 bool ot_pattgen_get_pin_level(OtPattgenState *s, unsigned pin_idx)
 {
-    if (!s || pin_idx >= 4u) {
+    if (!s || pin_idx >= PATTGEN_NUM_PINS) {
         return false;
     }
     return (pin_idx & 1u) ? s->pcl[pin_idx >> 1u] : s->pda[pin_idx >> 1u];
@@ -125,8 +161,8 @@ static void ot_pattgen_timer_cb(void *opaque)
         return;
     }
 
-    uint64_t base_us =
-        (s->gpio ? ot_gpio_eg_get_total_us(s->gpio) : 0ULL) + 10000ULL;
+    uint64_t base_us = (s->gpio ? ot_gpio_eg_get_total_us(s->gpio) : 0ULL) +
+                       PATTGEN_START_OFFSET_US;
     uint32_t done_mask = 0;
 
     if (s->gpio) {
@@ -140,9 +176,9 @@ static void ot_pattgen_timer_cb(void *opaque)
             if (run_ch[c] && k[c] <= total_steps[c]) {
                 uint64_t t_ns =
                     ((uint64_t)k[c] * ((uint64_t)s->chan[c].prediv + 1ULL) *
-                     1000000000ULL) /
-                    6000000ULL;
-                step_us[c] = base_us + (t_ns / 1000ULL);
+                     (uint64_t)NANOSECONDS_PER_SECOND) /
+                    PATTGEN_IO_CLK_HZ;
+                step_us[c] = base_us + (t_ns / (uint64_t)SCALE_US);
             }
         }
 
@@ -187,8 +223,10 @@ static bool ot_pattgen_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    uint8_t permit = (reg >= R_PREDIV_CH0) ? 0xfu : 0x1u;
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
+    uint8_t permit =
+        (reg >= R_PREDIV_CH0) ? PATTGEN_PERMIT_4B : PATTGEN_PERMIT_1B;
     return reg < REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
 
@@ -216,15 +254,15 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
 
     switch (reg) {
     case R_INTR_STATE:
-        s->regs[R_INTR_STATE] &= ~(val32 & 0x3u);
+        s->regs[R_INTR_STATE] &= ~(val32 & INTR_MASK);
         ot_pattgen_update_irqs(s);
         break;
     case R_INTR_ENABLE:
-        s->regs[R_INTR_ENABLE] = val32 & 0x3u;
+        s->regs[R_INTR_ENABLE] = val32 & INTR_MASK;
         ot_pattgen_update_irqs(s);
         break;
     case R_INTR_TEST:
-        s->regs[R_INTR_STATE] |= (val32 & 0x3u);
+        s->regs[R_INTR_STATE] |= (val32 & INTR_MASK);
         ot_pattgen_update_irqs(s);
         break;
     case R_ALERT_TEST:
@@ -234,7 +272,7 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         break;
     case R_CTRL:
-        val32 &= 0xffu;
+        val32 &= CTRL_MASK;
         /* fall through */
     default: {
         uint32_t old_ctrl = s->regs[R_CTRL];
@@ -265,9 +303,10 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
                     ((uint64_t)s->chan[c].reps + 1ULL);
                 uint64_t dur_ns =
                     (total_steps * ((uint64_t)s->chan[c].prediv + 1ULL) *
-                     1000000000ULL) /
-                    6000000ULL;
-                max_duration_ns = MAX(max_duration_ns, MAX(dur_ns, 1000ULL));
+                     (uint64_t)NANOSECONDS_PER_SECOND) /
+                    PATTGEN_IO_CLK_HZ;
+                max_duration_ns =
+                    MAX(max_duration_ns, MAX(dur_ns, PATTGEN_MIN_DURATION_NS));
             }
         }
 
