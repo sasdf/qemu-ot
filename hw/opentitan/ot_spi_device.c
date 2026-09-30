@@ -244,6 +244,7 @@ REG32(TPM_READ_FIFO, 0x34u)
  */
 #define SPI_BUS_FLASH_READ_DELAY_NS 10000000
 #define SPI_BUS_FLASH_POLL_DELAY_NS 500000
+#define SPI_BUS_BOOT_INIT_GUARD_NS  3000000LL
 
 /*
  * Memory layout extracted from the documentation:
@@ -314,8 +315,17 @@ REG32(TPM_READ_FIFO, 0x34u)
 #define INGRESS_BUFFER_SIZE_WORDS PARAM_SRAM_INGRESS_DEPTH
 #define FLASH_READ_BUFFER_SIZE    (2u * SPI_SRAM_READ_SIZE)
 
-#define SPI_DEFAULT_TX_RX_VALUE ((uint8_t)0xffu)
-#define SPI_FLASH_BUFFER_SIZE   256u
+#define SPI_DEFAULT_TX_RX_VALUE  ((uint8_t)0xffu)
+#define SPI_FLASH_BUFFER_SIZE    256u
+#define SPI_CONSOLE_FRAME_MAGIC  0xa5a5beefu
+#define SPI_CSB_POLL_MAX_COUNT   2u
+#define DIO_PAD_SPI_DEVICE_SD0   6u
+#define DIO_PAD_SPI_DEVICE_CSB   13u
+#define PINMUX_PERIPH_IN_TPM_CSB 46u
+#define REG_PERMIT_1B            0x1u
+#define REG_PERMIT_2B            0x3u
+#define REG_PERMIT_3B            0x7u
+#define REG_PERMIT_4B            0xfu
 
 typedef enum {
     /* Internal HW command slots (0-10) */
@@ -652,6 +662,9 @@ static const char *TPM_REG_NAMES[TPM_REGS_COUNT] = {
 #define FLASH_STATUS_RW_MASK (R_FLASH_STATUS_STATUS_MASK)
 #define JEDEC_CC_MASK        (R_JEDEC_CC_CC_MASK | R_JEDEC_CC_NUM_CC_MASK)
 #define JEDEC_ID_MASK        (R_JEDEC_ID_DEVICE_MASK | R_JEDEC_ID_MF_MASK)
+#define TPM_CFG_MASK \
+    (R_TPM_CFG_EN_MASK | R_TPM_CFG_TPM_MODE_MASK | R_TPM_CFG_HW_REG_DIS_MASK | \
+     R_TPM_CFG_TPM_REG_CHK_DIS_MASK | R_TPM_CFG_INVALID_LOCALITY_MASK)
 
 #define COMMAND_OPCODE(_cmd_info_) \
     ((uint8_t)((_cmd_info_) & CMD_INFO_OPCODE_MASK))
@@ -950,7 +963,7 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     bus->failed_transaction = false;
 
     s->spi_regs[R_STATUS] = R_STATUS_CSB_MASK | R_STATUS_TPM_CSB_MASK;
-    ot_pinmux_eg_dio_pad_in(13u, 1);
+    ot_pinmux_eg_dio_pad_in(DIO_PAD_SPI_DEVICE_CSB, 1);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_ACTIVE_LOW_UNSEEN) {
             s->csb_sync = CSB_RELEASED_LOW_UNSEEN;
@@ -1574,12 +1587,12 @@ static void ot_spi_device_flash_exec_sw_command(OtSPIDeviceState *s, uint8_t rx)
 
 static uint8_t ot_spi_device_get_discard_val(const OtSPIDeviceState *s)
 {
-    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
+    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(DIO_PAD_SPI_DEVICE_SD0);
     if (sleep_val == 0) {
         return 0x00u;
     }
     if (sleep_val == 1) {
-        return 0xffu;
+        return SPI_DEFAULT_TX_RX_VALUE;
     }
     return s->flash_ever_enabled ? 0x00u : SPI_DEFAULT_TX_RX_VALUE;
 }
@@ -2020,16 +2033,17 @@ static bool ot_spi_device_spi_regs_accepts(
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit = 0xfu;
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
+    uint8_t permit = REG_PERMIT_4B;
     if ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) {
-        permit = 0x1u;
+        permit = REG_PERMIT_1B;
     } else if (reg == R_JEDEC_CC || reg == R_READ_THRESHOLD ||
                reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) {
-        permit = 0x3u;
+        permit = REG_PERMIT_2B;
     } else if (reg == R_FLASH_STATUS || reg == R_JEDEC_ID ||
                reg == R_UPLOAD_STATUS2) {
-        permit = 0x7u;
+        permit = REG_PERMIT_3B;
     }
     return reg < SPI_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
@@ -2134,7 +2148,7 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             s->csb_poll_enabled = true;
             s->csb_poll_count = 0u;
         }
-        if (ot_pinmux_eg_is_periph_in_zero(46u)) {
+        if (ot_pinmux_eg_is_periph_in_zero(PINMUX_PERIPH_IN_TPM_CSB)) {
             s->spi_regs[R_STATUS] &= ~R_STATUS_TPM_CSB_MASK;
         } else {
             s->spi_regs[R_STATUS] |= R_STATUS_TPM_CSB_MASK;
@@ -2157,7 +2171,7 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             val32 |= R_STATUS_CSB_MASK;
             s->csb_sync = CSB_IDLE_HIGH_SEEN;
             s->csb_poll_count++;
-            if (s->csb_poll_count >= 2u) {
+            if (s->csb_poll_count >= SPI_CSB_POLL_MAX_COUNT) {
                 s->csb_poll_enabled = false;
             }
             qemu_chr_fe_accept_input(&s->chr);
@@ -2442,14 +2456,15 @@ static bool ot_spi_device_tpm_regs_accepts(
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit = 0xfu;
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
+    uint8_t permit = REG_PERMIT_4B;
     if (reg == R_TPM_CAP) {
-        permit = 0x7u;
+        permit = REG_PERMIT_3B;
     } else if (reg == R_TPM_CFG || reg == R_TPM_STATUS ||
                reg == R_TPM_ACCESS_1 || reg == R_TPM_INT_VECTOR ||
                reg == R_TPM_RID) {
-        permit = 0x1u;
+        permit = REG_PERMIT_1B;
     }
     return reg < TPM_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
@@ -2517,12 +2532,16 @@ static void ot_spi_device_tpm_regs_write(void *opaque, hwaddr addr,
 
     switch (reg) {
     case R_TPM_CFG:
-        s->tpm_regs[reg] = val32 & 0x1fu;
+        s->tpm_regs[reg] = val32 & TPM_CFG_MASK;
         break;
     case R_TPM_ACCESS_1:
+        s->tpm_regs[reg] = val32 & R_TPM_ACCESS_1_ACCESS_4_MASK;
+        break;
     case R_TPM_INT_VECTOR:
+        s->tpm_regs[reg] = val32 & R_TPM_INT_VECTOR_INT_VECTOR_MASK;
+        break;
     case R_TPM_RID:
-        s->tpm_regs[reg] = val32 & 0xffu;
+        s->tpm_regs[reg] = val32 & R_TPM_RID_RID_MASK;
         break;
     case R_TPM_ACCESS_0:
     case R_TPM_STS:
@@ -2630,7 +2649,7 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
     trace_ot_spi_device_io_buf_write_in(s->ot_id, (uint32_t)addr, size, val32,
                                         pc);
 
-    if (size != 4u || (addr & 3u) != 0u) {
+    if (size != sizeof(uint32_t) || (addr & (sizeof(uint32_t) - 1u)) != 0u) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: %s: sub-word write to egress buffer 0x%03x "
                       "(size=%u)\n",
@@ -2656,8 +2675,8 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
      * with the new magic_number and frame_num but a stale data_len_bytes from
      * a previous wrap-around of the 2 KiB circular buffer.
      */
-    const uint32_t read_buf_size = SPI_SRAM_READ_SIZE * 2u;
-    if (addr < read_buf_size && val32 == 0xa5a5beefu &&
+    const uint32_t read_buf_size = FLASH_READ_BUFFER_SIZE;
+    if (addr < read_buf_size && val32 == SPI_CONSOLE_FRAME_MAGIC &&
         !s->flash.has_pending_magic) {
         s->sram[addr >> 2u] = 0u;
         s->flash.pending_magic_addr = (uint32_t)addr;
@@ -2667,10 +2686,11 @@ static MemTxResult ot_spi_device_buf_write_with_attrs(
     s->sram[addr >> 2u] = val32;
     if (addr < read_buf_size && s->flash.has_pending_magic) {
         uint32_t word1_addr =
-            (s->flash.pending_magic_addr + 4u) & (read_buf_size - 1u);
+            (s->flash.pending_magic_addr + (uint32_t)sizeof(uint32_t)) &
+            (read_buf_size - 1u);
         if (addr != word1_addr) {
             uint32_t magic_addr = s->flash.pending_magic_addr;
-            s->sram[magic_addr >> 2u] = 0xa5a5beefu;
+            s->sram[magic_addr >> 2u] = SPI_CONSOLE_FRAME_MAGIC;
             s->flash.has_pending_magic = false;
             s->flash.read_buf_modified = true;
             if (magic_addr == 0u && !s->last_read_addr_polled) {
@@ -2740,14 +2760,14 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
     /* @todo: also update the TPM CSB value when used in the protocol */
     s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
-    ot_pinmux_eg_dio_pad_in(13u, 0);
+    ot_pinmux_eg_dio_pad_in(DIO_PAD_SPI_DEVICE_CSB, 0);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_IDLE_HIGH_SEEN) {
             s->csb_sync = CSB_ACTIVE_LOW_UNSEEN;
         }
     }
 
-    if (ot_pinmux_eg_get_dio_sleep_val(6u) >= 0) {
+    if (ot_pinmux_eg_get_dio_sleep_val(DIO_PAD_SPI_DEVICE_SD0) >= 0) {
         BUS_CHANGE_STATE(s, DISCARD);
         return;
     }
@@ -2802,7 +2822,7 @@ static void ot_spi_device_chr_recv_flash(OtSPIDeviceState *s,
                                          const uint8_t *buf, unsigned size)
 {
     SpiDeviceBus *bus = &s->bus;
-    uint8_t tx_buf[256];
+    uint8_t tx_buf[SPI_FLASH_BUFFER_SIZE];
     unsigned tx_len = 0u;
 
     while (size) {
@@ -2929,7 +2949,7 @@ static void ot_spi_device_tpm_write_state(OtSPIDeviceState *s,
 {
     SpiDeviceTpm *tpm = &s->tpm;
     for (unsigned pos = tpm->write_pos; pos < tpm->write_pos + size; pos++) {
-        if ((pos >> 2u) < 16u) {
+        if ((pos >> 2u) < PARAM_TPM_WR_FIFO_DEPTH) {
             tpm->write_valid_mask |= (uint16_t)(1u << (pos >> 2u));
         }
     }
@@ -3046,8 +3066,8 @@ static int ot_spi_device_chr_can_receive(void *opaque)
                    !ot_spi_device_is_tpm_enabled(s) &&
                    !(s->spi_regs[R_CMD_INFO_WRDI] & CMD_INFO_OPCODE_MASK) &&
                    (qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->reset_time_ns) <
-                       3000000LL) {
-            ot_spi_device_flash_pace_spibus_ns(s, 500000LL);
+                       SPI_BUS_BOOT_INIT_GUARD_NS) {
+            ot_spi_device_flash_pace_spibus_ns(s, SPI_BUS_FLASH_POLL_DELAY_NS);
             length = 0u;
         } else {
             length = fifo8_num_free(&bus->chr_fifo);
