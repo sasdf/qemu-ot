@@ -412,6 +412,39 @@ static const uint32_t ot_eg_v2_pmp_addrs[] = {
 #define PULP_DM_BASE   0x00010000u
 #define SRAM_MAIN_SIZE 0x20000u
 
+#define EG_V2_ROM_SIZE       0x30000u
+#define EG_V2_SRAM_SEC_SIZE  0x10000u
+#define EG_V2_SRAM_META_SIZE 0x9800u
+#define EG_V2_CHERIOT_REVBM  3072u
+
+#define OT_EG_MAIN_CLK_FREQ_HZ           24000000u
+#define OT_EG_VERILATOR_MAIN_CLK_FREQ_HZ 500000u
+
+#define OT_EG_V1_PLIC_IRQ_AFTER_PATTGEN 124
+#define OT_EG_V1_PLIC_IRQ_PATTGEN_COUNT 2
+#define OT_EG_V1_ALERT_RANGE1_MIN       10
+#define OT_EG_V1_ALERT_RANGE1_MAX       28
+#define OT_EG_V1_ALERT_RANGE1_SHIFT     1
+#define OT_EG_V1_ALERT_RANGE2_MIN       30
+#define OT_EG_V1_ALERT_RANGE2_MAX       59
+#define OT_EG_V1_ALERT_RANGE2_SHIFT     2
+#define OT_EG_V1_ALERT_RANGE3_MIN       60
+#define OT_EG_V1_ALERT_RANGE3_MAX       64
+#define OT_EG_V1_ALERT_RANGE3_SHIFT     1
+
+#define OT_EG_I2C_COUNT ((OT_EG_SOC_DEV_I2C2 - OT_EG_SOC_DEV_I2C0) + 1u)
+
+#define OT_EG_PMOD_I2C_ADDR_ADM1191     0x10u
+#define OT_EG_PMOD_I2C_ADDR_ADXL345     0x1du
+#define OT_EG_PMOD_I2C_ADDR_STRETCH_DEV 0x22u
+#define OT_EG_PMOD_I2C_ADDR_LTR303ALS   0x29u
+#define OT_EG_PMOD_I2C_ADDR_MMC34160PJ  0x30u
+#define OT_EG_PMOD_I2C_ADDR_HDC1080     0x40u
+#define OT_EG_PMOD_I2C_ADDR_FRAM_DATA   0x51u
+#define OT_EG_PMOD_I2C_ADDR_EEPROM_DATA 0x52u
+#define OT_EG_PMOD_I2C_ADDR_SGP30       0x59u
+#define OT_EG_PMOD_I2C_ADDR_FRAM_DEVID  0x7cu
+
 /*
  * MMIO/interrupt mapping as per:
  * lowRISC/opentitan: hw/top_earlgrey/sw/autogen/top_earlgrey_memory.h
@@ -1829,7 +1862,8 @@ static void ot_eg_soc_ast_configure(DeviceState *dev, const IbexDeviceDef *def,
 
     qdev_prop_set_string(dev, "topclocks", clock_cfg);
     /* Align icount virtual clock frequency with the active AST main clock */
-    icount_set_freq_hz(!verilator_mode ? 24000000u : 500000u);
+    icount_set_freq_hz(!verilator_mode ? OT_EG_MAIN_CLK_FREQ_HZ :
+                                         OT_EG_VERILATOR_MAIN_CLK_FREQ_HZ);
 }
 
 static void ot_eg_soc_dm_configure(DeviceState *dev, const IbexDeviceDef *def,
@@ -2193,7 +2227,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "rom"),
-            IBEX_DEV_UINT_PROP("size", 0x30000u),
+            IBEX_DEV_UINT_PROP("size", EG_V2_ROM_SIZE),
             IBEX_DEV_UINT_PROP("kmac-app", 2u)
         ),
     },
@@ -2334,7 +2368,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("size", 0x10000u),
+            IBEX_DEV_UINT_PROP("size", EG_V2_SRAM_SEC_SIZE),
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "ram_sec"),
             IBEX_DEV_BOOL_PROP("ifetch", true)
         ),
@@ -2352,7 +2386,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             OT_EG_SOC_DEVLINK("vmapper", VMAPPER)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("size", 0x9800u),
+            IBEX_DEV_UINT_PROP("size", EG_V2_SRAM_META_SIZE),
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "ram_meta"),
             IBEX_DEV_BOOL_PROP("ifetch", false)
         ),
@@ -2368,7 +2402,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "cheriot"),
-            IBEX_DEV_UINT_PROP("revbm-size", 3072u)
+            IBEX_DEV_UINT_PROP("revbm-size", EG_V2_CHERIOT_REVBM)
         ),
     },
     /* clang-format on */
@@ -2405,18 +2439,21 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
                         g[j].in.name = OT_KEYMGR_DPE_ENABLE;
                     }
                 } else if (target_idx == OT_EG_SOC_DEV_PLIC) {
-                    if (g[j].in.num >= 124) {
-                        g[j].in.num -= 2;
+                    if (g[j].in.num >= OT_EG_V1_PLIC_IRQ_AFTER_PATTGEN) {
+                        g[j].in.num -= OT_EG_V1_PLIC_IRQ_PATTGEN_COUNT;
                     }
                 } else if (target_idx == OT_EG_SOC_DEV_ALERT_HANDLER) {
                     if (in_name && !strcmp(in_name, OT_DEVICE_ALERT)) {
                         int a = g[j].in.num;
-                        if (a >= 10 && a <= 28) {
-                            g[j].in.num = a - 1;
-                        } else if (a >= 30 && a <= 59) {
-                            g[j].in.num = a - 2;
-                        } else if (a >= 60 && a <= 64) {
-                            g[j].in.num = a - 1;
+                        if (a >= OT_EG_V1_ALERT_RANGE1_MIN &&
+                            a <= OT_EG_V1_ALERT_RANGE1_MAX) {
+                            g[j].in.num = a - OT_EG_V1_ALERT_RANGE1_SHIFT;
+                        } else if (a >= OT_EG_V1_ALERT_RANGE2_MIN &&
+                                   a <= OT_EG_V1_ALERT_RANGE2_MAX) {
+                            g[j].in.num = a - OT_EG_V1_ALERT_RANGE2_SHIFT;
+                        } else if (a >= OT_EG_V1_ALERT_RANGE3_MIN &&
+                                   a <= OT_EG_V1_ALERT_RANGE3_MAX) {
+                            g[j].in.num = a - OT_EG_V1_ALERT_RANGE3_SHIFT;
                         }
                     }
                 }
@@ -2732,7 +2769,7 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
         g_free(busname);
     }
 
-    for (unsigned i2c_idx = 0; i2c_idx < 3; i2c_idx++) {
+    for (unsigned i2c_idx = 0; i2c_idx < OT_EG_I2C_COUNT; i2c_idx++) {
         DeviceState *i2cdev =
             RISCV_OT_EG_SOC(soc)->devices[OT_EG_SOC_DEV_I2C0 + i2c_idx];
         char *busname = g_strdup_printf("ot-i2c%u", i2c_idx);
@@ -2741,7 +2778,11 @@ static void ot_eg_board_realize(DeviceState *dev, Error **errp)
 
         /* PMOD I2C Sensor / Stretch / FRAM / EEPROM targets */
         static const uint8_t pmod_sensor_addrs[] = {
-            0x10u, 0x1du, 0x22u, 0x29u, 0x30u, 0x40u, 0x51u, 0x52u, 0x59u, 0x7cu
+            OT_EG_PMOD_I2C_ADDR_ADM1191,     OT_EG_PMOD_I2C_ADDR_ADXL345,
+            OT_EG_PMOD_I2C_ADDR_STRETCH_DEV, OT_EG_PMOD_I2C_ADDR_LTR303ALS,
+            OT_EG_PMOD_I2C_ADDR_MMC34160PJ,  OT_EG_PMOD_I2C_ADDR_HDC1080,
+            OT_EG_PMOD_I2C_ADDR_FRAM_DATA,   OT_EG_PMOD_I2C_ADDR_EEPROM_DATA,
+            OT_EG_PMOD_I2C_ADDR_SGP30,       OT_EG_PMOD_I2C_ADDR_FRAM_DEVID,
         };
         for (size_t s_idx = 0; s_idx < ARRAY_SIZE(pmod_sensor_addrs); s_idx++) {
             DeviceState *sensor = qdev_new("pmod-i2c-sensor");
