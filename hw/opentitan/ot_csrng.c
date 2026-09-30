@@ -406,6 +406,34 @@ static const uint8_t OtCSRNGFsmStateCodeV2[] = {
 };
 /* clang-format on */
 
+typedef struct {
+    const uint8_t *fsm_state_codes;
+    uint32_t err_code_mask;
+    uint32_t fatal_loc_events_mask;
+    uint32_t disabled_err_mask;
+} OtCSRNGConfig;
+
+static const OtCSRNGConfig CSRNG_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .fsm_state_codes = OtCSRNGFsmStateCodeV1,
+        .err_code_mask = ERR_CODE_MASK_V1,
+        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V1,
+        .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
+    },
+    [OT_VER_DJ] = {
+        .fsm_state_codes = OtCSRNGFsmStateCodeV1,
+        .err_code_mask = ERR_CODE_MASK_V1,
+        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V1,
+        .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .fsm_state_codes = OtCSRNGFsmStateCodeV2,
+        .err_code_mask = ERR_CODE_MASK_V2,
+        .fatal_loc_events_mask = FATAL_LOC_EVENTS_MASK_V2,
+        .disabled_err_mask = 0u,
+    },
+};
+
 #define STATE_NAME_ENTRY(_st_) [_st_] = stringify(_st_)
 static const char *STATE_NAMES[] = {
     STATE_NAME_ENTRY(CSRNG_IDLE),
@@ -1926,9 +1954,7 @@ static uint64_t ot_csrng_regs_read(void *opaque, hwaddr addr, unsigned size)
         val32 = ot_csrng_read_state_db(s);
         break;
     case R_MAIN_SM_STATE: {
-        const uint8_t *fsm_codes =
-            (s->version == OT_VER_EG_2_0_0) ? OtCSRNGFsmStateCodeV2 :
-                                              OtCSRNGFsmStateCodeV1;
+        const uint8_t *fsm_codes = CSRNG_CONFIG[s->version].fsm_state_codes;
         switch (s->state) {
         case CSRNG_IDLE ... CSRNG_ERROR:
             val32 = fsm_codes[s->state];
@@ -2147,20 +2173,13 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         }
         val32 &= R_ERR_CODE_TEST_VAL_MASK;
         s->regs[R_ERR_CODE_TEST] = val32;
-        uint32_t err_code_mask =
-            (s->version == OT_VER_EG_2_0_0) ? ERR_CODE_MASK_V2 :
-                                              ERR_CODE_MASK_V1;
-        uint32_t fatal_loc_mask =
-            (s->version == OT_VER_EG_2_0_0) ? FATAL_LOC_EVENTS_MASK_V2 :
-                                              FATAL_LOC_EVENTS_MASK_V1;
-        uint32_t disabled_err_mask =
-            (s->version == OT_VER_EG_2_0_0) ? 0u :
-                                              R_ERR_CODE_CMD_GEN_CNT_ERR_MASK;
-        uint32_t err_bit = (1u << val32) & err_code_mask;
+        const OtCSRNGConfig *cfg = &CSRNG_CONFIG[s->version];
+        uint32_t err_bit = (1u << val32) & cfg->err_code_mask;
         uint32_t err_en_mask =
-            ot_csrng_is_ctrl_enabled(s) ? err_code_mask : disabled_err_mask;
+            ot_csrng_is_ctrl_enabled(s) ? cfg->err_code_mask :
+                                          cfg->disabled_err_mask;
         s->regs[R_ERR_CODE] |= err_bit & err_en_mask;
-        if (err_bit & fatal_loc_mask) {
+        if (err_bit & cfg->fatal_loc_events_mask) {
             if (ot_csrng_is_ctrl_enabled(s)) {
                 s->regs[R_ERR_CODE] |= R_ERR_CODE_MAIN_SM_ERR_MASK;
             }
@@ -2237,8 +2256,7 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->regs[R_INT_STATE_READ_ENABLE_REGWEN] = 0x1u;
     s->regs[R_INT_STATE_READ_ENABLE] = 0x7u;
     s->regs[R_MAIN_SM_STATE] =
-        (s->version == OT_VER_EG_2_0_0) ? OtCSRNGFsmStateCodeV2[CSRNG_IDLE] :
-                                          OtCSRNGFsmStateCodeV1[CSRNG_IDLE];
+        CSRNG_CONFIG[s->version].fsm_state_codes[CSRNG_IDLE];
     s->enabled = false;
     s->waiting_for_entropy = false;
     s->sw_app_granted = false;
