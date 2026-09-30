@@ -37,6 +37,7 @@
 #include "qemu/option.h"
 #include "qom/object.h"
 #include "exec/icount.h"
+#include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_otp_eg.h"
 #include "hw/opentitan/ot_otp_engine.h"
 #include "hw/opentitan/ot_otp_impl_if.h"
@@ -408,6 +409,8 @@ struct OtOTPEgState {
             MemoryRegion swcfg;
         } sub;
     } mmio;
+
+    uint8_t version;
 };
 
 struct OtOTPEgClass {
@@ -495,6 +498,7 @@ static const char *OTP_TOKEN_NAMES[] = {
 
 static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
 {
+    const OtOTPEgState *eg = OT_OTP_EG(s);
     uint32_t status = s->regs[R_STATUS] & ~0x1fffu;
 
     for (unsigned ix = 0; ix <= (R_ERR_CODE_12 - R_ERR_CODE_0); ix++) {
@@ -506,7 +510,7 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
     status =
         FIELD_DP32(status, STATUS, DAI_IDLE, !ot_otp_engine_dai_is_busy(s));
 
-    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+    if (eg->version == OT_VER_EG_2_0_0) {
         uint32_t part_err = (status & 0x7ffu) ? 1u : 0u;
         status = part_err | ((status >> 10u) & 0x3feu);
     }
@@ -517,12 +521,12 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
 static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
                                   bool is_write, MemTxAttrs attrs)
 {
-    OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
+    OtOTPEgState *eg = OT_OTP_EG(opaque);
     (void)attrs;
     if (!is_write) {
         return true;
     }
-    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+    if (eg->version == OT_VER_EG_2_0_0) {
         if (addr == 0x14u) {
             uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
             return (0x3u & ~byte_mask) == 0u;
@@ -559,12 +563,13 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
 
 static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
+    OtOTPEgState *eg = OT_OTP_EG(opaque);
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
     uint32_t val32;
 
-    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+    if (eg->version == OT_VER_EG_2_0_0) {
         if (addr == 0x14u) {
             val32 = 0u;
             for (unsigned ix = 0; ix <= (R_ERR_CODE_10 - R_ERR_CODE_0); ix++) {
@@ -648,12 +653,13 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
 static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
                                 unsigned size)
 {
+    OtOTPEgState *eg = OT_OTP_EG(opaque);
     OtOTPEngineState *s = OT_OTP_ENGINE(opaque);
     OtOTPEngineClass *c = OT_OTP_ENGINE_GET_CLASS(s);
     (void)size;
     uint32_t val32 = (uint32_t)value;
 
-    if (s->part_descs == OT_OTP_PART_DESCS_V2) {
+    if (eg->version == OT_VER_EG_2_0_0) {
         if (addr == 0x14u) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: R/O register 0x%03x (PARTITION_STATUS_0)\n",
@@ -753,7 +759,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
             c->dai_write(s);
         } else if (FIELD_EX32(val32, OT_OTP_DIRECT_ACCESS_CMD, DIGEST)) {
             c->dai_digest(s);
-        } else if ((s->part_descs == OT_OTP_PART_DESCS_V2) && (val32 & 0x8u)) {
+        } else if ((eg->version == OT_VER_EG_2_0_0) && (val32 & 0x8u)) {
             s->regs[R_DIRECT_ACCESS_RDATA_0] = 0u;
             s->regs[R_DIRECT_ACCESS_RDATA_1] = 0u;
             c->set_error(s, OTP_ENTRY_DAI, OT_OTP_ACCESS_ERROR);
@@ -1245,13 +1251,13 @@ static void ot_otp_eg_reset_enter(Object *obj, ResetType type)
 static int ot_otp_eg_check_global_v2(void *opaque, QemuOpts *opts, Error **errp)
 {
     (void)errp;
-    bool *is_v2 = opaque;
+    uint8_t *version = opaque;
     const char *driver = qemu_opt_get(opts, "driver");
     const char *prop = qemu_opt_get(opts, "property");
     const char *val = qemu_opt_get(opts, "value");
     if (driver && prop && val && !strcmp(driver, "ot-earlgrey-soc") &&
-        !strcmp(prop, "version") && !strcmp(val, "2")) {
-        *is_v2 = true;
+        !strcmp(prop, "version") && strtoul(val, NULL, 0) == OT_VER_EG_2_0_0) {
+        *version = OT_VER_EG_2_0_0;
     }
     return 0;
 }
@@ -1262,16 +1268,18 @@ static void ot_otp_eg_init(Object *obj)
     OtOTPEngineState *es = OT_OTP_ENGINE(obj);
 
     /* note: device realization is implemented in OtOTPEngineState */
-    bool is_v2 = false;
+    s->version = OT_VER_EG_1_0_0;
     QemuOptsList *optlist = qemu_find_opts("ot_device");
     if (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) {
-        is_v2 = true;
+        s->version = OT_VER_EG_2_0_0;
     }
     QemuOptsList *globlist = qemu_find_opts("global");
     if (globlist) {
-        qemu_opts_foreach(globlist, &ot_otp_eg_check_global_v2, &is_v2, NULL);
+        qemu_opts_foreach(globlist, &ot_otp_eg_check_global_v2, &s->version,
+                          NULL);
     }
-    if (is_v2) {
+    g_assert(s->version < OT_VER_COUNT);
+    if (s->version == OT_VER_EG_2_0_0) {
         es->part_descs = OT_OTP_PART_DESCS_V2;
         for (unsigned part_ix = 0; part_ix < es->part_count; part_ix++) {
             if (!es->part_descs[part_ix].buffered) {
@@ -1304,7 +1312,7 @@ static void ot_otp_eg_init(Object *obj)
     memory_region_init(&s->mmio.ctrl, obj, TYPE_OT_OTP_EG "-ctrl", 0x1000u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
-    uint64_t regs_size = (es->part_descs == OT_OTP_PART_DESCS_V2) ?
+    uint64_t regs_size = (s->version == OT_VER_EG_2_0_0) ?
                              (REGS_SIZE + sizeof(uint32_t)) :
                              REGS_SIZE;
     memory_region_init_io(&s->mmio.sub.regs, obj, &ot_otp_eg_reg_ops, s,
