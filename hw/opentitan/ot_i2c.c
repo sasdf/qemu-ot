@@ -324,6 +324,22 @@ typedef struct {
     bool sda;
 } OtI2cOvrdStep;
 
+typedef struct {
+    uint32_t thigh_tot_mask;
+} OtI2CConfig;
+
+static const OtI2CConfig I2C_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .thigh_tot_mask = 0x1fffu,
+    },
+    [OT_VER_DJ] = {
+        .thigh_tot_mask = 0xffffu,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .thigh_tot_mask = 0xffffu,
+    },
+};
+
 typedef enum {
     OT_I2C_BB_IDLE = 0,
     OT_I2C_BB_ADDR,
@@ -531,13 +547,10 @@ static uint64_t ot_i2c_get_byte_ns(const OtI2CState *s)
     uint32_t tr = FIELD_EX32(s->regs[R_TIMING1], TIMING1, T_R);
     uint32_t tf = FIELD_EX32(s->regs[R_TIMING1], TIMING1, T_F);
     /*
-     * In i2c_controller_fsm.sv, tcount_d computes t_r_i + thigh_i in 13-bit
-     * arithmetic (13'(t_r_i) + 13'(thigh_i)) on Earlgrey v1 (OT_VER_EG_1_0_0),
-     * vs 16-bit arithmetic (16'(t_r_i) + 16'(thigh_i)) on Earlgrey v2.
+     * In i2c_controller_fsm.sv, tcount_d computes t_r_i + thigh_i masked by
+     * thigh_tot_mask (13-bit 0x1fffu on Earlgrey v1, 16-bit 0xffffu on v2).
      */
-    uint32_t thigh_tot = (s->version == OT_VER_EG_1_0_0) ?
-                             ((tr + thigh) & 0x1fffu) :
-                             ((tr + thigh) & 0xffffu);
+    uint32_t thigh_tot = (tr + thigh) & I2C_CONFIG[s->version].thigh_tot_mask;
     uint32_t cycles = thigh_tot + tf + tlow;
     if (!s->pclk || !cycles) {
         return 10000ULL;
@@ -753,10 +766,11 @@ static bool ot_i2c_check_timings(OtI2CState *s)
                       __func__, s->ot_id);
         res = false;
     }
-    if (s->version == OT_VER_EG_1_0_0 && (tr + thigh) > 0x1fffu) {
+    uint32_t thigh_tot_mask = I2C_CONFIG[s->version].thigh_tot_mask;
+    if ((tr + thigh) > thigh_tot_mask) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: %s: v1 13-bit T_R + THIGH overflow (0x%x -> 0x%x)\n",
-                      __func__, s->ot_id, tr + thigh, (tr + thigh) & 0x1fffu);
+                      "%s: %s: T_R + THIGH overflow (0x%x -> 0x%x)\n", __func__,
+                      s->ot_id, tr + thigh, (tr + thigh) & thigh_tot_mask);
         res = false;
     }
 

@@ -196,6 +196,22 @@ struct OtGpioEgClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    unsigned regs_count;
+} OtGpioEgConfig;
+
+static const OtGpioEgConfig GPIO_EG_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
+    },
+    [OT_VER_DJ] = {
+        .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .regs_count = REGS_COUNT,
+    },
+};
+
 static OtGpioEgState *ot_gpio_eg_instance;
 
 static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force);
@@ -629,9 +645,7 @@ static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
     OtGpioEgState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    unsigned regs_count = (s->version == OT_VER_EG_2_0_0) ?
-                              REGS_COUNT :
-                              (R_CTRL_EN_INPUT_FILTER + 1u);
+    unsigned regs_count = GPIO_EG_CONFIG[s->version].regs_count;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     uint8_t permit =
         (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) ? 0x1u : 0xfu;

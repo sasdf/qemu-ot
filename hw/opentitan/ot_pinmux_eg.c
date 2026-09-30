@@ -174,6 +174,30 @@ static_assert((OT_PINMUX_PAD_ATTR_MASK | OT_PINMUX_PAD_ATTR_FORCE_MODE_MASK) <
               "Cannot encode PAD attr as IRQ");
 
 typedef struct {
+    uint32_t mio_pad_attr_mask;
+    uint32_t dio_pad_attr_mask;
+    uint32_t dio_usb_pad_attr_mask;
+} OtPinmuxEgConfig;
+
+static const OtPinmuxEgConfig PINMUX_EG_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .mio_pad_attr_mask = MIO_PAD_ATTR_MASK,
+        .dio_pad_attr_mask = DIO_PAD_ATTR_MASK,
+        .dio_usb_pad_attr_mask = 0x0000008du,
+    },
+    [OT_VER_DJ] = {
+        .mio_pad_attr_mask = MIO_PAD_ATTR_MASK,
+        .dio_pad_attr_mask = DIO_PAD_ATTR_MASK,
+        .dio_usb_pad_attr_mask = 0x0000008du,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .mio_pad_attr_mask = 0x00000083u,
+        .dio_pad_attr_mask = 0x00000083u,
+        .dio_usb_pad_attr_mask = 0x00000081u,
+    },
+};
+
+typedef struct {
     uint32_t alert_test;
     uint32_t mio_periph_insel_regwen[PARAM_N_MIO_PERIPH_IN];
     uint32_t mio_periph_insel[PARAM_N_MIO_PERIPH_IN];
@@ -842,8 +866,7 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, mio_pad_attr, MIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_MIO_PAD_ATTR;
             g_assert(pad_no < R_MIO_PAD_ATTR);
-            val32 &= (s->version == OT_VER_EG_2_0_0) ? 0x00000083u :
-                                                       MIO_PAD_ATTR_MASK;
+            val32 &= PINMUX_EG_CONFIG[s->version].mio_pad_attr_mask;
             regs->mio_pad_attr[pad_no] = val32;
             ot_pinmux_eg_update_pads(s);
             ot_gpio_eg_notify_sysrst_change();
@@ -860,13 +883,10 @@ static void ot_pinmux_eg_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (OT_PINMUX_EG_IS_REGWEN(reg, dio_pad_attr, DIO_PAD_ATTR)) {
             unsigned pad_no = reg - R_DIO_PAD_ATTR;
             g_assert(pad_no < PARAM_N_DIO_PADS);
-            if (s->version == OT_VER_EG_2_0_0) {
-                val32 &= (pad_no == 12u || pad_no == 13u) ? 0x00000081u :
-                                                            0x00000083u;
-            } else {
-                val32 &= (pad_no == 12u || pad_no == 13u) ? 0x0000008du :
-                                                            DIO_PAD_ATTR_MASK;
-            }
+            const OtPinmuxEgConfig *cfg = &PINMUX_EG_CONFIG[s->version];
+            val32 &= (pad_no == 12u || pad_no == 13u) ?
+                         cfg->dio_usb_pad_attr_mask :
+                         cfg->dio_pad_attr_mask;
             regs->dio_pad_attr[pad_no] = val32;
             ibex_irq_set(&s->dios[pad_no], PAD_ATTR_TO_IRQ(val32));
             ot_pinmux_eg_update_sysrst_inputs(s);
