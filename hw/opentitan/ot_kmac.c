@@ -823,8 +823,9 @@ static void ot_kmac_process(void *opaque)
                     if (cfg->mode == OT_KMAC_MODE_KMAC) {
                         uint8_t enc_out_len[3];
                         uint32_t output_length =
-                            s->version >= 2u ? 512u :
-                                               (OT_KMAC_APP_DIGEST_BYTES * 8u);
+                            (s->version == OT_VER_EG_2_0_0) ?
+                                512u :
+                                (OT_KMAC_APP_DIGEST_BYTES * 8u);
                         enc_out_len[0] = (output_length >> 8u) & 0xffu;
                         enc_out_len[1] = output_length & 0xffu;
                         enc_out_len[2] = 2u;
@@ -1783,7 +1784,7 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
          * 0x00e019
          */
         uint32_t err_info;
-        if (s->version >= 2u) {
+        if (s->version == OT_VER_EG_2_0_0) {
             err_info = s->current_app ? 0x00e019u : 0x00a514u;
         } else {
             err_info = s->current_app ? 0x008b19u : 0x00be14u;
@@ -1949,7 +1950,7 @@ static const Property ot_kmac_properties[] = {
     DEFINE_PROP_LINK("edn", OtKMACState, edn, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_UINT8("edn-ep", OtKMACState, edn_ep, UINT8_MAX),
     DEFINE_PROP_UINT8("num-app", OtKMACState, num_app, 0),
-    DEFINE_PROP_UINT8("version", OtKMACState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtKMACState, version, OT_VER_EG_1_0_0),
 };
 
 static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
@@ -2110,6 +2111,7 @@ static void ot_kmac_realize(DeviceState *dev, Error **errp)
     g_assert(s->ot_id);
     g_assert(s->clock_name);
     g_assert(s->clock_src);
+    g_assert(s->version < OT_VER_COUNT);
 
     /* make sure num-app property is set */
     g_assert(s->num_app > 0);
