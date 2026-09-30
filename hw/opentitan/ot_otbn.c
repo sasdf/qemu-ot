@@ -623,12 +623,12 @@ static uint32_t ot_otbn_sync_proxy(OtOTBNState *s)
     } while (aio_bh_poll(qemu_get_aio_context()) > 0);
     status = ot_otbn_proxy_get_status(s->proxy);
 
+    int64_t elapsed_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns;
+    uint32_t insn_cnt = ot_otbn_proxy_get_instruction_count(s->proxy);
+    bool exec_in_progress = (elapsed_ns >= 500000LL) && (insn_cnt < 5000u);
     bool wait_for_worker =
         (status != OT_OTBN_STATUS_IDLE) &&
-        ((status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) ||
-         ((qemu_clock_get_ns(OT_VIRTUAL_CLOCK) - s->exec_start_ns >=
-           500000ULL) &&
-          ot_otbn_proxy_get_instruction_count(s->proxy) < 5000u));
+        ((status == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) || exec_in_progress);
 
     if (wait_for_worker) {
         for (int i = 0; i < 50; i++) {
@@ -704,20 +704,22 @@ static uint64_t ot_otbn_regs_read(void *opaque, hwaddr addr, unsigned size)
     case R_CTRL:
         val32 = (uint32_t)ot_otbn_proxy_get_ctrl(s->proxy);
         break;
-    case R_STATUS:
+    case R_STATUS: {
         if (s->lc_escalated) {
             val32 = OT_OTBN_STATUS_LOCKED;
             break;
         }
         val32 = ot_otbn_sync_proxy(s);
-        if ((val32 == OT_OTBN_STATUS_IDLE || val32 == OT_OTBN_STATUS_PAUSED ||
-             val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT) &&
-            (s->last_cmd == OT_OTBN_CMD_EXECUTE ||
-             s->last_cmd == OT_OTBN_CMD_RESUME ||
-             (s->proxy_defer && timer_pending(s->proxy_defer)))) {
+        bool proxy_finished = (val32 == OT_OTBN_STATUS_IDLE) ||
+                              (val32 == OT_OTBN_STATUS_PAUSED) ||
+                              (val32 == OT_OTBN_STATUS_BUSY_SEC_WIPE_INT);
+        bool defer_active = (s->last_cmd == OT_OTBN_CMD_EXECUTE) ||
+                            (s->last_cmd == OT_OTBN_CMD_RESUME) ||
+                            (s->proxy_defer && timer_pending(s->proxy_defer));
+        if (proxy_finished && defer_active) {
             val32 = OT_OTBN_STATUS_BUSY_EXECUTE;
         }
-        break;
+    } break;
     case R_ERR_BITS:
         val32 = ot_otbn_proxy_get_err_bits(s->proxy) |
                 (s->errbits & R_ERR_BITS_LIFECYCLE_ESCALATION_MASK);
