@@ -399,8 +399,8 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
                 FIELD_EX32(s->regs[R_CFG0], CFG0, PRESCALE);
             uint64_t pclk_ticks = muldiv64((uint64_t)(now - s->origin_ns),
                                            s->pclk, NANOSECONDS_PER_SECOND);
-            uint32_t tick_count =
-                (uint32_t)(pclk_ticks % (old_prescaler + 1u)) & 0xfffu;
+            uint32_t tick_count = (uint32_t)(pclk_ticks % (old_prescaler + 1u));
+            tick_count &= R_CFG0_PRESCALE_MASK;
             if (tick_count > FIELD_EX32(val32, CFG0, PRESCALE)) {
                 /*
                  * In hw/ip/rv_timer/rtl/timer_core.sv:32, 39, tick_count only
@@ -410,7 +410,8 @@ static void ot_timer_write(void *opaque, hwaddr addr, uint64_t value,
                  * clock cycle until tick_count wraps 0xfff -> 0x000
                  * (4096 - tick_count cycles).
                  */
-                s->runaway_rem_cycles = 4096u - tick_count;
+                s->runaway_rem_cycles =
+                    (1u << R_CFG0_PRESCALE_LENGTH) - tick_count;
             }
             s->regs[R_TIMER_V_LOWER0] = (uint32_t)mtime;
             s->regs[R_TIMER_V_UPPER0] = (uint32_t)(mtime >> 32u);
