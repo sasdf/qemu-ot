@@ -322,10 +322,11 @@ static uint32_t
 ot_clkmgr_get_clock_count(OtClkMgrState *s, const OtClkMgrClock *clk)
 {
     const OtClkMgrClock *target_clk = clk;
-    if (s->lc_hw_debug_en && FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
-                                        SEL) == OT_MULTIBITBOOL4_TRUE) {
-        bool hi_speed = (FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL,
-                                    HI_SPEED_SEL) == OT_MULTIBITBOOL4_TRUE);
+    uint32_t ext_sel = FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL);
+    if (s->lc_hw_debug_en && ext_sel == OT_MULTIBITBOOL4_TRUE) {
+        uint32_t hi_sel =
+            FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, HI_SPEED_SEL);
+        bool hi_speed = (hi_sel == OT_MULTIBITBOOL4_TRUE);
         if (!hi_speed) {
             if (!strcmp(clk->name, "io")) {
                 const OtClkMgrClock *io_div2 =
@@ -345,9 +346,10 @@ ot_clkmgr_get_clock_count(OtClkMgrState *s, const OtClkMgrClock *clk)
     }
 
     const OtClkMgrClock *ref = ot_clkmgr_find_clock(s->clocks, s->cfg_refclock);
-    uint32_t ratio = (ref && ref->frequency && target_clk->frequency) ?
-                         (target_clk->frequency / ref->frequency) :
-                         target_clk->ratio;
+    uint32_t ratio = target_clk->ratio;
+    if (ref && ref->frequency && target_clk->frequency) {
+        ratio = target_clk->frequency / ref->frequency;
+    }
     return ratio > 0 ? (ratio - 1u) : 0u;
 }
 
@@ -1258,10 +1260,10 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
             val32 &= R_EXTCLK_CTRL_SEL_MASK | R_EXTCLK_CTRL_HI_SPEED_SEL_MASK;
             s->regs[reg] = val32;
             uint32_t sel = FIELD_EX32(val32, EXTCLK_CTRL, SEL);
+            bool extclk_en =
+                s->lc_hw_debug_en && (sel == OT_MULTIBITBOOL4_TRUE);
             s->regs[R_EXTCLK_STATUS] =
-                (s->lc_hw_debug_en && sel == OT_MULTIBITBOOL4_TRUE) ?
-                    OT_MULTIBITBOOL4_TRUE :
-                    OT_MULTIBITBOOL4_FALSE;
+                extclk_en ? OT_MULTIBITBOOL4_TRUE : OT_MULTIBITBOOL4_FALSE;
             for (unsigned ix = 0; ix < s->measure_count; ix++) {
                 ot_clkmgr_check_measurement(s, ix);
             }
@@ -1382,16 +1384,16 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
                              pc);
 
     switch (reg_err) {
-    case R_RECOV_ERR_CODE:
-        val32 &= (1u << ((R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_SHIFT + 1u +
-                          (s->measure_count * 2u)))) -
-                 1u;
+    case R_RECOV_ERR_CODE: {
+        unsigned err_bits = R_RECOV_ERR_CODE_SHADOW_UPDATE_ERR_SHIFT + 1u +
+                            (s->measure_count * 2u);
+        val32 &= (1u << err_bits) - 1u;
         s->regs[reg_err] &= ~val32; /* RW1C */
         for (unsigned ix = 0; ix < s->measure_count; ix++) {
             ot_clkmgr_check_measurement(s, ix);
         }
         ot_clkmgr_update_alerts(s);
-        break;
+    } break;
     case R_FATAL_ERR_CODE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: R/O register 0x%02x (%s)\n",
                       __func__, (uint32_t)addr, REG_NAME(reg));
@@ -1583,10 +1585,9 @@ static void ot_clkmgr_lc_hw_debug_en(void *opaque, int irq, int level)
 
     s->lc_hw_debug_en = (bool)level;
     uint32_t sel = FIELD_EX32(s->regs[R_EXTCLK_CTRL], EXTCLK_CTRL, SEL);
+    bool extclk_en = s->lc_hw_debug_en && (sel == OT_MULTIBITBOOL4_TRUE);
     s->regs[R_EXTCLK_STATUS] =
-        (s->lc_hw_debug_en && sel == OT_MULTIBITBOOL4_TRUE) ?
-            OT_MULTIBITBOOL4_TRUE :
-            OT_MULTIBITBOOL4_FALSE;
+        extclk_en ? OT_MULTIBITBOOL4_TRUE : OT_MULTIBITBOOL4_FALSE;
     for (unsigned ix = 0; ix < s->measure_count; ix++) {
         ot_clkmgr_check_measurement(s, ix);
     }
