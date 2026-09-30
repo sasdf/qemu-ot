@@ -2021,16 +2021,16 @@ static bool ot_spi_device_spi_regs_accepts(
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit =
-        ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) ?
-            0x1u :
-        (reg == R_JEDEC_CC || reg == R_READ_THRESHOLD ||
-         reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) ?
-            0x3u :
-        (reg == R_FLASH_STATUS || reg == R_JEDEC_ID ||
-         reg == R_UPLOAD_STATUS2) ?
-            0x7u :
-            0xfu;
+    uint8_t permit = 0xfu;
+    if ((reg <= R_STATUS && reg != R_CFG) || reg == R_INTERCEPT_EN) {
+        permit = 0x1u;
+    } else if (reg == R_JEDEC_CC || reg == R_READ_THRESHOLD ||
+               reg == R_UPLOAD_STATUS || reg == R_UPLOAD_CMDFIFO) {
+        permit = 0x3u;
+    } else if (reg == R_FLASH_STATUS || reg == R_JEDEC_ID ||
+               reg == R_UPLOAD_STATUS2) {
+        permit = 0x7u;
+    }
     return reg < SPI_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
 
@@ -2443,13 +2443,14 @@ static bool ot_spi_device_tpm_regs_accepts(
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit =
-        (reg == R_TPM_CAP) ?
-            0x7u :
-        (reg == R_TPM_CFG || reg == R_TPM_STATUS || reg == R_TPM_ACCESS_1 ||
-         reg == R_TPM_INT_VECTOR || reg == R_TPM_RID) ?
-            0x1u :
-            0xfu;
+    uint8_t permit = 0xfu;
+    if (reg == R_TPM_CAP) {
+        permit = 0x7u;
+    } else if (reg == R_TPM_CFG || reg == R_TPM_STATUS ||
+               reg == R_TPM_ACCESS_1 || reg == R_TPM_INT_VECTOR ||
+               reg == R_TPM_RID) {
+        permit = 0x1u;
+    }
     return reg < TPM_REGS_COUNT && (!is_write || (permit & ~reg_be) == 0u);
 }
 
