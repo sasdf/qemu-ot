@@ -951,13 +951,15 @@ static bool trans_fence(DisasContext *ctx, arg_fence *a)
     return true;
 }
 
+#define IBEX_IC_SCR_KEY_INVAL_CNT 2
+
 static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
 {
     if (!ctx->cfg_ptr->ext_zifencei) {
         return false;
     }
 
-    tcg_gen_st_i32(tcg_constant_i32(2), tcg_env,
+    tcg_gen_st_i32(tcg_constant_i32(IBEX_IC_SCR_KEY_INVAL_CNT), tcg_env,
                    offsetof(CPURISCVState, ic_scr_key_inval_cnt));
 
     /*
