@@ -198,6 +198,27 @@ fn process_opcode_custom1<T: insn_proc::InstructionProcessor>(
     }
 }
 
+const SYSTEM_IMM12_ECALL: u32 = 0x000;
+const SYSTEM_IMM12_WFI: u32 = 0x105;
+const OPCODE_BIGNUM_VEC: u32 = 0b101_1011;
+
+const BIGNUM_VEC_FUNCT3_ARITH: u32 = 0b000;
+const BIGNUM_VEC_FUNCT3_MULV: u32 = 0b011;
+const BIGNUM_VEC_FUNCT3_MULVM: u32 = 0b100;
+const BIGNUM_VEC_FUNCT3_TRN: u32 = 0b101;
+const BIGNUM_VEC_FUNCT3_PACK: u32 = 0b110;
+const BIGNUM_VEC_FUNCT3_SHV: u32 = 0b111;
+
+const BIGNUM_VEC_ALU_ELEN_MASK: u32 = 0b11;
+const BIGNUM_VEC_ALU_ELEN_32: u32 = 0b00;
+const BIGNUM_VEC_ALU_ELEN_RSVD: u32 = 0b11;
+const BIGNUM_VEC_MAC_ELEN_MASK: u32 = 0b1;
+const BIGNUM_VEC_MAC_ELEN_32: u32 = 0;
+
+const BIGNUM_VEC_FUNCT7_LANE_BIT: u32 = 2;
+const BIGNUM_VEC_FUNCT7_MOD_BIT: u32 = 3;
+const BIGNUM_VEC_FUNCT7_OP_SEL_BIT: u32 = 5;
+
 fn process_opcode_system<T: insn_proc::InstructionProcessor>(
     processor: &mut T,
     insn_bits: u32,
@@ -208,9 +229,9 @@ fn process_opcode_system<T: insn_proc::InstructionProcessor>(
         0b000 => {
             if dec_insn.rd != 0 || dec_insn.rs1 != 0 {
                 None
-            } else if dec_insn.csr == 0x000 {
+            } else if dec_insn.csr == SYSTEM_IMM12_ECALL {
                 Some(processor.process_ecall())
-            } else if dec_insn.csr == 0x105 {
+            } else if dec_insn.csr == SYSTEM_IMM12_WFI {
                 Some(processor.process_wfi())
             } else {
                 None
@@ -280,7 +301,7 @@ pub fn decoder<T: insn_proc::InstructionProcessor>(
         // this one is suspicious, should not it be custom-2 (0b10_110_11) instead?
         0b011_1011 => process_opcode_op32(processor, insn_bits),
         // custom-2 / BignumVec
-        0b101_1011 => process_opcode_bignum_vec(processor, insn_bits),
+        OPCODE_BIGNUM_VEC => process_opcode_bignum_vec(processor, insn_bits),
         // BRANCH
         0b110_0011 => process_opcode_branch(processor, insn_bits),
         // JALR
@@ -300,16 +321,18 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
     insn_bits: u32,
 ) -> Option<T::InstructionResult> {
     let dec_insn = insn_format::RType::new(insn_bits);
-    let alu_elen_raw = dec_insn.funct7 & 0b11;
-    let mac_vec_elen_raw = dec_insn.funct7 & 0b1;
+    let alu_elen_raw = dec_insn.funct7 & BIGNUM_VEC_ALU_ELEN_MASK;
+    let mac_vec_elen_raw = dec_insn.funct7 & BIGNUM_VEC_MAC_ELEN_MASK;
 
     match dec_insn.funct3 {
-        0b000 => {
-            if alu_elen_raw != 0b00 {
+        BIGNUM_VEC_FUNCT3_ARITH => {
+            if alu_elen_raw != BIGNUM_VEC_ALU_ELEN_32 {
                 return None;
             }
-            let is_mod = ((dec_insn.funct7 >> 3) & 0b1) != 0;
-            let is_sub = ((dec_insn.funct7 >> 5) & 0b1) != 0;
+            let is_mod =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_MOD_BIT) & 1) != 0;
+            let is_sub =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_OP_SEL_BIT) & 1) != 0;
             match (is_sub, is_mod) {
                 (false, false) => Some(processor.process_bn_addv(dec_insn)),
                 (false, true) => Some(processor.process_bn_addvm(dec_insn)),
@@ -317,49 +340,53 @@ fn process_opcode_bignum_vec<T: insn_proc::InstructionProcessor>(
                 (true, true) => Some(processor.process_bn_subvm(dec_insn)),
             }
         }
-        0b011 => {
-            if mac_vec_elen_raw != 0 {
+        BIGNUM_VEC_FUNCT3_MULV => {
+            if mac_vec_elen_raw != BIGNUM_VEC_MAC_ELEN_32 {
                 return None;
             }
-            let is_lane = ((dec_insn.funct7 >> 2) & 0b1) != 0;
+            let is_lane =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_LANE_BIT) & 1) != 0;
             if is_lane {
                 Some(processor.process_bn_mulvl(dec_insn))
             } else {
                 Some(processor.process_bn_mulv(dec_insn))
             }
         }
-        0b100 => {
-            if mac_vec_elen_raw != 0 {
+        BIGNUM_VEC_FUNCT3_MULVM => {
+            if mac_vec_elen_raw != BIGNUM_VEC_MAC_ELEN_32 {
                 return None;
             }
-            let is_lane = ((dec_insn.funct7 >> 2) & 0b1) != 0;
+            let is_lane =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_LANE_BIT) & 1) != 0;
             if is_lane {
                 Some(processor.process_bn_mulvml(dec_insn))
             } else {
                 Some(processor.process_bn_mulvm(dec_insn))
             }
         }
-        0b101 => {
-            if alu_elen_raw == 0b11 {
+        BIGNUM_VEC_FUNCT3_TRN => {
+            if alu_elen_raw == BIGNUM_VEC_ALU_ELEN_RSVD {
                 return None;
             }
-            let is_trn2 = ((dec_insn.funct7 >> 5) & 0b1) != 0;
+            let is_trn2 =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_OP_SEL_BIT) & 1) != 0;
             if is_trn2 {
                 Some(processor.process_bn_trn2(dec_insn))
             } else {
                 Some(processor.process_bn_trn1(dec_insn))
             }
         }
-        0b110 => {
-            let is_pack = ((dec_insn.funct7 >> 5) & 0b1) != 0;
+        BIGNUM_VEC_FUNCT3_PACK => {
+            let is_pack =
+                ((dec_insn.funct7 >> BIGNUM_VEC_FUNCT7_OP_SEL_BIT) & 1) != 0;
             if is_pack {
                 Some(processor.process_bn_pack(dec_insn))
             } else {
                 Some(processor.process_bn_unpk(dec_insn))
             }
         }
-        0b111 => {
-            if alu_elen_raw != 0b00 {
+        BIGNUM_VEC_FUNCT3_SHV => {
+            if alu_elen_raw != BIGNUM_VEC_ALU_ELEN_32 {
                 return None;
             }
             Some(processor.process_bn_shv(dec_insn))
