@@ -67,7 +67,9 @@ typedef enum {
 
 #define I2C_PROXY_PROTO_VERSION 0x01u
 
-#define I2C_PROXY_STALL_NS 100000u /* 100us */
+#define I2C_PROXY_STALL_NS        100000u /* 100us */
+#define I2C_PROXY_STOP_WAIT_TICKS 200000u
+#define I2C_PROXY_SDA_MIO_PAD     7u /* IOA7 */
 
 struct OtI2CHostProxyState {
     I2CSlave parent_obj;
@@ -126,7 +128,7 @@ static void
 ot_i2c_host_proxy_start_transfer(OtI2CHostProxyState *s, bool read_transfer)
 {
     s->pending_op = PROXY_PENDING_NONE;
-    if (ot_pinmux_eg_trigger_mio_wkup(7u)) {
+    if (ot_pinmux_eg_trigger_mio_wkup(I2C_PROXY_SDA_MIO_PAD)) {
         ot_i2c_host_proxy_put_nack(s);
         s->parser_state = CMD_I2C_INIT;
         ot_i2c_host_proxy_stall(s);
@@ -222,11 +224,11 @@ static void ot_i2c_host_proxy_command_byte(OtI2CHostProxyState *s, uint8_t byte)
             }
             if (byte == 'P') {
                 s->parser_state = CMD_I2C_INIT;
-                s->stop_wait_ticks = 200000u;
+                s->stop_wait_ticks = I2C_PROXY_STOP_WAIT_TICKS;
                 i2c_end_transfer(s->bus);
             } else {
                 s->parser_state = CMD_I2C_REPEATED_START;
-                s->stop_wait_ticks = 200000u;
+                s->stop_wait_ticks = I2C_PROXY_STOP_WAIT_TICKS;
                 ot_i2c_bus_target_repeated_start(s->bus);
             }
             ot_i2c_host_proxy_stall(s);
