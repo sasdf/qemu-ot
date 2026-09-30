@@ -947,11 +947,12 @@ static uint64_t ot_i2c_read(void *opaque, hwaddr addr, unsigned size)
         }
         ot_i2c_update_fmt_threshold(s);
         uint32_t fmt_depth = ot_i2c_get_fmt_depth(s);
-        val32 = FIELD_DP32(val32, STATUS, HOSTIDLE,
-                           !i2c_bus_busy(s->bus) &&
-                               (!ot_i2c_host_enabled(s) || fmt_depth == 0));
-        val32 = FIELD_DP32(val32, STATUS, TARGETIDLE,
-                           !s->in_target_transfer && !i2c_bus_busy(s->bus));
+        bool bus_busy = i2c_bus_busy(s->bus);
+        bool host_idle =
+            !bus_busy && (!ot_i2c_host_enabled(s) || fmt_depth == 0);
+        bool target_idle = !s->in_target_transfer && !bus_busy;
+        val32 = FIELD_DP32(val32, STATUS, HOSTIDLE, host_idle);
+        val32 = FIELD_DP32(val32, STATUS, TARGETIDLE, target_idle);
 
         /* Report host TX FIFO status. */
         if (fmt_depth == 0) {
@@ -1725,22 +1726,24 @@ bool ot_i2c_bus_target_is_stretching(I2CBus *bus)
 {
     OtI2CState *s = OT_I2C(BUS(bus)->parent);
     if (s->cmd_complete_stretching) {
+        bool cmd_complete_pending =
+            (s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) != 0;
+        bool cmd_complete_en =
+            (s->regs[R_INTR_ENABLE] & INTR_CMD_COMPLETE_MASK) != 0;
+        bool acq_empty = ot_fifo32_is_empty(&s->target_rx_fifo);
         if (s->cmd_complete_wait_reenable) {
-            if (!(s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
-                (s->regs[R_INTR_ENABLE] & INTR_CMD_COMPLETE_MASK) &&
-                (s->in_target_transfer ||
-                 ot_fifo32_is_empty(&s->target_rx_fifo))) {
+            if (!cmd_complete_pending && cmd_complete_en &&
+                (s->in_target_transfer || acq_empty)) {
                 s->cmd_complete_stretching = false;
             }
-        } else if (!(!s->in_target_transfer &&
-                     (s->regs[R_INTR_STATE] & INTR_CMD_COMPLETE_MASK) &&
-                     !ot_fifo32_is_empty(&s->target_rx_fifo))) {
+        } else if (s->in_target_transfer || !cmd_complete_pending ||
+                   acq_empty) {
             s->cmd_complete_stretching = false;
         }
     }
+    bool acq_full = ot_fifo32_num_used(&s->target_rx_fifo) >= 64u;
     return s->ack_ctrl_stretching || s->tx_stretching ||
-           s->cmd_complete_stretching ||
-           (ot_fifo32_num_used(&s->target_rx_fifo) >= 64u);
+           s->cmd_complete_stretching || acq_full;
 }
 
 int ot_i2c_bus_target_get_last_ack(I2CBus *bus)
@@ -2326,12 +2329,17 @@ static int pmod_i2c_sensor_send(I2CSlave *i2c, uint8_t data)
     }
     uint8_t asize = (addr == 0x51u || addr == 0x52u) ? 2u : 1u;
     if (s->addr_bytes < asize) {
-        uint8_t mapped = (addr == 0x40u) ? (uint8_t)(data << 1u) :
-                         (addr == 0x22u && data == 0xcfu) ? 0x00u :
-                                                            data;
-        s->reg_ptr = (s->addr_bytes == 0) ?
-                         mapped :
-                         ((s->reg_ptr << 8u) | mapped) & 0x7ffu;
+        uint8_t mapped = data;
+        if (addr == 0x40u) {
+            mapped = (uint8_t)(data << 1u);
+        } else if (addr == 0x22u && data == 0xcfu) {
+            mapped = 0x00u;
+        }
+        if (s->addr_bytes == 0) {
+            s->reg_ptr = mapped;
+        } else {
+            s->reg_ptr = ((s->reg_ptr << 8u) | mapped) & 0x7ffu;
+        }
         s->addr_bytes++;
         return 0;
     }
