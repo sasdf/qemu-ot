@@ -688,7 +688,11 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_DEVLINK("i2c0", I2C0),
             OT_EG_SOC_DEVLINK("i2c1", I2C1),
             OT_EG_SOC_DEVLINK("i2c2", I2C2)
-        )
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio"),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
+        ),
     },
     [OT_EG_SOC_DEV_SPI_DEVICE] = {
         .type = TYPE_OT_SPI_DEVICE,
@@ -724,7 +728,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c0"),
-            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4")
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 77),
@@ -756,7 +761,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c1"),
-            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4")
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 92),
@@ -788,7 +794,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c2"),
-            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4")
+            IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
         .gpio = IBEXGPIOCONNDEFS(
             OT_EG_SOC_GPIO_SYSBUS_IRQ(0, PLIC, 107),
@@ -1248,7 +1255,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_IN, 29, GPIO, OT_GPIO_IN, 29),
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_IN, 30, GPIO, OT_GPIO_IN, 30),
             OT_EG_SOC_SIGNAL(OT_PINMUX_GPIO_IN, 31, GPIO, OT_GPIO_IN, 31)
-        )
+        ),
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
+        ),
     },
     [OT_EG_SOC_DEV_AON_TIMER] = {
         .type = TYPE_OT_AON_TIMER,
@@ -1271,7 +1281,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "timers.io_div4"),
-            IBEX_DEV_STRING_PROP("clock-name-aon", "timers.aon")
+            IBEX_DEV_STRING_PROP("clock-name-aon", "timers.aon"),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_AST] = {
@@ -1354,7 +1365,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "trans.aes"),
-            IBEX_DEV_UINT_PROP("edn-ep", 5u)
+            IBEX_DEV_UINT_PROP("edn-ep", 5u),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_HMAC] = {
@@ -1416,7 +1428,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "trans.otbn"),
             IBEX_DEV_UINT_PROP("edn-u-ep", 6u),
-            IBEX_DEV_UINT_PROP("edn-r-ep", 0u)
+            IBEX_DEV_UINT_PROP("edn-r-ep", 0u),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_KEYMGR] = {
@@ -1579,7 +1592,8 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
-            IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS)
+            IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS),
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_RV_DM] = {
@@ -1850,7 +1864,9 @@ static void ot_eg_soc_hart_configure(DeviceState *dev, const IbexDeviceDef *def,
 
     OtEGSoCState *soc = RISCV_OT_EG_SOC(parent);
     const uint32_t *addrs =
-        (soc->version == 2u) ? ot_eg_v2_pmp_addrs : ot_eg_pmp_addrs;
+        (soc->version == OT_VER_EG_1_0_0) ?
+            ot_eg_pmp_addrs :
+            ot_eg_v2_pmp_addrs;
     pmp_addr = qlist_new();
     for (unsigned ix = 0; ix < ARRAY_SIZE(ot_eg_pmp_addrs); ix++) {
         qlist_append_int(pmp_addr, addrs[ix]);
@@ -2079,13 +2095,13 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_PINMUX] = {
         .type = TYPE_OT_PINMUX_EG,
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_SPI_HOST0] = {
@@ -2108,21 +2124,21 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c0"),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_I2C1] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c1"),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_I2C2] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "i2c2"),
             IBEX_DEV_STRING_PROP("clock-name", "peri.io_div4"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_ALERT_HANDLER] = {
@@ -2230,14 +2246,14 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "timers.io_div4"),
             IBEX_DEV_STRING_PROP("clock-name-aon", "timers.aon"),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_AES] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "trans.aes"),
             IBEX_DEV_UINT_PROP("edn-ep", 5u),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_KMAC] = {
@@ -2253,7 +2269,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_STRING_PROP("clock-name", "trans.otbn"),
             IBEX_DEV_UINT_PROP("edn-u-ep", 6u),
             IBEX_DEV_UINT_PROP("edn-r-ep", 0u),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_AST] = {
@@ -2273,7 +2289,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_UINT_PROP("edn-ep", 7u),
             IBEX_DEV_UINT_PROP("num-regions", OT_EG_IBEX_WRAPPER_NUM_REGIONS),
-            IBEX_DEV_UINT_PROP("version", 2u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_RRAM_MACRO] = {
@@ -2314,15 +2330,6 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_UINT_PROP("size", 0x9800u),
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "ram_meta"),
             IBEX_DEV_BOOL_PROP("ifetch", false)
-        ),
-    },
-    [OT_EG_SOC_DEV_LC_CTRL] = {
-        .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("kmac-app", 1u),
-            IBEX_DEV_UINT_PROP("revision_id", 0x1u),
-            IBEX_DEV_BOOL_PROP("volatile_raw_unlock", false),
-            IBEX_DEV_UINT_PROP("product_id", 0x0010u),
-            IBEX_DEV_UINT_PROP("silicon_creator_id", 0x4001u)
         ),
     },
     [OT_EG_SOC_DEV_CHERIOT] = {
@@ -2431,6 +2438,8 @@ static const IbexDeviceDef *ot_eg_soc_get_v2_devices(size_t *count)
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_ENTROPY_SRC].prop;
         v2_devs[OT_EG_SOC_DEV_PWRMGR].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_PWRMGR].prop;
+        v2_devs[OT_EG_SOC_DEV_RSTMGR].prop =
+            ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_RSTMGR].prop;
         v2_devs[OT_EG_SOC_DEV_CLKMGR].prop =
             ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_CLKMGR].prop;
         v2_devs[OT_EG_SOC_DEV_AON_TIMER].prop =
@@ -2483,16 +2492,18 @@ static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
     OtEGSoCState *s = RISCV_OT_EG_SOC(dev);
     (void)errp;
 
-    if (!s->version) {
+    if (s->version == UINT8_MAX) {
         QemuOptsList *optlist = qemu_find_opts("ot_device");
-        s->version =
-            (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) ? 2u : 1u;
+        s->version = (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) ?
+                         OT_VER_EG_2_0_0 :
+                         OT_VER_EG_1_0_0;
     }
+    g_assert(s->version < OT_VER_COUNT && s->version != OT_VER_DJ);
 
     size_t dev_count = ARRAY_SIZE(ot_eg_soc_devices);
     const IbexDeviceDef *defs =
-        (s->version == 2u) ? ot_eg_soc_get_v2_devices(&dev_count) :
-                             ot_eg_soc_devices;
+        (s->version == OT_VER_EG_1_0_0) ? ot_eg_soc_devices :
+                                          ot_eg_soc_get_v2_devices(&dev_count);
 
     s->devices = ibex_create_devices(defs, dev_count, DEVICE(s));
 
@@ -2547,7 +2558,7 @@ static void ot_eg_soc_init(Object *obj)
 }
 
 static const Property ot_eg_soc_properties[] = {
-    DEFINE_PROP_UINT8("version", OtEGSoCState, version, 0u),
+    DEFINE_PROP_UINT8("version", OtEGSoCState, version, UINT8_MAX),
 };
 
 static void ot_eg_soc_class_init(ObjectClass *oc, const void *data)
