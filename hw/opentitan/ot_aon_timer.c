@@ -80,6 +80,14 @@ REG32(WKUP_CAUSE, 0x34u)
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
+#define WKUP_PRESCALER_PERIOD        (1u << R_WKUP_CTRL_PRESCALER_LENGTH)
+#define AON_TIMER_CDC_READ_MIN_TICKS 2u
+#define AON_TIMER_CDC_READ_MAX_TICKS 4u
+
+#define AON_TIMER_PERMIT_1B 0x1u
+#define AON_TIMER_PERMIT_2B 0x3u
+#define AON_TIMER_PERMIT_4B 0xfu
+
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
 static const char REG_NAMES[REGS_COUNT][20u] = {
     /* clang-format off */
@@ -247,7 +255,7 @@ static uint32_t ot_aon_timer_first_wkup_incr_clks(const OtAonTimerState *s)
     if (s->prescale_count <= prescaler) {
         return (prescaler - s->prescale_count) + 1u;
     }
-    return (4096u - s->prescale_count) + prescaler + 1u;
+    return (WKUP_PRESCALER_PERIOD - s->prescale_count) + prescaler + 1u;
 }
 
 static void ot_aon_timer_sync_wkup(OtAonTimerState *s)
@@ -284,8 +292,8 @@ static void ot_aon_timer_sync_wkup(OtAonTimerState *s)
 
     if (elapsed_clks < first_incr_clks) {
         wkup_incrs = 0u;
-        s->prescale_count =
-            (s->prescale_count + (uint32_t)elapsed_clks) & 0xfffu;
+        s->prescale_count = (s->prescale_count + (uint32_t)elapsed_clks) &
+                            R_WKUP_CTRL_PRESCALER_MASK;
         s->wkup_intr_level = false;
     } else {
         uint64_t rem = elapsed_clks - first_incr_clks;
@@ -439,7 +447,9 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
         s->wkup_intr_level && prescaler == 0u && count >= threshold;
     bool intr_done = intr_set || continuous_high;
     bool cause_set = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
-    uint64_t max_incrs = (INT64_MAX / 5000u) / (prescaler + 1u);
+    uint64_t tick_ns =
+        MAX(1u, NANOSECONDS_PER_SECOND / s->pclks[OT_AON_TIMER_CLOCK_SRC_AON]);
+    uint64_t max_incrs = ((uint64_t)INT64_MAX / tick_ns) / (prescaler + 1u);
     bool within_horizon =
         (threshold <= count) || ((threshold - count) <= max_incrs);
 
@@ -584,13 +594,20 @@ static void ot_aon_timer_lc_escalate(void *opaque, int irq, int level)
  * (i.e. (PERMIT & ~reg_be) != 0).
  */
 static const uint8_t AON_TIMER_PERMIT[REGS_COUNT] = {
-    [R_ALERT_TEST] = 0x1u,      [R_WKUP_CTRL] = 0x3u,
-    [R_WKUP_THOLD_HI] = 0xfu,   [R_WKUP_THOLD_LO] = 0xfu,
-    [R_WKUP_COUNT_HI] = 0xfu,   [R_WKUP_COUNT_LO] = 0xfu,
-    [R_WDOG_REGWEN] = 0x1u,     [R_WDOG_CTRL] = 0x1u,
-    [R_WDOG_BARK_THOLD] = 0xfu, [R_WDOG_BITE_THOLD] = 0xfu,
-    [R_WDOG_COUNT] = 0xfu,      [R_INTR_STATE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,       [R_WKUP_CAUSE] = 0x1u,
+    [R_ALERT_TEST] = AON_TIMER_PERMIT_1B,
+    [R_WKUP_CTRL] = AON_TIMER_PERMIT_2B,
+    [R_WKUP_THOLD_HI] = AON_TIMER_PERMIT_4B,
+    [R_WKUP_THOLD_LO] = AON_TIMER_PERMIT_4B,
+    [R_WKUP_COUNT_HI] = AON_TIMER_PERMIT_4B,
+    [R_WKUP_COUNT_LO] = AON_TIMER_PERMIT_4B,
+    [R_WDOG_REGWEN] = AON_TIMER_PERMIT_1B,
+    [R_WDOG_CTRL] = AON_TIMER_PERMIT_1B,
+    [R_WDOG_BARK_THOLD] = AON_TIMER_PERMIT_4B,
+    [R_WDOG_BITE_THOLD] = AON_TIMER_PERMIT_4B,
+    [R_WDOG_COUNT] = AON_TIMER_PERMIT_4B,
+    [R_INTR_STATE] = AON_TIMER_PERMIT_1B,
+    [R_INTR_TEST] = AON_TIMER_PERMIT_1B,
+    [R_WKUP_CAUSE] = AON_TIMER_PERMIT_1B,
 };
 
 static bool ot_aon_timer_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -602,7 +619,8 @@ static bool ot_aon_timer_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     hwaddr reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
     return reg < REGS_COUNT && (AON_TIMER_PERMIT[reg] & ~reg_be) == 0u;
 }
 
@@ -638,15 +656,18 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
             FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
         bool unprescaled_low =
             (s->regs[R_WKUP_COUNT_HI] == 0u) && (prescaler == 0u);
-        if (ot_aon_timer_is_wkup_enabled(s) && unprescaled_low && val32 >= 2u &&
-            val32 <= 4u) {
+        if (ot_aon_timer_is_wkup_enabled(s) && unprescaled_low &&
+            val32 >= AON_TIMER_CDC_READ_MIN_TICKS &&
+            val32 <= AON_TIMER_CDC_READ_MAX_TICKS) {
             val32 = 1u;
         }
         break;
     }
     case R_WDOG_COUNT:
         val32 = s->regs[reg];
-        if (ot_aon_timer_is_wdog_enabled(s) && val32 >= 2u && val32 <= 4u) {
+        if (ot_aon_timer_is_wdog_enabled(s) &&
+            val32 >= AON_TIMER_CDC_READ_MIN_TICKS &&
+            val32 <= AON_TIMER_CDC_READ_MAX_TICKS) {
             val32 = 1u;
         }
         break;
