@@ -294,6 +294,18 @@ typedef enum {
 #define LC_XSLOT(_ifreq_)     ((void)(_ifreq_), 0u)
 
 typedef enum {
+    LC_CLAIM_IF_SW,
+    LC_CLAIM_IF_DMI,
+    LC_CLAIM_IF_COUNT,
+} OtLcCtrlClaimIf;
+
+typedef enum {
+    LC_REG_PERMIT_1B = 0x1u,
+    LC_REG_PERMIT_2B = 0x3u,
+    LC_REG_PERMIT_4B = 0xfu,
+} OtLcCtrlRegPermit;
+
+typedef enum {
     ST_RESET,
     ST_IDLE,
     ST_CLK_MUX,
@@ -409,8 +421,8 @@ struct OtLcCtrlState {
     bool force_raw; /* survivability mode */
     uint8_t volatile_raw_unlock_bm; /* xslot-indexed bitmap */
     uint8_t state_invalid_error_bm; /* error bitmap */
-    uint8_t claim_if[2]; /* SW and DMI CLAIM_TRANSITION_IF mubi8 values */
-    uint8_t claim_if_regwen[2]; /* SW and DMI CLAIM_TRANSITION_IF_REGWEN */
+    uint8_t claim_if[LC_CLAIM_IF_COUNT]; /* SW/DMI CLAIM_TRANSITION_IF mubi8 */
+    uint8_t claim_if_regwen[LC_CLAIM_IF_COUNT]; /* SW/DMI CLAIM_IF_REGWEN */
     char *hexstr;
 
     /* properties */
@@ -1717,7 +1729,7 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
     uint32_t val32;
 
     hwaddr reg = R32_OFF(addr);
-    unsigned if_ix = (ifreq == LC_IF_DMI) ? 1u : 0u;
+    unsigned if_ix = (ifreq == LC_IF_DMI) ? LC_CLAIM_IF_DMI : LC_CLAIM_IF_SW;
     bool is_terminal_fsm = (s->state == ST_RESET || s->state == ST_ESCALATE ||
                             s->state == ST_POST_TRANS ||
                             s->state == ST_INVALID || s->state == ST_SCRAP);
@@ -1879,8 +1891,8 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
                                   OtLcCtrlIf ifreq)
 {
     hwaddr reg = R32_OFF(addr);
-    unsigned if_ix = (ifreq == LC_IF_DMI) ? 1u : 0u;
-    unsigned other_ix = 1u - if_ix;
+    unsigned if_ix = (ifreq == LC_IF_DMI) ? LC_CLAIM_IF_DMI : LC_CLAIM_IF_SW;
+    unsigned other_ix = (ifreq == LC_IF_DMI) ? LC_CLAIM_IF_SW : LC_CLAIM_IF_DMI;
 
     uint32_t pc = ibex_get_current_pc();
     trace_ot_lc_ctrl_io_write(s->ot_id, (uint32_t)addr, REG_NAME(reg), val32,
@@ -1895,7 +1907,7 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
     case R_CLAIM_TRANSITION_IF_REGWEN:
         val32 &= R_CLAIM_TRANSITION_IF_REGWEN_EN_MASK;
         s->claim_if_regwen[if_ix] &= (uint8_t)val32; /* rw0c */
-        s->regs[reg] = s->claim_if_regwen[0];
+        s->regs[reg] = s->claim_if_regwen[LC_CLAIM_IF_SW];
         break;
     case R_CLAIM_TRANSITION_IF:
         if (!s->claim_if_regwen[if_ix]) {
@@ -1912,9 +1924,9 @@ static void ot_lc_ctrl_regs_write(OtLcCtrlState *s, hwaddr addr, uint32_t val32,
          */
         if (s->claim_if[other_ix] != OT_MULTIBITBOOL8_TRUE) {
             s->claim_if[if_ix] = (uint8_t)val32;
-            if (s->claim_if[1] == OT_MULTIBITBOOL8_TRUE) {
+            if (s->claim_if[LC_CLAIM_IF_DMI] == OT_MULTIBITBOOL8_TRUE) {
                 s->owner = LC_IF_DMI;
-            } else if (s->claim_if[0] == OT_MULTIBITBOOL8_TRUE) {
+            } else if (s->claim_if[LC_CLAIM_IF_SW] == OT_MULTIBITBOOL8_TRUE) {
                 s->owner = LC_IF_SW;
             } else {
                 s->owner = LC_IF_NONE;
@@ -2036,13 +2048,13 @@ static bool ot_lc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     hwaddr reg = R32_OFF(addr);
     uint32_t permit;
     if (reg == R_STATUS) {
-        permit = 0x3u;
+        permit = LC_REG_PERMIT_2B;
     } else if (reg <= R_TRANSITION_CTRL || reg == R_LC_TRANSITION_CNT) {
-        permit = 0x1u;
+        permit = LC_REG_PERMIT_1B;
     } else {
-        permit = 0xfu;
+        permit = LC_REG_PERMIT_4B;
     }
-    uint32_t be = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     return (permit & ~be) == 0u;
 }
 
@@ -2381,10 +2393,10 @@ static void ot_lc_ctrl_reset_enter(Object *obj, ResetType type)
     s->kmac_state = ST_KMAC_IDLE;
     s->regs[R_CLAIM_TRANSITION_IF] = OT_MULTIBITBOOL8_FALSE;
     s->regs[R_CLAIM_TRANSITION_IF_REGWEN] = 1u;
-    s->claim_if[0] = OT_MULTIBITBOOL8_FALSE;
-    s->claim_if[1] = OT_MULTIBITBOOL8_FALSE;
-    s->claim_if_regwen[0] = 1u;
-    s->claim_if_regwen[1] = 1u;
+    s->claim_if[LC_CLAIM_IF_SW] = OT_MULTIBITBOOL8_FALSE;
+    s->claim_if[LC_CLAIM_IF_DMI] = OT_MULTIBITBOOL8_FALSE;
+    s->claim_if_regwen[LC_CLAIM_IF_SW] = R_CLAIM_TRANSITION_IF_REGWEN_EN_MASK;
+    s->claim_if_regwen[LC_CLAIM_IF_DMI] = R_CLAIM_TRANSITION_IF_REGWEN_EN_MASK;
     s->ext_clock_en = false;
     s->volatile_unlocked = false;
     s->force_raw = false;
