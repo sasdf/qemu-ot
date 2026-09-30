@@ -91,6 +91,10 @@ SHARED_FIELD(ERR_STATUS_FATAL_CORE, 9u, 1u)
 SHARED_FIELD(ERR_STATUS_RECOV_CORE, 10u, 1u)
 SHARED_FIELD(RND_STATUS_RND_DATA_VALID, 0u, 1u)
 SHARED_FIELD(RND_STATUS_RND_DATA_FIPS, 1u, 1u)
+SHARED_FIELD(CHERIOT_ENA_VAL, 0u, 4u)
+SHARED_FIELD(CHERIOT_LOCK_VAL, 0u, 4u)
+SHARED_FIELD(MCOUNTEREN_WRITABLE_REGWEN_EN, 0u, 1u)
+SHARED_FIELD(MCOUNTEREN_WRITABLE_VAL, 0u, 4u)
 SHARED_FIELD(DV_SIM_STATUS_CODE, 0u, 16u)
 SHARED_FIELD(DV_SIM_STATUS_INFO, 16u, 16u)
 /* clang-format on */
@@ -104,6 +108,21 @@ SHARED_FIELD(DV_SIM_STATUS_INFO, 16u, 16u)
      ERR_STATUS_FATAL_CORE_MASK | ERR_STATUS_RECOV_CORE_MASK)
 
 #define NMI_MASK (NMI_ALERT_EN_MASK | NMI_WDOG_EN_MASK)
+
+#define PERMIT_NONE 0x0u
+#define PERMIT_1B   0x1u
+#define PERMIT_2B   0x3u
+#define PERMIT_4B   0xfu
+
+#define RESERVED_REG_COUNT   3u
+#define MIN_CFG_MMIO_SIZE    0x100u
+#define MIN_CFG_REG_COUNT    (MIN_CFG_MMIO_SIZE / sizeof(uint32_t))
+#define RND_FETCH_MAX_POLLS  4
+#define RND_INVAL_READ_COUNT 3u
+#define RND_INVAL_DELAY_NS   500u
+
+#define IBEX_RNMI_EXT_IRQ             31u
+#define IBEX_RNMI_INT_CAUSE_LOAD_INTG 0u
 
 /* OpenTitan SW log severities. */
 typedef enum {
@@ -202,7 +221,7 @@ typedef struct {
     uint32_t fpga_info;
     uint32_t mcounteren_writable_regwen;
     uint32_t mcounteren_writable;
-    uint32_t _reserved[3u];
+    uint32_t _reserved[RESERVED_REG_COUNT];
     uint32_t dv_sim_win[DV_SIM_COUNT];
     /* note: remap pointer introduce padding here */
     OtIbexRemap *remap[ACCESS_COUNT]; /* num_regions */
@@ -271,15 +290,15 @@ typedef struct {
 static const OtIbexWrapperConfig IBEX_WRAPPER_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .has_cheriot_mcounteren = false,
-        .dv_sim_win_permit = 0xfu,
+        .dv_sim_win_permit = PERMIT_4B,
     },
     [OT_VER_DJ] = {
         .has_cheriot_mcounteren = false,
-        .dv_sim_win_permit = 0xfu,
+        .dv_sim_win_permit = PERMIT_4B,
     },
     [OT_VER_EG_2_0_0] = {
         .has_cheriot_mcounteren = true,
-        .dv_sim_win_permit = 0u,
+        .dv_sim_win_permit = PERMIT_NONE,
     },
 };
 
@@ -966,7 +985,7 @@ void ot_ibex_wrapper_raise_load_integrity_error(OtIbexWrapperState *s,
     s->regs.err_status |= ERR_STATUS_FATAL_INTG_MASK;
     ot_ibex_wrapper_update_alerts(s);
     if (s->cpu) {
-        riscv_cpu_set_rnmi_int(s->cpu, 0, addr);
+        riscv_cpu_set_rnmi_int(s->cpu, IBEX_RNMI_INT_CAUSE_LOAD_INTG, addr);
     }
 }
 
@@ -975,7 +994,7 @@ static void ot_ibex_wrapper_update_nmi(OtIbexWrapperState *s)
     s->regs.nmi_state |= s->nmi_in;
     if (s->cpu) {
         bool irq_nm = (s->regs.nmi_state & s->regs.nmi_enable) != 0;
-        riscv_cpu_set_rnmi(s->cpu, 31, irq_nm);
+        riscv_cpu_set_rnmi(s->cpu, IBEX_RNMI_EXT_IRQ, irq_nm);
     }
 }
 
@@ -1040,7 +1059,7 @@ static bool ot_ibex_wrapper_rnd_is_fetching(OtIbexWrapperState *s)
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
         ot_ibex_wrapper_request_entropy(s);
         if (bql_locked()) {
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < RND_FETCH_MAX_POLLS; i++) {
                 if (s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK) {
                     break;
                 }
@@ -1070,8 +1089,9 @@ ot_ibex_wrapper_read_rnd_data(OtIbexWrapperState *s, unsigned reg)
     if (s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK) {
         s->regs.rnd_data = 0;
         s->regs.rnd_status = 0;
-        s->rnd_inval_reads = 3;
-        s->rnd_inval_until_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 500;
+        s->rnd_inval_reads = RND_INVAL_READ_COUNT;
+        s->rnd_inval_until_ns =
+            qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + RND_INVAL_DELAY_NS;
     } else {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Read invalid entropy data 0x%08x\n",
                       __func__, value);
@@ -1315,14 +1335,16 @@ static bool ot_ibex_wrapper_regs_accepts(
     OtIbexWrapperState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t permit = reg < s->reg_count ? s->access_table[reg].permit : 0u;
-    if (permit == 0u) {
+    uint8_t permit =
+        reg < s->reg_count ? s->access_table[reg].permit : PERMIT_NONE;
+    if (permit == PERMIT_NONE) {
         return false;
     }
     if (!is_write) {
         return true;
     }
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
+    uint8_t byte_off = (uint8_t)(addr & (sizeof(uint32_t) - 1u));
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
     return (permit & ~reg_be) == 0u;
 }
 
@@ -1402,7 +1424,8 @@ static void ot_ibex_wrapper_write_mcounteren_regwen(OtIbexWrapperState *s,
                                                     unsigned reg, uint32_t val)
 {
     (void)reg;
-    s->regs.mcounteren_writable_regwen &= val & 0x1u; /* RW0C */
+    s->regs.mcounteren_writable_regwen &=
+        val & MCOUNTEREN_WRITABLE_REGWEN_EN_MASK; /* RW0C */
 }
 
 extern void riscv_cpu_set_mcounteren_writable(CPUState *cs, bool writable);
@@ -1415,7 +1438,7 @@ static void ot_ibex_wrapper_write_mcounteren_writable(
                       __func__, s->ot_id, REG_NAME(s, reg));
         return;
     }
-    s->regs.mcounteren_writable = val & 0xfu;
+    s->regs.mcounteren_writable = val & MCOUNTEREN_WRITABLE_VAL_MASK;
     bool writable = (s->regs.mcounteren_writable == OT_MULTIBITBOOL4_TRUE);
     riscv_cpu_set_mcounteren_writable(s->cpu, writable);
 }
@@ -1503,15 +1526,15 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     for (rix = 0; rix < s->reg_count; rix++) {
         s->access_table[rix].write = &ot_ibex_wrapper_write_reg;
         s->access_table[rix].mask = UINT32_MAX;
-        s->access_table[rix].permit = 0xfu;
+        s->access_table[rix].permit = PERMIT_4B;
     }
     for (rix = R32_DYN_POS(s, _reserved[0]);
          rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
-        s->access_table[rix].permit = 0u;
+        s->access_table[rix].permit = PERMIT_NONE;
     }
     for (rix = R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix < s->reg_count;
          rix++) {
-        s->access_table[rix].permit = 0u;
+        s->access_table[rix].permit = PERMIT_NONE;
     }
 
     static uint32_t dummy_unmapped_reg = 0;
@@ -1550,28 +1573,31 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         &ot_ibex_wrapper_write_mcounteren_writable;
 
     s->access_table[R32_DYN_POS(s, alert_test)].mask = ALERT_MASK;
-    s->access_table[R32_DYN_POS(s, alert_test)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, alert_test)].permit = PERMIT_1B;
     s->access_table[R32_DYN_POS(s, sw_recov_err)].mask =
         R_SW_RECOV_ERR_VAL_MASK;
-    s->access_table[R32_DYN_POS(s, sw_recov_err)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, sw_recov_err)].permit = PERMIT_1B;
     /* this register is extended in QEMU, HW mask is applied in HW handler */
     s->access_table[R32_DYN_POS(s, sw_fatal_err)].mask = UINT32_MAX;
-    s->access_table[R32_DYN_POS(s, sw_fatal_err)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, sw_fatal_err)].permit = PERMIT_1B;
     s->access_table[R32_DYN_POS(s, nmi_enable)].mask = NMI_MASK;
-    s->access_table[R32_DYN_POS(s, nmi_enable)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, nmi_enable)].permit = PERMIT_1B;
     s->access_table[R32_DYN_POS(s, nmi_state)].mask = NMI_MASK;
-    s->access_table[R32_DYN_POS(s, nmi_state)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, nmi_state)].permit = PERMIT_1B;
     s->access_table[R32_DYN_POS(s, err_status)].mask = ERR_STATUS_MASK;
-    s->access_table[R32_DYN_POS(s, err_status)].permit = 0x3u;
-    s->access_table[R32_DYN_POS(s, rnd_status)].permit = 0x1u;
-    s->access_table[R32_DYN_POS(s, cheriot_ena)].mask = 0xfu;
-    s->access_table[R32_DYN_POS(s, cheriot_ena)].permit = 0x1u;
-    s->access_table[R32_DYN_POS(s, cheriot_lock)].mask = 0xfu;
-    s->access_table[R32_DYN_POS(s, cheriot_lock)].permit = 0x1u;
-    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].mask = 0x1u;
-    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].permit = 0x1u;
-    s->access_table[R32_DYN_POS(s, mcounteren_writable)].mask = 0xfu;
-    s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = 0x1u;
+    s->access_table[R32_DYN_POS(s, err_status)].permit = PERMIT_2B;
+    s->access_table[R32_DYN_POS(s, rnd_status)].permit = PERMIT_1B;
+    s->access_table[R32_DYN_POS(s, cheriot_ena)].mask = CHERIOT_ENA_VAL_MASK;
+    s->access_table[R32_DYN_POS(s, cheriot_ena)].permit = PERMIT_1B;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].mask = CHERIOT_LOCK_VAL_MASK;
+    s->access_table[R32_DYN_POS(s, cheriot_lock)].permit = PERMIT_1B;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].mask =
+        MCOUNTEREN_WRITABLE_REGWEN_EN_MASK;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable_regwen)].permit =
+        PERMIT_1B;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable)].mask =
+        MCOUNTEREN_WRITABLE_VAL_MASK;
+    s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = PERMIT_1B;
 
     const OtIbexWrapperConfig *cfg = &IBEX_WRAPPER_CONFIG[s->version];
     if (!cfg->has_cheriot_mcounteren) {
@@ -1585,10 +1611,10 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         s->access_regs[v1_fpga_pos] = &s->regs.fpga_info;
         s->access_table[v1_fpga_pos].write = &ot_ibex_wrapper_write_ro;
         s->access_table[v1_fpga_pos].mask = UINT32_MAX;
-        s->access_table[v1_fpga_pos].permit = 0xfu;
+        s->access_table[v1_fpga_pos].permit = PERMIT_4B;
         for (rix = R32_DYN_POS(s, cheriot_lock);
              rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
-            s->access_table[rix].permit = 0u;
+            s->access_table[rix].permit = PERMIT_NONE;
         }
     }
     for (rix = R32_DYN_POS(s, dv_sim_win[0]);
@@ -1601,13 +1627,13 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_regwen;
             s->access_table[base + mix].mask = REGWEN_EN_MASK;
-            s->access_table[base + mix].permit = 0x1u;
+            s->access_table[base + mix].permit = PERMIT_1B;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
             s->access_table[base + mix].write = &ot_ibex_wrapper_write_remap;
             s->access_table[base + mix].mask = ADDR_EN_MASK;
-            s->access_table[base + mix].permit = 0x1u;
+            s->access_table[base + mix].permit = PERMIT_1B;
         }
         base += s->num_regions;
         for (unsigned mix = 0; mix < s->num_regions; mix++) {
@@ -1702,14 +1728,14 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->regs.sw_recov_err = OT_MULTIBITBOOL4_FALSE;
     s->regs.sw_fatal_err = OT_MULTIBITBOOL4_FALSE;
     const OtIbexWrapperConfig *cfg = &IBEX_WRAPPER_CONFIG[s->version];
-    s->regs.cheriot_ena = 0x9;
-    s->regs.cheriot_lock = 0x9;
+    s->regs.cheriot_ena = OT_MULTIBITBOOL4_FALSE;
+    s->regs.cheriot_lock = OT_MULTIBITBOOL4_FALSE;
     s->cheriot_locked = false;
     s->cheriot_switch_error = false;
-    s->regs.mcounteren_writable_regwen = 0x1u;
+    s->regs.mcounteren_writable_regwen = MCOUNTEREN_WRITABLE_REGWEN_EN_MASK;
     s->regs.mcounteren_writable = OT_MULTIBITBOOL4_TRUE;
     riscv_cpu_set_mcounteren_writable(s->cpu, cfg->has_cheriot_mcounteren);
-    qemu_set_irq(s->cheriot_ena_out, 0x9);
+    qemu_set_irq(s->cheriot_ena_out, OT_MULTIBITBOOL4_FALSE);
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
         memset(s->regs.remap[aix], 0,
                (size_t)s->num_regions * sizeof(OtIbexRemap));
@@ -1730,7 +1756,7 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     s->rnd_inval_until_ns = 0;
     s->cpu_en_bm = s->lc_ignore ? (1u << OT_IBEX_LC_CTRL_CPU_EN) : 0;
     if (s->cpu) {
-        riscv_cpu_set_rnmi(s->cpu, 31, false);
+        riscv_cpu_set_rnmi(s->cpu, IBEX_RNMI_EXT_IRQ, false);
     }
 
     memset(s->log_engine, 0, sizeof(*s->log_engine));
@@ -1773,11 +1799,12 @@ static void ot_ibex_wrapper_realize(DeviceState *dev, Error **errp)
         s->num_regions * ACCESS_COUNT * sizeof(OtIbexRemap) / sizeof(uint32_t);
     s->reg_count = offsetof(OtIbexWrapperRegs, dv_sim_win) / sizeof(uint32_t) +
                    DV_SIM_COUNT + s->remap_reg_count;
-    s->reg_count = MAX(s->reg_count, 64u);
+    s->reg_count = MAX(s->reg_count, MIN_CFG_REG_COUNT);
 
     memory_region_init_io(&s->mmio, OBJECT(dev), &ot_ibex_wrapper_regs_ops, s,
                           TYPE_OT_IBEX_WRAPPER,
-                          MAX(s->reg_count * sizeof(uint32_t), 0x100u));
+                          MAX(s->reg_count * sizeof(uint32_t),
+                              MIN_CFG_MMIO_SIZE));
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->remappers = g_new0(MemoryRegion, s->num_regions);
