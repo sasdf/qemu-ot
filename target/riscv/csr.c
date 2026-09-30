@@ -6403,8 +6403,10 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
     [CSR_TDATA3]    =  { "tdata3",   debug, read_tdata,    write_tdata    },
     [CSR_TINFO]     =  { "tinfo",    debug, read_tinfo,    write_ignore   },
     [CSR_MCONTEXT]  =  { "mcontext", debug, read_mcontext, write_mcontext },
-    [0x5a8]         =  { "scontext", debug, read_zero,     write_ignore   },
-    [0x7aa]         =  { "mscontext", debug, read_zero,    write_ignore   },
+#define CSR_SCONTEXT  0x5a8
+#define CSR_MSCONTEXT 0x7aa
+    [CSR_SCONTEXT]  =  { "scontext", debug, read_zero,     write_ignore   },
+    [CSR_MSCONTEXT] =  { "mscontext", debug, read_zero,    write_ignore   },
 
     /* Debug CSRs */
     [CSR_DCSR]      =  { "dcsr",      debug, read_dcsr,     write_dcsr     },
