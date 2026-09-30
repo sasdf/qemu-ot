@@ -40,6 +40,7 @@
 #include "qapi/error.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
+#include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_spi_host.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -64,6 +65,18 @@
 #define TXFIFO_LEN  292U /* (72 + 1) * 4 bytes (u_tx_fifo + u_select) */
 #define RXFIFO_LEN  256U /* bytes */
 #define CMDFIFO_LEN 4U /* slots */
+
+#define BB_MAX_HALF_CLKS         2048u
+#define BB_MAX_TX_BYTES          256u
+#define BB_IDLE_HALF_CLKS        4u
+#define BB_READY_TXN_COUNT       3u
+#define SPI_HOST_DEFAULT_PCLK_HZ 12000000u
+#define BYTE_MSB_BIT             7
+#define BYTE_MSB_MASK            0x80u
+
+#define SPI_HOST_PERMIT_1B 0x1u
+#define SPI_HOST_PERMIT_2B 0x3u
+#define SPI_HOST_PERMIT_4B 0xfu
 
 /* ------------------------------------------------------------------------ */
 /* Register definitions */
@@ -372,13 +385,13 @@ struct OtSPIHostState {
     const char *clock_src_name; /* IRQ name once connected */
 
     /* Bitbang waveform recording for GPIO sampling */
-    OtSPIHostHalfClk bb_half_clks[2048];
+    OtSPIHostHalfClk bb_half_clks[BB_MAX_HALF_CLKS];
     unsigned bb_len;
     int64_t bb_start_ns;
     uint64_t bb_half_clk_ns;
     bool bb_cpol;
     bool bb_cpha;
-    uint8_t bb_cur_tx_bytes[256];
+    uint8_t bb_cur_tx_bytes[BB_MAX_TX_BYTES];
     unsigned bb_cur_tx_len;
     uint8_t bb_last_tx_bit;
     unsigned bb_completed_txns;
@@ -402,15 +415,15 @@ typedef struct {
 static const OtSPIHostConfig SPI_HOST_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .cmd_14b_layout = true,
-        .cmd_write_permit = 0x3u,
+        .cmd_write_permit = SPI_HOST_PERMIT_2B,
     },
     [OT_VER_DJ] = {
         .cmd_14b_layout = false,
-        .cmd_write_permit = 0xfu,
+        .cmd_write_permit = SPI_HOST_PERMIT_4B,
     },
     [OT_VER_EG_2_0_0] = {
         .cmd_14b_layout = false,
-        .cmd_write_permit = 0xfu,
+        .cmd_write_permit = SPI_HOST_PERMIT_4B,
     },
 };
 
@@ -538,6 +551,21 @@ static uint32_t cmdfifo_num_used(const CmdFifo *fifo)
 /* Helpers */
 /* ------------------------------------------------------------------------ */
 
+static uint32_t ot_spi_host_convert_from_c2_command(uint32_t eg_cmd)
+{
+    uint32_t csaat = FIELD_EX32(eg_cmd, COMMAND, V2_CSAAT);
+    uint32_t speed = FIELD_EX32(eg_cmd, COMMAND, V2_SPEED);
+    uint32_t direction = FIELD_EX32(eg_cmd, COMMAND, V2_DIRECTION);
+    uint32_t len = FIELD_EX32(eg_cmd, COMMAND, V2_LEN);
+
+    /* EG 1.0.0 has a narrower length field, so this conversion is safe. */
+    uint32_t cmd = 0;
+    cmd = FIELD_DP32(cmd, COMMAND, CSAAT, csaat);
+    cmd = FIELD_DP32(cmd, COMMAND, SPEED, speed);
+    cmd = FIELD_DP32(cmd, COMMAND, DIRECTION, direction);
+    cmd = FIELD_DP32(cmd, COMMAND, LEN, len);
+    return cmd;
+}
 
 static bool ot_spi_host_is_rx(uint32_t command)
 {
@@ -598,7 +626,6 @@ static inline bool ot_spi_host_passthrough_active(const OtSPIHostState *s)
 {
     return ot_spi_host_supports_passthrough(s) && s->passthrough_en;
 }
-
 
 static bool ot_spi_host_update_stall(OtSPIHostState *s)
 {
@@ -849,7 +876,7 @@ static void ot_spi_host_update_bb_config(OtSPIHostState *s, uint32_t opts)
     s->bb_cpol = (bool)FIELD_EX32(opts, CONFIGOPTS, CPOL);
     s->bb_cpha = (bool)FIELD_EX32(opts, CONFIGOPTS, CPHA);
     unsigned clkdiv = FIELD_EX32(opts, CONFIGOPTS, CLKDIV);
-    unsigned pclk = s->pclk ? s->pclk : 12000000u;
+    unsigned pclk = s->pclk ? s->pclk : SPI_HOST_DEFAULT_PCLK_HZ;
     s->bb_half_clk_ns =
         ((uint64_t)(clkdiv + 1u) * NANOSECONDS_PER_SECOND) / pclk;
     ot_spi_host_clear_waveform(s);
@@ -872,12 +899,12 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
         s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
             .csb = 0u,
             .sck = cpol,
-            .sd0 = (s->bb_cur_tx_bytes[0] >> 7) & 1u,
+            .sd0 = (s->bb_cur_tx_bytes[0] >> BYTE_MSB_BIT) & 1u,
         };
     }
     for (unsigned bi = 0; bi < s->bb_cur_tx_len; bi++) {
         uint8_t b = s->bb_cur_tx_bytes[bi];
-        for (int bit = 7; bit >= 0; bit--) {
+        for (int bit = BYTE_MSB_BIT; bit >= 0; bit--) {
             uint8_t d0 = (b >> bit) & 1u;
             last_sd0 = d0;
             if (s->bb_len + 2u <= ARRAY_SIZE(s->bb_half_clks)) {
@@ -901,7 +928,7 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
         s->bb_half_clks[s->bb_len++] =
             (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = last_sd0 };
     }
-    for (unsigned idle = 0; idle < 4u; idle++) {
+    for (unsigned idle = 0; idle < BB_IDLE_HALF_CLKS; idle++) {
         if (s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
             s->bb_half_clks[s->bb_len++] =
                 (OtSPIHostHalfClk){ .csb = 1u, .sck = cpol, .sd0 = 1u };
@@ -913,7 +940,7 @@ static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
 
 bool ot_spi_host_is_waveform_ready(OtSPIHostState *s)
 {
-    return s && s->bb_completed_txns >= 3u;
+    return s && s->bb_completed_txns >= BB_READY_TXN_COUNT;
 }
 
 void ot_spi_host_set_waveform_start_ns(OtSPIHostState *s, int64_t val_ns,
@@ -931,7 +958,7 @@ bool ot_spi_host_get_pin_level(OtSPIHostState *s, unsigned outsel,
         return false;
     }
     bool idle_val = true;
-    if (outsel == 53u) {
+    if (outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SCK) {
         idle_val = s->bb_cpol;
     }
     if (s->bb_len == 0 || s->bb_half_clk_ns == 0 || now_ns < s->bb_start_ns) {
@@ -943,11 +970,11 @@ bool ot_spi_host_get_pin_level(OtSPIHostState *s, unsigned outsel,
     }
     const OtSPIHostHalfClk *hc = &s->bb_half_clks[idx];
     switch (outsel) {
-    case 54u: /* CSB */
+    case OT_PINMUX_EG_OUTSEL_SPI_HOST1_CSB:
         return (bool)hc->csb;
-    case 53u: /* SCK */
+    case OT_PINMUX_EG_OUTSEL_SPI_HOST1_SCK:
         return (bool)hc->sck;
-    case 41u: /* SD0 */
+    case OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD0:
         return (bool)hc->sd0;
     default:
         return idle_val;
@@ -1069,7 +1096,7 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
             }
             s->bb_last_tx_bit = tx & 1u;
         } else if (read) {
-            uint8_t rx_sd0 = s->bb_last_tx_bit ? 0x80u : 0x00u;
+            uint8_t rx_sd0 = s->bb_last_tx_bit ? BYTE_MSB_MASK : 0x00u;
             s->bb_last_tx_bit = 0u;
             if (s->bb_cur_tx_len < ARRAY_SIZE(s->bb_cur_tx_bytes)) {
                 s->bb_cur_tx_bytes[s->bb_cur_tx_len++] = rx_sd0;
@@ -1366,7 +1393,7 @@ static uint64_t ot_spi_host_io_read(void *opaque, hwaddr addr,
 #endif /* DISCARD_REPEATED_STATUS_TRACES */
 
     if (reg != R_RXDATA) {
-        val32 >>= (addr & 3u) * 8u;
+        val32 >>= (addr & (sizeof(uint32_t) - 1u)) * 8u;
     }
     return val32;
 }
@@ -1436,21 +1463,9 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
     case R_COMMAND: {
         if (SPI_HOST_CONFIG[s->version].cmd_14b_layout) {
-            /*
-             * Earlgrey v1 uses 14-bit COMMAND layout:
-             *   LEN[8:0], CSAAT[9], SPEED[11:10], DIRECTION[13:12]
-             * Convert to canonical layout:
-             *   CSAAT[0], SPEED[2:1], DIRECTION[4:3], LEN[24:5]
-             */
-            val32 &= 0x3fffu;
-            uint32_t len = (val32 & 0x1ffu) << 5u;
-            uint32_t csaat = ((val32 >> 9u) & 0x1u) << 0u;
-            uint32_t speed = ((val32 >> 10u) & 0x3u) << 1u;
-            uint32_t direction = ((val32 >> 12u) & 0x3u) << 3u;
-            val32 = len | csaat | speed | direction;
-        } else {
-            val32 &= R_COMMAND_MASK;
+            val32 = ot_spi_host_convert_from_c2_command(val32);
         }
+        val32 &= R_COMMAND_MASK;
 
         if (!ot_spi_host_is_ready(s)) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: %s: busy (cmd_fifo full)\n",
@@ -1677,11 +1692,12 @@ static bool ot_spi_host_accepts(void *opaque, hwaddr addr, unsigned size,
         if (reg == R_COMMAND) {
             permit = SPI_HOST_CONFIG[s->version].cmd_write_permit;
         } else if (reg >= R_CONTROL && reg < R_COMMAND) {
-            permit = 0xfu;
+            permit = SPI_HOST_PERMIT_4B;
         } else {
-            permit = 0x1u;
+            permit = SPI_HOST_PERMIT_1B;
         }
-        uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+        uint8_t reg_be =
+            (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
         return (permit & ~reg_be) == 0u;
     }
     return true;
