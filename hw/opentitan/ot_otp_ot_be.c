@@ -139,23 +139,31 @@ static const OtOtpBeCharacteristics OTP_BE_CHARACTERISTICS = {
     },
 };
 
+typedef enum {
+    OTP_BE_REG_PERMIT_NONE = 0x0u,
+    OTP_BE_REG_PERMIT_1B = 0x1u,
+    OTP_BE_REG_PERMIT_2B = 0x3u,
+    OTP_BE_REG_PERMIT_3B = 0x7u,
+    OTP_BE_REG_PERMIT_4B = 0xfu,
+} OtOtpOtBeRegPermit;
+
 static uint8_t ot_otp_ot_be_reg_permit(hwaddr reg)
 {
     switch (reg) {
     case R_CSR2:
-        return 0x1u;
+        return OTP_BE_REG_PERMIT_1B;
     case R_CSR4:
     case R_CSR7:
-        return 0x3u;
+        return OTP_BE_REG_PERMIT_2B;
     case R_CSR3:
-        return 0x7u;
+        return OTP_BE_REG_PERMIT_3B;
     case R_CSR0:
     case R_CSR1:
     case R_CSR5:
     case R_CSR6:
-        return 0xfu;
+        return OTP_BE_REG_PERMIT_4B;
     default:
-        return 0x0u;
+        return OTP_BE_REG_PERMIT_NONE;
     }
 }
 
@@ -171,7 +179,8 @@ static bool ot_otp_ot_be_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint8_t permit = ot_otp_ot_be_reg_permit(R32_OFF(addr));
-    uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
+    uint32_t byte_mask =
+        ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     return (permit & ~byte_mask) == 0u;
 }
 
