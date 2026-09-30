@@ -335,6 +335,54 @@ static const char *REG_NAMES[REGS_COUNT] = {
 #define KMAC_PREFIX_1      0x00004341u
 #define KMAC_PREFIX_1_MASK 0x0000ffffu
 
+#define REG_PERMIT_1B 0x1u
+#define REG_PERMIT_2B 0x3u
+#define REG_PERMIT_3B 0x7u
+#define REG_PERMIT_4B 0xfu
+
+#define KMAC_APP_OUTPUT_BITS_V1 (OT_KMAC_APP_DIGEST_BYTES * BITS_PER_BYTE)
+#define KMAC_APP_OUTPUT_BITS_V2 512u
+
+#define KMAC_MSGFIFO_ERR_INFO_IDLE_V1 0x00be14u
+#define KMAC_MSGFIFO_ERR_INFO_APP_V1  0x008b19u
+#define KMAC_MSGFIFO_ERR_INFO_IDLE_V2 0x00a514u
+#define KMAC_MSGFIFO_ERR_INFO_APP_V2  0x00e019u
+
+#define KMAC_EDN_MIN_WAIT_CYCLES 30ULL
+#define KMAC_DEFAULT_PCLK_HZ     100000000ULL
+#define KMAC_SW_SEED_WORDS       6u
+#define KMAC_STATE_MASK_PRIME    0x9e3779b9u
+
+#define KMAC_DEFAULT_STRENGTH_BITS 256u
+#define KECCAK_MAX_RATE_BYTES      168u
+
+#define SHA3_PAD_SUFFIX_NONE   0x01u
+#define SHA3_PAD_SUFFIX_CSHAKE 0x04u
+#define SHA3_PAD_SUFFIX_SHA3   0x06u
+#define SHA3_PAD_SUFFIX_SHAKE  0x1fu
+
+#define SP800_185_LEFT_ENCODE_1B    0x01u
+#define SP800_185_LEFT_ENCODE_2B    0x02u
+#define SP800_185_BYTEPAD_HDR_LEN   2u
+#define KMAC_RIGHT_ENCODE_U16_LEN   2u
+#define KMAC_RIGHT_ENCODE_U16_BYTES (KMAC_RIGHT_ENCODE_U16_LEN + 1u)
+#define KMAC_KEY_LEN_1B_MAX_BYTES   24u
+#define KMAC_KEY_BLK_1B_HDR_LEN     4u
+#define KMAC_KEY_BLK_2B_HDR_LEN     5u
+
+#define ERR_INFO_STATE_SHIFT       8u
+#define ERR_INFO_PREFIX_BIT        (1u << 16u)
+#define ERR_INFO_MODESTRENGTH_BIT  (1u << 17u)
+#define ERR_INFO_SWSEQUENCE_BIT    (1u << 18u)
+#define ERR_INFO_ENTROPY_READY_BIT (1u << 19u)
+#define ERR_INFO_KMAC_EN_BIT       (1u << 1u)
+
+typedef enum {
+    KMAC_ENTROPY_MODE_NONE = 0,
+    KMAC_ENTROPY_MODE_EDN = 1,
+    KMAC_ENTROPY_MODE_SW = 2,
+} OtKMACEntropyMode;
+
 enum {
     ALERT_RECOVERABLE = 0,
     ALERT_FATAL = 1,
@@ -393,19 +441,19 @@ typedef struct {
 
 static const OtKMACConfig KMAC_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
-        .app_output_length = OT_KMAC_APP_DIGEST_BYTES * 8u,
-        .msgfifo_err_info_idle = 0x00be14u,
-        .msgfifo_err_info_app = 0x008b19u,
+        .app_output_length = KMAC_APP_OUTPUT_BITS_V1,
+        .msgfifo_err_info_idle = KMAC_MSGFIFO_ERR_INFO_IDLE_V1,
+        .msgfifo_err_info_app = KMAC_MSGFIFO_ERR_INFO_APP_V1,
     },
     [OT_VER_DJ] = {
-        .app_output_length = OT_KMAC_APP_DIGEST_BYTES * 8u,
-        .msgfifo_err_info_idle = 0x00be14u,
-        .msgfifo_err_info_app = 0x008b19u,
+        .app_output_length = KMAC_APP_OUTPUT_BITS_V1,
+        .msgfifo_err_info_idle = KMAC_MSGFIFO_ERR_INFO_IDLE_V1,
+        .msgfifo_err_info_app = KMAC_MSGFIFO_ERR_INFO_APP_V1,
     },
     [OT_VER_EG_2_0_0] = {
-        .app_output_length = 512u,
-        .msgfifo_err_info_idle = 0x00a514u,
-        .msgfifo_err_info_app = 0x00e019u,
+        .app_output_length = KMAC_APP_OUTPUT_BITS_V2,
+        .msgfifo_err_info_idle = KMAC_MSGFIFO_ERR_INFO_IDLE_V2,
+        .msgfifo_err_info_app = KMAC_MSGFIFO_ERR_INFO_APP_V2,
     },
 };
 
@@ -594,7 +642,7 @@ static void ot_kmac_fill_entropy(void *opaque, uint32_t bits, bool fips)
 
 static void ot_kmac_request_entropy(OtKMACState *s)
 {
-    if (!s->entropy_configured || s->entropy_mode != 1u) {
+    if (!s->entropy_configured || s->entropy_mode != KMAC_ENTROPY_MODE_EDN) {
         /*
          * RTL (kmac_entropy.sv): mode_q is latched once on leaving StRandReset.
          * If mode_q != EntropyModeEdn (1), KMAC never transitions to StRandEdn.
@@ -613,7 +661,7 @@ static void ot_kmac_request_entropy(OtKMACState *s)
      * requires 5x 32-bit EDN words across prim_edn_req (prim_sync_reqack 2-FF
      * req/ack CDC synchronizers, >= 6 cycles per word = 30 cycles minimum).
      */
-    if (wait_timer > 0 && wait_cycles < 30ULL) {
+    if (wait_timer > 0 && wait_cycles < KMAC_EDN_MIN_WAIT_CYCLES) {
         s->edn_pending = false;
         s->entropy_in_err = true;
         s->entropy_seeded = true;
@@ -628,7 +676,7 @@ static void ot_kmac_request_entropy(OtKMACState *s)
         s->edn_pending = true;
         (void)ot_edn_request_entropy(s->edn, s->edn_ep);
         if (wait_timer > 0) {
-            uint64_t clk = s->pclk ? s->pclk : 100000000ULL;
+            uint64_t clk = s->pclk ? s->pclk : KMAC_DEFAULT_PCLK_HZ;
             int64_t delay_ns =
                 (int64_t)muldiv64(wait_cycles, NANOSECONDS_PER_SECOND, clk);
             timer_mod(s->edn_wait_timer,
@@ -789,7 +837,7 @@ static inline size_t ot_kmac_get_keccak_rate_bytes(size_t kstrength)
 static uint32_t ot_kmac_state_mask_word(const OtKMACState *s, unsigned word_ix)
 {
     (void)s;
-    return (word_ix + 1u) * 0x9e3779b9u;
+    return (word_ix + 1u) * KMAC_STATE_MASK_PRIME;
 }
 
 static void ot_kmac_reset_state(OtKMACState *s)
@@ -845,12 +893,12 @@ static void ot_kmac_process(void *opaque)
                 if (s->current_app->req.last) {
                     /* append right-encoded output width if KMAC */
                     if (cfg->mode == OT_KMAC_MODE_KMAC) {
-                        uint8_t enc_out_len[3];
+                        uint8_t enc_out_len[KMAC_RIGHT_ENCODE_U16_BYTES];
                         uint32_t output_length =
                             KMAC_CONFIG[s->version].app_output_length;
                         enc_out_len[0] = (output_length >> 8u) & 0xffu;
                         enc_out_len[1] = output_length & 0xffu;
-                        enc_out_len[2] = 2u;
+                        enc_out_len[2] = KMAC_RIGHT_ENCODE_U16_LEN;
                         sha3_process(&s->ltc_state, enc_out_len,
                                      sizeof(enc_out_len));
                     }
@@ -883,7 +931,8 @@ static void ot_kmac_process(void *opaque)
                 /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
-            size_t strength = cfg->strength ? cfg->strength : 256u;
+            size_t strength =
+                cfg->strength ? cfg->strength : KMAC_DEFAULT_STRENGTH_BITS;
             sha3_shake_done(&s->ltc_state, &s->keccak_state[0],
                             ot_kmac_get_keccak_rate_bytes(strength));
 
@@ -1012,7 +1061,8 @@ static void ot_kmac_process_start(OtKMACState *s)
 
     g_assert(cfg);
 
-    size_t strength = cfg->strength ? cfg->strength : 256u;
+    size_t strength =
+        cfg->strength ? cfg->strength : KMAC_DEFAULT_STRENGTH_BITS;
     size_t rate = ot_kmac_get_keccak_rate_bytes(strength);
     memset(&s->ltc_state.sha3, 0, sizeof(s->ltc_state.sha3));
     s->ltc_state.sha3.capacity_words =
@@ -1027,14 +1077,14 @@ static void ot_kmac_process_start(OtKMACState *s)
      */
     switch (cfg->mode) {
     case OT_KMAC_MODE_SHA3:
-        s->ltc_state.sha3.suffix = 0x06u;
+        s->ltc_state.sha3.suffix = SHA3_PAD_SUFFIX_SHA3;
         break;
     case OT_KMAC_MODE_SHAKE:
-        s->ltc_state.sha3.suffix = 0x1fu;
+        s->ltc_state.sha3.suffix = SHA3_PAD_SUFFIX_SHAKE;
         break;
     case OT_KMAC_MODE_CSHAKE:
     case OT_KMAC_MODE_KMAC:
-        s->ltc_state.sha3.suffix = 0x04u;
+        s->ltc_state.sha3.suffix = SHA3_PAD_SUFFIX_CSHAKE;
         if (s->current_app) {
             sha3_cshake_init(&s->ltc_state, (int)strength, cfg->prefix.funcname,
                              cfg->prefix.funcname_len, cfg->prefix.customstr,
@@ -1045,20 +1095,21 @@ static void ot_kmac_process_start(OtKMACState *s)
              * When mode_i == CShake, StPrefix unconditionally absorbs one
              * rate-byte block {ns_data_i, encode_bytepad} zero-padded to rate.
              */
-            uint8_t prefix_blk[168];
+            uint8_t prefix_blk[KECCAK_MAX_RATE_BYTES];
             memset(prefix_blk, 0, sizeof(prefix_blk));
             if (cfg->strength != 0) {
-                prefix_blk[0] = 0x01u;
+                prefix_blk[0] = SP800_185_LEFT_ENCODE_1B;
                 prefix_blk[1] = (uint8_t)rate;
             }
             for (size_t ix = 0; ix < NUM_PREFIX_REGS; ix++) {
-                stl_le_p(&prefix_blk[2u + ix * 4u], s->regs[R_PREFIX_0 + ix]);
+                size_t off = SP800_185_BYTEPAD_HDR_LEN + ix * sizeof(uint32_t);
+                stl_le_p(&prefix_blk[off], s->regs[R_PREFIX_0 + ix]);
             }
             sha3_process(&s->ltc_state, prefix_blk, rate);
         }
         break;
     default:
-        s->ltc_state.sha3.suffix = 0x01u;
+        s->ltc_state.sha3.suffix = SHA3_PAD_SUFFIX_NONE;
         break;
     }
 
@@ -1080,22 +1131,22 @@ static void ot_kmac_process_start(OtKMACState *s)
                       "key buffer too small to hold sideloaded key");
         ot_kmac_get_key(s, key, &keylen);
 
-        uint8_t key_blk[168];
+        uint8_t key_blk[KECCAK_MAX_RATE_BYTES];
         memset(key_blk, 0, sizeof(key_blk));
         if (cfg->strength != 0) {
-            key_blk[0] = 0x01u;
+            key_blk[0] = SP800_185_LEFT_ENCODE_1B;
             key_blk[1] = (uint8_t)rate;
         }
         if (keylen > 0) {
-            if (keylen <= 24u) {
-                key_blk[2] = 0x01u;
+            if (keylen <= KMAC_KEY_LEN_1B_MAX_BYTES) {
+                key_blk[2] = SP800_185_LEFT_ENCODE_1B;
                 key_blk[3] = (uint8_t)(keylen * 8u);
-                memcpy(&key_blk[4], key, keylen);
+                memcpy(&key_blk[KMAC_KEY_BLK_1B_HDR_LEN], key, keylen);
             } else {
-                key_blk[2] = 0x02u;
+                key_blk[2] = SP800_185_LEFT_ENCODE_2B;
                 key_blk[3] = (uint8_t)((keylen * 8u) >> 8u);
                 key_blk[4] = (uint8_t)((keylen * 8u) & 0xffu);
-                memcpy(&key_blk[5], key, keylen);
+                memcpy(&key_blk[KMAC_KEY_BLK_2B_HDR_LEN], key, keylen);
             }
         }
         sha3_process(&s->ltc_state, key_blk, rate);
@@ -1127,7 +1178,7 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
          */
         s->entropy_in_err = false;
         s->entropy_configured = false;
-        s->entropy_mode = 0;
+        s->entropy_mode = KMAC_ENTROPY_MODE_NONE;
         s->entropy_seeded = false;
         s->sw_seed_cnt = 0;
     }
@@ -1191,8 +1242,8 @@ static void ot_kmac_sw_err_processed(OtKMACState *s, int cmd)
      * via kmac_errchk.sv:186-234.
      */
     if (cmd != OT_KMAC_CMD_NONE) {
-        uint32_t info = (1u << 18u);
-        info |= (uint32_t)s->state << 8u;
+        uint32_t info = ERR_INFO_SWSEQUENCE_BIT;
+        info |= (uint32_t)s->state << ERR_INFO_STATE_SHIFT;
         info |= cmd;
         ot_kmac_report_error(s, OT_KMAC_ERR_SW_CMD_SEQUENCE, info);
     }
@@ -1315,11 +1366,11 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
          *   info[23:16] = {4'h0, err_entropy_ready, err_swsequence,
          *                  err_modestrength, err_prefix}
          */
-        info |= err_swsequence ? (1u << 18u) : 0;
-        info |= err_modestrength ? (1u << 17u) : 0;
-        info |= err_prefix ? (1u << 16u) : 0;
+        info |= err_swsequence ? ERR_INFO_SWSEQUENCE_BIT : 0;
+        info |= err_modestrength ? ERR_INFO_MODESTRENGTH_BIT : 0;
+        info |= err_prefix ? ERR_INFO_PREFIX_BIT : 0;
         if (err_swsequence) {
-            info |= (uint32_t)s->state << 8u;
+            info |= (uint32_t)s->state << ERR_INFO_STATE_SHIFT;
             info |= cmd;
             code = OT_KMAC_ERR_SW_CMD_SEQUENCE;
         } else if (err_modestrength) {
@@ -1329,8 +1380,10 @@ static void ot_kmac_process_sw_command(OtKMACState *s, uint32_t cmd_reg)
         } else if (err_prefix) {
             code = OT_KMAC_ERR_INCORRECT_FUNCTION_NAME;
         } else if (err_entropy_ready) {
-            info |= (1u << 19u);
-            info |= FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) ? (1u << 1u) : 0;
+            info |= ERR_INFO_ENTROPY_READY_BIT;
+            info |= FIELD_EX32(cfg, CFG_SHADOWED, KMAC_EN) ?
+                        ERR_INFO_KMAC_EN_BIT :
+                        0;
             info |= s->cfg_entropy_ready ? 1u : 0;
             code = OT_KMAC_ERR_SW_HASHING_WITHOUT_ENTROPY_READY;
         } else {
@@ -1544,13 +1597,14 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
                         (uint8_t)FIELD_EX32(val32, CFG_SHADOWED, ENTROPY_MODE);
                     s->entropy_seeded = false;
                     s->sw_seed_cnt = 0;
-                    if (s->entropy_mode != 1u && s->entropy_mode != 2u) {
+                    if (s->entropy_mode != KMAC_ENTROPY_MODE_EDN &&
+                        s->entropy_mode != KMAC_ENTROPY_MODE_SW) {
                         s->entropy_in_err = true;
                         s->entropy_seeded = true;
                         ot_kmac_report_error(s,
                                              OT_KMAC_ERR_INCORRECT_ENTROPY_MODE,
                                              s->entropy_mode);
-                    } else if (s->entropy_mode == 1u) {
+                    } else if (s->entropy_mode == KMAC_ENTROPY_MODE_EDN) {
                         ot_kmac_request_entropy(s);
                     }
                 }
@@ -1610,7 +1664,7 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case R_ENTROPY_SEED:
-        if (s->entropy_configured && s->entropy_mode == 2u &&
+        if (s->entropy_configured && s->entropy_mode == KMAC_ENTROPY_MODE_SW &&
             !s->entropy_seeded) {
             s->sw_seed_cnt++;
             /*
@@ -1618,7 +1672,7 @@ static void ot_kmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
              * BiviumStateWidth = 177, PartialSeedWidth = 32 -> NumStateParts
              * = 6.
              */
-            if (s->sw_seed_cnt >= 6u) {
+            if (s->sw_seed_cnt >= KMAC_SW_SEED_WORDS) {
                 s->entropy_seeded = true;
                 if (s->state == KMAC_ST_PROCESSING ||
                     s->state == KMAC_ST_SQUEEZING) {
@@ -1737,10 +1791,11 @@ static uint64_t ot_kmac_state_read(void *opaque, hwaddr addr, unsigned size)
         switch (share) {
         case 0:
         case 1:
-            if (offset + 4u <= KECCAK_STATE_BYTES) {
+            if (offset + sizeof(uint32_t) <= KECCAK_STATE_BYTES) {
                 uint32_t word32 = ldl_le_p(&s->keccak_state[offset]);
                 uint32_t mask =
-                    ot_kmac_state_mask_word(s, (unsigned)(offset >> 2u));
+                    ot_kmac_state_mask_word(s, (unsigned)(offset /
+                                                          sizeof(uint32_t)));
                 uint32_t share_word = (share == 0) ? (word32 ^ mask) : mask;
                 if (byteswap) {
                     share_word = bswap32(share_word);
@@ -1976,23 +2031,23 @@ static const Property ot_kmac_properties[] = {
 };
 
 static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,
-    [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,
-    [R_ALERT_TEST] = 0x1u,
-    [R_CFG_REGWEN] = 0x1u,
-    [R_CFG_SHADOWED] = 0xfu,
-    [R_CMD] = 0x3u,
-    [R_STATUS] = 0x7u,
-    [R_ENTROPY_PERIOD] = 0xfu,
-    [R_ENTROPY_REFRESH_HASH_CNT] = 0x3u,
-    [R_ENTROPY_REFRESH_THRESHOLD_SHADOWED] = 0x3u,
-    [R_ENTROPY_SEED] = 0xfu,
-    [R_KEY_SHARE0_0... R_KEY_SHARE0_15] = 0xfu,
-    [R_KEY_SHARE1_0... R_KEY_SHARE1_15] = 0xfu,
-    [R_KEY_LEN] = 0x1u,
-    [R_PREFIX_0... R_PREFIX_10] = 0xfu,
-    [R_ERR_CODE] = 0xfu,
+    [R_INTR_STATE] = REG_PERMIT_1B,
+    [R_INTR_ENABLE] = REG_PERMIT_1B,
+    [R_INTR_TEST] = REG_PERMIT_1B,
+    [R_ALERT_TEST] = REG_PERMIT_1B,
+    [R_CFG_REGWEN] = REG_PERMIT_1B,
+    [R_CFG_SHADOWED] = REG_PERMIT_4B,
+    [R_CMD] = REG_PERMIT_2B,
+    [R_STATUS] = REG_PERMIT_3B,
+    [R_ENTROPY_PERIOD] = REG_PERMIT_4B,
+    [R_ENTROPY_REFRESH_HASH_CNT] = REG_PERMIT_2B,
+    [R_ENTROPY_REFRESH_THRESHOLD_SHADOWED] = REG_PERMIT_2B,
+    [R_ENTROPY_SEED] = REG_PERMIT_4B,
+    [R_KEY_SHARE0_0... R_KEY_SHARE0_15] = REG_PERMIT_4B,
+    [R_KEY_SHARE1_0... R_KEY_SHARE1_15] = REG_PERMIT_4B,
+    [R_KEY_LEN] = REG_PERMIT_1B,
+    [R_PREFIX_0... R_PREFIX_10] = REG_PERMIT_4B,
+    [R_ERR_CODE] = REG_PERMIT_4B,
 };
 
 static bool ot_kmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -2004,7 +2059,8 @@ static bool ot_kmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint32_t reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    unsigned byte_off = (unsigned)(addr & (sizeof(uint32_t) - 1u));
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << byte_off);
     return reg < REGS_COUNT && (KMAC_PERMIT[reg] & ~reg_be) == 0u;
 }
 
@@ -2068,7 +2124,7 @@ static void ot_kmac_reset_enter(Object *obj, ResetType type)
     s->cfg_entropy_ready = false;
     s->entropy_configured = false;
     s->entropy_in_err = false;
-    s->entropy_mode = 0;
+    s->entropy_mode = KMAC_ENTROPY_MODE_NONE;
     s->sw_seed_cnt = 0;
     s->entropy_seeded = false;
     s->edn_pending = false;
