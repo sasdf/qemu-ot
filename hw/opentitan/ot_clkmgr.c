@@ -95,6 +95,21 @@ REG32(MEASURE_REG_BASE, A_RECOV_ERR_CODE)
 #define ALERT_TEST_MASK \
     (R_ALERT_TEST_RECOV_FAULT_MASK | R_ALERT_TEST_FATAL_FAULT_MASK)
 
+#define OT_CLKMGR_PERMIT_1B 0x1u
+#define OT_CLKMGR_PERMIT_2B 0x3u
+#define OT_CLKMGR_PERMIT_4B 0xfu
+
+#define EXTCLK_CTRL_RESET \
+    ((OT_MULTIBITBOOL4_FALSE << R_EXTCLK_CTRL_HI_SPEED_SEL_SHIFT) | \
+     (OT_MULTIBITBOOL4_FALSE << R_EXTCLK_CTRL_SEL_SHIFT))
+
+#define CLK_ENABLES_MASK \
+    (R_CLK_ENABLES_CLK_IO_DIV4_PERI_EN_MASK | \
+     R_CLK_ENABLES_CLK_IO_DIV2_PERI_EN_MASK | \
+     R_CLK_ENABLES_CLK_IO_PERI_EN_MASK | R_CLK_ENABLES_CLK_USB_PERI_EN_MASK)
+
+#define CLK_HINTS_RESET_MASK 0xfu
+
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
 static const char *REG_NAMES[REGS_COUNT] = {
     REG_NAME_ENTRY(ALERT_TEST),       REG_NAME_ENTRY(EXTCLK_CTRL_REGWEN),
@@ -356,7 +371,7 @@ ot_clkmgr_get_clock_count(OtClkMgrState *s, const OtClkMgrClock *clk)
 static unsigned ot_clkmgr_get_measure_width(const OtClkMgrClock *clk)
 {
     if (!clk || clk->ratio == 0) {
-        return 10u;
+        return MEAS_CTRL_SHADOWED_HI_LENGTH;
     }
     return 32u - (unsigned)clz32((2u * clk->ratio) - 1u);
 }
@@ -1422,24 +1437,24 @@ static const Property ot_clkmgr_properties[] = {
 static uint32_t ot_clkmgr_get_permit(OtClkMgrState *s, hwaddr reg)
 {
     if (reg < R_MEASURE_REG_BASE) {
-        return 0x1u;
+        return OT_CLKMGR_PERMIT_1B;
     }
     if (reg < (R_MEASURE_REG_BASE + (s->measure_count * 2u))) {
         unsigned measure = (reg - R_MEASURE_REG_BASE) >> 1u;
         unsigned offset = (reg - R_MEASURE_REG_BASE) & 1u;
         if (offset == 0u) {
-            return 0x1u;
+            return OT_CLKMGR_PERMIT_1B;
         }
         unsigned width =
             ot_clkmgr_get_measure_width(s->measure_regs[measure].clock);
-        unsigned bytes = ((2u * width) + 7u) / 8u;
+        unsigned bytes = DIV_ROUND_UP(2u * width, BITS_PER_BYTE);
         return (1u << bytes) - 1u;
     }
     unsigned reg_err = reg - (s->measure_count * 2u);
     if (reg_err == R_RECOV_ERR_CODE) {
-        return 0x3u;
+        return OT_CLKMGR_PERMIT_2B;
     }
-    return 0x1u;
+    return OT_CLKMGR_PERMIT_1B;
 }
 
 static bool ot_clkmgr_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -1451,7 +1466,9 @@ static bool ot_clkmgr_accepts(void *opaque, hwaddr addr, unsigned size,
     }
     OtClkMgrState *s = opaque;
     uint32_t permit = ot_clkmgr_get_permit(s, R32_OFF(addr));
-    uint32_t reg_be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    uint32_t reg_be =
+        (((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u))) &
+        OT_CLKMGR_PERMIT_4B;
     return (permit & ~reg_be) == 0u;
 }
 
@@ -1484,7 +1501,7 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
          * clears any enabled *_MEAS_CTRL_EN to MuBi4False
          * (clkmgr_meas_chk.sv:81-85).
          */
-        s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
+        s->regs[R_MEASURE_CTRL_REGWEN] = R_MEASURE_CTRL_REGWEN_EN_MASK;
         for (unsigned ix = 0; ix < s->measure_count; ix++) {
             if (s->measure_regs[ix].ctrl_en != OT_MULTIBITBOOL4_FALSE) {
                 s->measure_regs[ix].ctrl_en = OT_MULTIBITBOOL4_FALSE;
@@ -1493,15 +1510,15 @@ static void ot_clkmgr_reset_enter(Object *obj, ResetType type)
     } else {
         memset(s->regs, 0, sizeof(s->regs));
 
-        s->regs[R_EXTCLK_CTRL_REGWEN] = 0x1u;
-        s->regs[R_EXTCLK_CTRL] = 0x99u;
-        s->regs[R_EXTCLK_STATUS] = 0x9u;
-        s->regs[R_JITTER_REGWEN] = 0x1u;
-        s->regs[R_JITTER_ENABLE] = 0x9u;
-        s->regs[R_CLK_ENABLES] = 0xfu;
-        s->regs[R_CLK_HINTS] = 0xfu;
-        s->regs[R_CLK_HINTS_STATUS] = 0xfu;
-        s->regs[R_MEASURE_CTRL_REGWEN] = 0x1u;
+        s->regs[R_EXTCLK_CTRL_REGWEN] = R_EXTCLK_CTRL_REGWEN_EN_MASK;
+        s->regs[R_EXTCLK_CTRL] = EXTCLK_CTRL_RESET;
+        s->regs[R_EXTCLK_STATUS] = OT_MULTIBITBOOL4_FALSE;
+        s->regs[R_JITTER_REGWEN] = R_JITTER_REGWEN_EN_MASK;
+        s->regs[R_JITTER_ENABLE] = OT_MULTIBITBOOL4_FALSE;
+        s->regs[R_CLK_ENABLES] = CLK_ENABLES_MASK;
+        s->regs[R_CLK_HINTS] = CLK_HINTS_RESET_MASK;
+        s->regs[R_CLK_HINTS_STATUS] = CLK_HINTS_RESET_MASK;
+        s->regs[R_MEASURE_CTRL_REGWEN] = R_MEASURE_CTRL_REGWEN_EN_MASK;
 
         ot_clkmgr_reset_measure_regs(s);
     }
