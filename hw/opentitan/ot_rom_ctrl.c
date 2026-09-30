@@ -116,6 +116,12 @@ static const char *REG_NAMES[REGS_COUNT] = {
 
 #define OT_ROM_CTRL_HEXSTR_SIZE (OT_ROM_DIGEST_BYTES * 2u + 2u)
 
+#define OT_ROM_CTRL_MIN_CHUNK_WORDS 4096u
+
+/* Subword byte-enable permission masks (rom_ctrl_reg_pkg.sv) */
+#define PERMIT_1B 0x1u
+#define PERMIT_4B 0xfu
+
 /* clang-format off */
 static const uint8_t SBOX4[16u] = {
     12u, 5u, 6u, 11u, 9u, 0u, 10u, 13u, 3u, 14u, 15u, 8u, 4u, 7u, 1u, 2u
@@ -1066,9 +1072,11 @@ static bool ot_rom_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     hwaddr reg = R32_OFF(addr);
-    uint32_t permit =
-        (reg == R_ALERT_TEST || reg == R_FATAL_ALERT_CAUSE) ? 0x1u : 0xfu;
-    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    uint32_t permit = (reg == R_ALERT_TEST || reg == R_FATAL_ALERT_CAUSE) ?
+                          PERMIT_1B :
+                          PERMIT_4B;
+    uint32_t be =
+        (((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u))) & PERMIT_4B;
     return (permit & ~be) == 0u;
 }
 
@@ -1314,7 +1322,8 @@ static void ot_rom_ctrl_realize(DeviceState *dev, Error **errp)
     unsigned chunk_addrbits = ctz32(wsize);
     unsigned addrbits = 32u - clz32(wsize - 1u);
     g_assert(addrbits > 0u && addrbits < 64u);
-    g_assert(is_power_of_2(wsize) || (wsize % 4096u == 0u));
+    g_assert(is_power_of_2(wsize) ||
+             (wsize % OT_ROM_CTRL_MIN_CHUNK_WORDS == 0u));
 
     uint8_t *bytes;
 
