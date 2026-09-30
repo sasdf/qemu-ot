@@ -1099,7 +1099,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_GPIO_ALERT(1, 24)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", OT_RSTMGR_VERSION_EG_1_0_0)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_CLKMGR] = {
@@ -2230,6 +2230,11 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
             IBEX_DEV_STRING_PROP("clocks", "main,io,usb"),
             IBEX_DEV_UINT_PROP("num-rom", 1u),
             IBEX_DEV_UINT_PROP("version", 2u)
+        ),
+    },
+    [OT_EG_SOC_DEV_RSTMGR] = {
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_CLKMGR] = {

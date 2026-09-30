@@ -33,13 +33,6 @@
 #define TYPE_OT_RSTMGR "ot-rstmgr"
 OBJECT_DECLARE_TYPE(OtRstMgrState, OtRstMgrClass, OT_RSTMGR)
 
-/* Supported ResetManager versions */
-typedef enum {
-    OT_RSTMGR_VERSION_EG_1_0_0,
-    OT_RSTMGR_VERSION_DJ,
-    OT_RSTMGR_VERSION_COUNT,
-} OtRstMgrVersion;
-
 /* Some reset reasons may not exist on the current platform */
 typedef enum {
     OT_RSTMGR_RESET_NONE,
