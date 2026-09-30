@@ -1699,30 +1699,22 @@ static bool ot_keymgr_dpe_main_fsm_tick(OtKeyMgrDpeState *s)
         }
         break;
     case KEYMGR_DPE_ST_WIPE:
-        memset(s->key_slots, 0u, NUM_SLOTS * sizeof(OtKeyMgrDpeSlot));
-        memset(s->saved_kmac_key, 0u, sizeof(OtKeyMgrDpeKey));
-        memset(s->sw_out_key, 0u, sizeof(OtKeyMgrDpeKey));
-        ot_keymgr_dpe_sideload_clear(s);
-        ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_INVALID);
+        ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_DISABLING);
         break;
     case KEYMGR_DPE_ST_DISABLING:
+        /* TODO wipe before going to disabled state */
         ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_DISABLED);
         break;
     case KEYMGR_DPE_ST_DISABLED:
         ot_keymgr_dpe_change_working_state(s,
                                            KEYMGR_DPE_WORKING_STATE_DISABLED);
-        if (!s->enabled) {
-            ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_WIPE);
-        } else if (op_start) {
+        if (op_start) {
             s->regs[R_ERR_CODE] |= R_ERR_CODE_INVALID_OP_MASK;
         }
         break;
     case KEYMGR_DPE_ST_INVALID:
     default:
         ot_keymgr_dpe_change_working_state(s, KEYMGR_DPE_WORKING_STATE_INVALID);
-        if (!s->enabled) {
-            ot_keymgr_dpe_change_main_fsm_state(s, KEYMGR_DPE_ST_WIPE);
-        }
         break;
     }
 
