@@ -1092,6 +1092,7 @@ static void ot_otp_eg_get_lc_info(
         *tokens = s->tokens;
     }
 }
+
 static void ot_otp_eg_get_keymgr_secret(
     OtOTPIf *dev, OtOTPKeyMgrSecretType type, OtOTPKeyMgrSecret *secret)
 {
@@ -1102,13 +1103,13 @@ static void ot_otp_eg_get_keymgr_secret(
     switch (type) {
     case OT_OTP_KEYMGR_SECRET_CREATOR_ROOT_KEY_SHARE0:
         partition = OTP_PART_SECRET2;
-        offset = A_SECRET2_CREATOR_ROOT_KEY_SHARE0 -
-                 OT_OTP_PART_DESCS[partition].offset;
+        offset =
+            A_SECRET2_CREATOR_ROOT_KEY_SHARE0 - s->part_descs[partition].offset;
         break;
     case OT_OTP_KEYMGR_SECRET_CREATOR_ROOT_KEY_SHARE1:
         partition = OTP_PART_SECRET2;
-        offset = A_SECRET2_CREATOR_ROOT_KEY_SHARE1 -
-                 OT_OTP_PART_DESCS[partition].offset;
+        offset =
+            A_SECRET2_CREATOR_ROOT_KEY_SHARE1 - s->part_descs[partition].offset;
         break;
     case OT_OTP_KEYMGR_SECRET_CREATOR_SEED:
     case OT_OTP_KEYMGR_SECRET_OWNER_SEED:

@@ -1752,13 +1752,14 @@ static uint32_t ot_lc_ctrl_regs_read(OtLcCtrlState *s, hwaddr addr,
             break;
         }
         break;
-    case R_OTP_VENDOR_TEST_STATUS:
-        val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) &&
-                        ot_lc_ctrl_is_vendor_test_state(
-                            LC_ENCODE_STATE(s->lc_state)) ?
+    case R_OTP_VENDOR_TEST_STATUS: {
+        bool is_vtest =
+            ot_lc_ctrl_is_vendor_test_state(LC_ENCODE_STATE(s->lc_state));
+        val32 = (ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) && is_vtest) ?
                     s->regs[reg] :
                     0u;
         break;
+    }
     case R_OTP_VENDOR_TEST_CTRL:
         val32 = ot_lc_ctrl_is_hw_mutex_owner(s, ifreq) ? s->regs[reg] : 0u;
         break;
@@ -2032,11 +2033,15 @@ static bool ot_lc_ctrl_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t permit =
-        (R32_OFF(addr) <= R_TRANSITION_CTRL ||
-         R32_OFF(addr) == R_LC_TRANSITION_CNT) ?
-            (R32_OFF(addr) == R_STATUS ? 0x3u : 0x1u) :
-            0xfu;
+    hwaddr reg = R32_OFF(addr);
+    uint32_t permit;
+    if (reg == R_STATUS) {
+        permit = 0x3u;
+    } else if (reg <= R_TRANSITION_CTRL || reg == R_LC_TRANSITION_CNT) {
+        permit = 0x1u;
+    } else {
+        permit = 0xfu;
+    }
     uint32_t be = ((1u << size) - 1u) << (addr & 3u);
     return (permit & ~be) == 0u;
 }
