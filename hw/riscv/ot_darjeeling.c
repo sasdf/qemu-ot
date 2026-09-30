@@ -765,7 +765,7 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
          OT_DJ_SOC_DEVLINK("noise-src", AST)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", 3)
+            IBEX_DEV_UINT_PROP("version", OT_VER_DJ)
         ),
     },
     [OT_DJ_SOC_DEV_EDN0] = {

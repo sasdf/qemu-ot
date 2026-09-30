@@ -501,6 +501,60 @@ struct OtEntropySrcState {
     DeviceState *noise_src;
 };
 
+typedef struct {
+    uint32_t regs_hi_base;
+    uint32_t conf_wmask;
+    uint32_t conf_reset;
+    uint32_t ht_windows_reset;
+    uint32_t thresh_reset;
+    unsigned entropy_data_reg_en_shift;
+    unsigned threshold_scope_shift;
+    bool has_rev_reg;
+    bool has_bypass_thresholds;
+    bool has_threshold_oneway;
+} OtEntropySrcConfig;
+
+/* clang-format off */
+static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .regs_hi_base = REGS_HI_V2_BASE,
+        .conf_wmask = CONF_V2_WMASK,
+        .conf_reset = 0x2649999u,
+        .ht_windows_reset = 0x600200u,
+        .thresh_reset = 0xffffffffu,
+        .entropy_data_reg_en_shift = R_CONF_V2_ENTROPY_DATA_REG_ENABLE_SHIFT,
+        .threshold_scope_shift = R_CONF_V2_THRESHOLD_SCOPE_SHIFT,
+        .has_rev_reg = true,
+        .has_bypass_thresholds = true,
+        .has_threshold_oneway = false,
+    },
+    [OT_VER_DJ] = {
+        .regs_hi_base = REGS_HI_V3_BASE,
+        .conf_wmask = CONF_V3_WMASK,
+        .conf_reset = 0x999999u,
+        .ht_windows_reset = 0x1800200u,
+        .thresh_reset = 0xffffu,
+        .entropy_data_reg_en_shift = R_CONF_V3_ENTROPY_DATA_REG_ENABLE_SHIFT,
+        .threshold_scope_shift = R_CONF_V3_THRESHOLD_SCOPE_SHIFT,
+        .has_rev_reg = false,
+        .has_bypass_thresholds = false,
+        .has_threshold_oneway = true,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .regs_hi_base = REGS_HI_V3_BASE,
+        .conf_wmask = CONF_V3_WMASK,
+        .conf_reset = 0x999999u,
+        .ht_windows_reset = 0x1800200u,
+        .thresh_reset = 0xffffu,
+        .entropy_data_reg_en_shift = R_CONF_V3_ENTROPY_DATA_REG_ENABLE_SHIFT,
+        .threshold_scope_shift = R_CONF_V3_THRESHOLD_SCOPE_SHIFT,
+        .has_rev_reg = false,
+        .has_bypass_thresholds = false,
+        .has_threshold_oneway = true,
+    },
+};
+/* clang-format on */
+
 static const uint16_t OtEDNFsmStateCode[] = {
     [ENTROPY_SRC_IDLE] = 0b011110101,
     [ENTROPY_SRC_BOOT_HT_RUNNING] = 0b111010010,
@@ -695,7 +749,7 @@ static void ot_entropy_src_show_buffer(
 
 static inline uint32_t ot_entropy_src_hi_reg_base(const OtEntropySrcState *s)
 {
-    return (s->version < 3) ? REGS_HI_V2_BASE : REGS_HI_V3_BASE;
+    return ENTROPY_SRC_CONFIG[s->version].regs_hi_base;
 }
 
 static inline uint32_t
@@ -895,6 +949,7 @@ static bool ot_entropy_src_mb4_is_invalid(uint8_t mbbool)
 
 static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
 {
+    const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
 #define CHK_MB4(_reg_, _fld_, _bit_) \
     (ot_entropy_src_mb4_is_invalid( \
          FIELD_EX32(s->regs_hi[R_##_reg_], _reg_, _fld_)) ? \
@@ -906,23 +961,29 @@ static uint32_t ot_entropy_src_get_cfg_alerts(const OtEntropySrcState *s)
         CHK_MB4(CONF, FIPS_FLAG, FIPS_FLAG) |
         CHK_MB4(CONF, RNG_FIPS, RNG_FIPS) |
         CHK_MB4(CONF, RNG_BIT_ENABLE, RNG_BIT_ENABLE) |
-        ((s->version < 3) ?
-             (CHK_MB4(CONF, V2_ENTROPY_DATA_REG_ENABLE,
-                      ENTROPY_DATA_REG_ENABLE) |
-              CHK_MB4(CONF, V2_THRESHOLD_SCOPE, THRESHOLD_SCOPE)) :
-             (CHK_MB4(CONF, V3_ENTROPY_DATA_REG_ENABLE,
-                      ENTROPY_DATA_REG_ENABLE) |
-              CHK_MB4(CONF, V3_THRESHOLD_SCOPE, THRESHOLD_SCOPE) |
-              (ot_entropy_src_mb4_is_invalid(
-                   (uint8_t)(s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu)) ?
-                   R_RECOV_ALERT_STS_THRESHOLD_ONEWAY_FIELD_ALERT_MASK :
-                   0u))) |
         CHK_MB4(ENTROPY_CONTROL, ES_ROUTE, ES_ROUTE) |
         CHK_MB4(ENTROPY_CONTROL, ES_TYPE, ES_TYPE) |
         CHK_MB4(FW_OV_CONTROL, FW_OV_MODE, FW_OV_MODE) |
         CHK_MB4(FW_OV_CONTROL, FW_OV_ENTROPY_INSERT, FW_OV_ENTROPY_INSERT) |
         CHK_MB4(FW_OV_SHA3_START, FW_OV_INSERT_START, FW_OV_SHA3_START);
 #undef CHK_MB4
+    uint8_t ed_en =
+        (uint8_t)((s->regs_hi[R_CONF] >> cfg->entropy_data_reg_en_shift) &
+                  0xfu);
+    if (ot_entropy_src_mb4_is_invalid(ed_en)) {
+        alerts |= R_RECOV_ALERT_STS_ENTROPY_DATA_REG_ENABLE_FIELD_ALERT_MASK;
+    }
+    uint8_t th_scope =
+        (uint8_t)((s->regs_hi[R_CONF] >> cfg->threshold_scope_shift) & 0xfu);
+    if (ot_entropy_src_mb4_is_invalid(th_scope)) {
+        alerts |= R_RECOV_ALERT_STS_THRESHOLD_SCOPE_FIELD_ALERT_MASK;
+    }
+    if (cfg->has_threshold_oneway) {
+        uint8_t oneway = (uint8_t)(s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu);
+        if (ot_entropy_src_mb4_is_invalid(oneway)) {
+            alerts |= R_RECOV_ALERT_STS_THRESHOLD_ONEWAY_FIELD_ALERT_MASK;
+        }
+    }
     if ((uint16_t)s->regs_hi[R_ALERT_THRESHOLD] !=
         (uint16_t)(~(s->regs_hi[R_ALERT_THRESHOLD] >> 16u))) {
         alerts |= R_RECOV_ALERT_STS_ES_THRESH_CFG_ALERT_MASK;
@@ -1133,9 +1194,8 @@ ot_entropy_src_push_bypass_entropy(OtEntropySrcState *s, uint32_t word)
 
 static bool ot_entropy_src_is_entropy_data_enabled(const OtEntropySrcState *s)
 {
-    return (s->version < 3) ?
-               REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE) :
-               REG_MB4_IS_TRUE(s, hi, CONF, V3_ENTROPY_DATA_REG_ENABLE);
+    unsigned shift = ENTROPY_SRC_CONFIG[s->version].entropy_data_reg_en_shift;
+    return ((s->regs_hi[R_CONF] >> shift) & 0xfu) == OT_MULTIBITBOOL4_TRUE;
 }
 
 static void ot_entropy_src_update_fw_route(OtEntropySrcState *s)
@@ -1172,7 +1232,7 @@ static void
 ot_entropy_src_update_watermark(OtEntropySrcState *s, unsigned reg, bool bypass,
                                 uint16_t val, bool low_watermark)
 {
-    if (s->version >= 3) {
+    if (!ENTROPY_SRC_CONFIG[s->version].has_bypass_thresholds) {
         return;
     }
     unsigned shift = bypass ? 16u : 0u;
@@ -1197,11 +1257,11 @@ ot_entropy_src_inc_alert_fail_count(OtEntropySrcState *s, unsigned shift)
 static bool
 ot_entropy_src_eval_health_tests(OtEntropySrcState *s, unsigned window_symbols)
 {
+    const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
     bool bypass = ot_entropy_src_is_bypass_mode(s);
-    unsigned shift = (s->version < 3 && bypass) ? 16u : 0u;
-    bool scope = (s->version < 3) ?
-                     REG_MB4_IS_TRUE(s, hi, CONF, V2_THRESHOLD_SCOPE) :
-                     REG_MB4_IS_TRUE(s, hi, CONF, V3_THRESHOLD_SCOPE);
+    unsigned shift = (cfg->has_bypass_thresholds && bypass) ? 16u : 0u;
+    bool scope = ((s->regs_hi[R_CONF] >> cfg->threshold_scope_shift) & 0xfu) ==
+                 OT_MULTIBITBOOL4_TRUE;
 
     uint16_t repcnt_hi = (uint16_t)(s->regs_hi[R_REPCNT_THRESHOLDS] >> shift);
     uint16_t repcnts_hi = (uint16_t)(s->regs_hi[R_REPCNTS_THRESHOLDS] >> shift);
@@ -1456,10 +1516,7 @@ static bool ot_entropy_src_consume_entropy(OtEntropySrcState *s, uint32_t word)
 
 static uint32_t ot_entropy_src_get_entropy_data(OtEntropySrcState *s)
 {
-    bool is_entropy_data_enabled =
-        (s->version < 3) ?
-            REG_MB4_IS_TRUE(s, hi, CONF, V2_ENTROPY_DATA_REG_ENABLE) :
-            REG_MB4_IS_TRUE(s, hi, CONF, V3_ENTROPY_DATA_REG_ENABLE);
+    bool is_entropy_data_enabled = ot_entropy_src_is_entropy_data_enabled(s);
 
     if (ot_entropy_src_is_module_enabled(s) && is_entropy_data_enabled) {
         bool done = (s->swread_idx == ES_WORD_COUNT - 1u);
@@ -1664,7 +1721,7 @@ ot_entropy_src_rev_regs_read(void *opaque, hwaddr addr, unsigned size)
     (void)size;
     uint32_t val32;
 
-    g_assert(s->version < 3 && s->regs_rev);
+    g_assert(ENTROPY_SRC_CONFIG[s->version].has_rev_reg && s->regs_rev);
 
     hwaddr reg = R32_OFF(addr);
 
@@ -1688,7 +1745,7 @@ ot_entropy_src_rev_regs_read(void *opaque, hwaddr addr, unsigned size)
 
 static hwaddr ot_entropy_src_hi_reg_map(const OtEntropySrcState *s, hwaddr reg)
 {
-    if (s->version < 3) {
+    if (!ENTROPY_SRC_CONFIG[s->version].has_threshold_oneway) {
         return reg;
     }
     if (reg <= R_HEALTH_TEST_WINDOWS) {
@@ -1866,19 +1923,6 @@ ot_entropy_src_hi_regs_read(void *opaque, hwaddr addr, unsigned size)
         } \
     } while (0)
 
-#define CHECK_MULTIBOOT_VER(_s_, _g_, _r_, _v_, _b_) \
-    do { \
-        if (!ot_entropy_src_check_multibitboot( \
-                (_s_), FIELD_EX32(s->regs##_##_g_[R_##_r_], _r_, _v_##_##_b_), \
-                ALERT_STATUS_BIT(_b_))) { \
-            qemu_log_mask(LOG_GUEST_ERROR, \
-                          "%s: %s: invalid multiboot value 0x%1x\n", __func__, \
-                          (_s_)->ot_id, \
-                          FIELD_EX32((_s_)->regs##_##_g_[R_##_r_], _r_, \
-                                     _v_##_##_b_)); \
-        } \
-    } while (0)
-
 static void ot_entropy_src_lo_regs_write(void *opaque, hwaddr addr,
                                          uint64_t val64, unsigned size)
 {
@@ -1975,6 +2019,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                                          uint64_t val64, unsigned size)
 {
     OtEntropySrcState *s = opaque;
+    const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
     (void)size;
     uint32_t val32 = (uint32_t)val64;
 
@@ -1984,7 +2029,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     trace_ot_entropy_src_io_write(s->ot_id, ot_entropy_src_hi_reg_addr(s, addr),
                                   REG_HI_NAME(reg), val32, pc);
 
-    if (s->version >= 3 && R32_OFF(addr) == 5u) {
+    if (cfg->has_threshold_oneway && R32_OFF(addr) == 5u) {
         /*
          * THRESHOLD_ONEWAY (u_threshold_oneway: SwAccessW1S with Mubi = 1'b1,
          * prim_mubi_pkg::mubi4_or_hi(q, wd)). Note: threshold_oneway_pfa sets
@@ -2001,7 +2046,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         }
         return;
     }
-    if (s->version >= 3 && R32_OFF(addr) == 15u) {
+    if (cfg->has_threshold_oneway && R32_OFF(addr) == 15u) {
         /* HT_WATERMARK_NUM */
         if (s->regs_lo[R_REGWEN]) {
             s->regs_hi[R_REPCNTS_HI_WATERMARKS] = val32 & 0xfu;
@@ -2038,7 +2083,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
                 s->regs_hi[R_MARKOV_LO_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_HI_TOTAL_FAILS] = 0u;
                 s->regs_hi[R_EXTHT_LO_TOTAL_FAILS] = 0u;
-                if (s->version < 3) {
+                if (cfg->has_bypass_thresholds) {
                     s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_REPCNTS_HI_WATERMARKS] = 0u;
                     s->regs_hi[R_ADAPTP_HI_WATERMARKS] = 0u;
@@ -2096,18 +2141,28 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
         break;
     case R_CONF:
         if (s->regs_lo[R_REGWEN]) {
-            val32 &= (s->version < 3) ? CONF_V2_WMASK : CONF_V3_WMASK;
+            val32 &= cfg->conf_wmask;
             s->regs_hi[reg] = val32;
             CHECK_MULTIBOOT(s, hi, CONF, FIPS_ENABLE);
             CHECK_MULTIBOOT(s, hi, CONF, FIPS_FLAG);
             CHECK_MULTIBOOT(s, hi, CONF, RNG_FIPS);
             CHECK_MULTIBOOT(s, hi, CONF, RNG_BIT_ENABLE);
-            if (s->version < 3) {
-                CHECK_MULTIBOOT_VER(s, hi, CONF, V2, ENTROPY_DATA_REG_ENABLE);
-                CHECK_MULTIBOOT_VER(s, hi, CONF, V2, THRESHOLD_SCOPE);
-            } else {
-                CHECK_MULTIBOOT_VER(s, hi, CONF, V3, ENTROPY_DATA_REG_ENABLE);
-                CHECK_MULTIBOOT_VER(s, hi, CONF, V3, THRESHOLD_SCOPE);
+            uint8_t ed_en =
+                (uint8_t)((val32 >> cfg->entropy_data_reg_en_shift) & 0xfu);
+            if (!ot_entropy_src_check_multibitboot(
+                    s, ed_en, ALERT_STATUS_BIT(ENTROPY_DATA_REG_ENABLE))) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "%s: %s: invalid multiboot value 0x%1x\n",
+                              __func__, s->ot_id, ed_en);
+            }
+            uint8_t th_scope =
+                (uint8_t)((val32 >> cfg->threshold_scope_shift) & 0xfu);
+            if (!ot_entropy_src_check_multibitboot(s, th_scope,
+                                                   ALERT_STATUS_BIT(
+                                                       THRESHOLD_SCOPE))) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "%s: %s: invalid multiboot value 0x%1x\n",
+                              __func__, s->ot_id, th_scope);
             }
         }
         break;
@@ -2131,7 +2186,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_HI_THRESHOLDS:
     case R_EXTHT_HI_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            if (s->version >= 3) {
+            if (cfg->has_threshold_oneway) {
                 uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
                 uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
                 bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
@@ -2154,7 +2209,7 @@ static void ot_entropy_src_hi_regs_write(void *opaque, hwaddr addr,
     case R_MARKOV_LO_THRESHOLDS:
     case R_EXTHT_LO_THRESHOLDS:
         if (s->regs_lo[R_REGWEN]) {
-            if (s->version >= 3) {
+            if (cfg->has_threshold_oneway) {
                 uint16_t cur_lo = (uint16_t)(s->regs_hi[reg] & 0xffffu);
                 uint16_t wr_lo = (uint16_t)(val32 & 0xffffu);
                 bool oneway = ((s->regs_hi[R_REPCNT_HI_WATERMARKS] & 0xfu) !=
@@ -2335,6 +2390,7 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
                                       bool is_write, MemTxAttrs attrs)
 {
     const OtEntropySrcState *s = opaque;
+    const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
     (void)attrs;
     hwaddr raw_reg = R32_OFF(addr);
     hwaddr reg = ot_entropy_src_hi_reg_map(s, raw_reg);
@@ -2345,9 +2401,9 @@ static bool ot_entropy_src_hi_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint8_t permit;
-    if (s->version >= 3 && (raw_reg == 5u || raw_reg == 15u)) {
+    if (cfg->has_threshold_oneway && (raw_reg == 5u || raw_reg == 15u)) {
         permit = 0x1u;
-    } else if (s->version >= 3 && raw_reg >= 6u && raw_reg <= 16u) {
+    } else if (cfg->has_threshold_oneway && raw_reg >= 6u && raw_reg <= 16u) {
         permit = 0x3u;
     } else {
         switch (reg) {
@@ -2408,7 +2464,7 @@ static const MemoryRegionOps ot_entropy_src_hi_ops = {
 
 static const Property ot_entropy_src_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtEntropySrcState, ot_id),
-    DEFINE_PROP_UINT32("version", OtEntropySrcState, version, 0),
+    DEFINE_PROP_UINT32("version", OtEntropySrcState, version, UINT32_MAX),
     DEFINE_PROP_LINK("noise-src", OtEntropySrcState, noise_src, TYPE_DEVICE,
                      DeviceState *),
 };
@@ -2417,6 +2473,7 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
 {
     OtEntropySrcClass *c = OT_ENTROPY_SRC_GET_CLASS(obj);
     OtEntropySrcState *s = OT_ENTROPY_SRC(obj);
+    const OtEntropySrcConfig *cfg = &ENTROPY_SRC_CONFIG[s->version];
 
     trace_ot_entropy_src_reset(s->ot_id, "enter");
 
@@ -2425,7 +2482,7 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
     }
 
     memset(s->regs_lo, 0, REGS_LO_SIZE);
-    if (s->version < 3) {
+    if (cfg->has_rev_reg) {
         memset(s->regs_rev, 0, REGS_REV_SIZE);
     }
     memset(s->regs_hi, 0, REGS_HI_SIZE);
@@ -2433,32 +2490,23 @@ static void ot_entropy_src_reset_enter(Object *obj, ResetType type)
     s->regs_lo[R_ME_REGWEN] = 0x00000001u;
     s->regs_lo[R_SW_REGUPD] = 0x00000001u;
     s->regs_lo[R_REGWEN] = 0x00000001u;
-    if (s->version < 3) {
+    if (cfg->has_rev_reg) {
         s->regs_rev[R_REV] = 0x10303u;
-        s->regs_hi[R_CONF] = 0x2649999u;
-        s->regs_hi[R_HEALTH_TEST_WINDOWS] = 0x600200u;
-    } else {
-        s->regs_hi[R_CONF] = 0x999999u;
-        s->regs_hi[R_HEALTH_TEST_WINDOWS] = 0x1800200u;
     }
+    s->regs_hi[R_CONF] = cfg->conf_reset;
+    s->regs_hi[R_HEALTH_TEST_WINDOWS] = cfg->ht_windows_reset;
 
     s->regs_hi[R_MODULE_ENABLE] = 0x9u;
     s->regs_hi[R_ENTROPY_CONTROL] = 0x99u;
-    if (s->version >= 3) {
+    s->regs_hi[R_REPCNT_THRESHOLDS] = cfg->thresh_reset;
+    s->regs_hi[R_REPCNTS_THRESHOLDS] = cfg->thresh_reset;
+    s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = cfg->thresh_reset;
+    s->regs_hi[R_BUCKET_THRESHOLDS] = cfg->thresh_reset;
+    s->regs_hi[R_MARKOV_HI_THRESHOLDS] = cfg->thresh_reset;
+    s->regs_hi[R_EXTHT_HI_THRESHOLDS] = cfg->thresh_reset;
+    if (cfg->has_threshold_oneway) {
         s->regs_hi[R_REPCNT_HI_WATERMARKS] = 0x9u; /* THRESHOLD_ONEWAY */
-        s->regs_hi[R_REPCNT_THRESHOLDS] = 0xffffu;
-        s->regs_hi[R_REPCNTS_THRESHOLDS] = 0xffffu;
-        s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = 0xffffu;
-        s->regs_hi[R_BUCKET_THRESHOLDS] = 0xffffu;
-        s->regs_hi[R_MARKOV_HI_THRESHOLDS] = 0xffffu;
-        s->regs_hi[R_EXTHT_HI_THRESHOLDS] = 0xffffu;
     } else {
-        s->regs_hi[R_REPCNT_THRESHOLDS] = 0xffffffffu;
-        s->regs_hi[R_REPCNTS_THRESHOLDS] = 0xffffffffu;
-        s->regs_hi[R_ADAPTP_HI_THRESHOLDS] = 0xffffffffu;
-        s->regs_hi[R_BUCKET_THRESHOLDS] = 0xffffffffu;
-        s->regs_hi[R_MARKOV_HI_THRESHOLDS] = 0xffffffffu;
-        s->regs_hi[R_EXTHT_HI_THRESHOLDS] = 0xffffffffu;
         s->regs_hi[R_ADAPTP_LO_WATERMARKS] = 0xffffffffu;
         s->regs_hi[R_EXTHT_LO_WATERMARKS] = 0xffffffffu;
         s->regs_hi[R_MARKOV_LO_WATERMARKS] = 0xffffffffu;
@@ -2522,14 +2570,15 @@ static void ot_entropy_src_realize(DeviceState *dev, Error **errp)
     OtEntropySrcState *s = OT_ENTROPY_SRC(dev);
 
     /* emulated version should be specified */
-    g_assert(s->version > 0);
+    g_assert(s->version < OT_VER_COUNT);
     g_assert(s->noise_src);
 
     memory_region_init_io(&s->mmio_lo, OBJECT(dev), &ot_entropy_src_lo_ops, s,
                           TYPE_OT_ENTROPY_SRC "-regs-lo", REGS_LO_SIZE);
     memory_region_add_subregion(&s->mmio, REGS_LO_BASE, &s->mmio_lo);
 
-    if (s->version < 3) {
+    if (ENTROPY_SRC_CONFIG[s->version].has_rev_reg) {
+        s->regs_rev = g_new0(uint32_t, REGS_REV_COUNT);
         memory_region_init_io(&s->mmio_rev, OBJECT(dev),
                               &ot_entropy_src_rev_ops, s,
                               TYPE_OT_ENTROPY_SRC "-regs-rev", REGS_REV_SIZE);
@@ -2559,9 +2608,6 @@ static void ot_entropy_src_init(Object *obj)
      * version needs to be known to map the registers at the proper addresses.
      */
     s->regs_lo = g_new0(uint32_t, REGS_LO_COUNT);
-    if (s->version < 3) {
-        s->regs_rev = g_new0(uint32_t, REGS_REV_COUNT);
-    }
     s->regs_hi = g_new0(uint32_t, REGS_HI_COUNT);
 
     for (unsigned ix = 0; ix < NUM_IRQS; ix++) {

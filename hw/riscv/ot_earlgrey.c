@@ -1495,7 +1495,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_DEVLINK("noise-src", AST)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", 2)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
         ),
     },
     [OT_EG_SOC_DEV_EDN0] = {
@@ -2222,7 +2222,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
     },
     [OT_EG_SOC_DEV_ENTROPY_SRC] = {
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", 3u)
+            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
         ),
     },
     [OT_EG_SOC_DEV_PWRMGR] = {
