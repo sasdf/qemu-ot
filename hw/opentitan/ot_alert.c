@@ -250,7 +250,7 @@ struct OtAlertState {
     uint8_t n_low_power_groups;
     uint8_t n_classes;
     uint32_t crashdump_latched;
-    uint32_t latched_dump[9];
+    uint32_t latched_dump[OT_ALERT_CRASHDUMP_WORDS];
     QEMUTimer reseed_timer;
     bool edn_connected;
     bool entropy_requested;
@@ -278,15 +278,42 @@ static const char *ST_NAMES[] = {
 };
 #undef ST_NAME_ENTRY
 
+#define PARAM_N_CLASSES 4u
+
+#define OT_ALERT_PERMIT_1B 0x1u
+#define OT_ALERT_PERMIT_2B 0x3u
+#define OT_ALERT_PERMIT_4B 0xfu
+
+#define PING_SPURIOUS_TIMEOUT_MAX 2u
+#define PING_RESEED_TIMER_CYCLES  0x7ffffULL
+#define PING_RESEED_INIT_DELAY_NS 100000LL
+
+#define CRASHDUMP_MAX_ALERTS    66u
+#define CRASHDUMP_ESC_STATE_BIT 0u
+#define CRASHDUMP_ESC_CNT_BIT \
+    (CRASHDUMP_ESC_STATE_BIT + PARAM_N_CLASSES * CLASS_STATE_LENGTH)
+#define CRASHDUMP_ACCUM_CNT_BIT \
+    (CRASHDUMP_ESC_CNT_BIT + PARAM_N_CLASSES * PARAM_ESC_CNT_DW)
+#define CRASHDUMP_LOC_CAUSE_BIT \
+    (CRASHDUMP_ACCUM_CNT_BIT + PARAM_N_CLASSES * PARAM_ACCU_CNT_DW)
+#define CRASHDUMP_ALERT_CAUSE_BIT (CRASHDUMP_LOC_CAUSE_BIT + LOCAL_ALERT_COUNT)
+
+enum {
+    ESC_SIG_0,
+    ESC_SIG_1,
+    ESC_SIG_2,
+    ESC_SIG_3,
+};
+
 static inline uint8_t ot_alert_mask_to_permit(uint32_t mask)
 {
-    if (mask > 0xffffu) {
-        return 0xfu;
+    if (mask > UINT16_MAX) {
+        return OT_ALERT_PERMIT_4B;
     }
-    if (mask > 0xffu) {
-        return 0x3u;
+    if (mask > UINT8_MAX) {
+        return OT_ALERT_PERMIT_2B;
     }
-    return 0x1u;
+    return OT_ALERT_PERMIT_1B;
 }
 
 #define R_ACC_MPA(_r_, _w_, _m_, _p_, _u_) (OtAlertAccess) { \
@@ -353,7 +380,8 @@ static bool ot_alert_is_class_enabled(const OtAlertState *s, unsigned nclass)
     return (ctrl & CLASS_CTRL_SHADOWED_EN_MASK) && (ctrl & esc_en_mask);
 }
 
-static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9]);
+static void ot_alert_build_crashdump(OtAlertState *s,
+                                     uint32_t dump[OT_ALERT_CRASHDUMP_WORDS]);
 static void ot_alert_fsm_update(OtAlertState *s, unsigned nclass,
                                 bool from_timer, bool accu_trig);
 static void ot_alert_enter_phase0(OtAlertState *s, unsigned nclass);
@@ -492,8 +520,9 @@ static uint32_t ot_alert_reg_esc_count_read(OtAlertState *s, unsigned reg)
     return cnt;
 }
 
-static void ot_alert_set_dump_bits(uint32_t dump[9], unsigned start_bit,
-                                   unsigned width, uint64_t val)
+static void ot_alert_set_dump_bits(uint32_t dump[OT_ALERT_CRASHDUMP_WORDS],
+                                   unsigned start_bit, unsigned width,
+                                   uint64_t val)
 {
     for (unsigned i = 0; i < width; i++) {
         unsigned bit_pos = start_bit + i;
@@ -505,28 +534,36 @@ static void ot_alert_set_dump_bits(uint32_t dump[9], unsigned start_bit,
     }
 }
 
-static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
+static void ot_alert_build_crashdump(OtAlertState *s,
+                                     uint32_t dump[OT_ALERT_CRASHDUMP_WORDS])
 {
-    memset(dump, 0, sizeof(uint32_t) * 9u);
+    memset(dump, 0, sizeof(uint32_t) * OT_ALERT_CRASHDUMP_WORDS);
 
     /* class_esc_state[0..3]: 4 x 3 bits at bit 0..11 */
-    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
-        uint32_t state = DVAL(s->regs.classes[c].state) & 0x7u;
-        ot_alert_set_dump_bits(dump, c * 3u, 3u, state);
+    for (unsigned c = 0; c < s->n_classes && c < PARAM_N_CLASSES; c++) {
+        uint32_t state = DVAL(s->regs.classes[c].state) & CLASS_STATE_MASK;
+        ot_alert_set_dump_bits(dump,
+                               CRASHDUMP_ESC_STATE_BIT + c * CLASS_STATE_LENGTH,
+                               CLASS_STATE_LENGTH, state);
     }
 
     /* class_esc_cnt[0..3]: 4 x 32 bits at bit 12..139 */
-    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
+    for (unsigned c = 0; c < s->n_classes && c < PARAM_N_CLASSES; c++) {
         unsigned reg = s->reg_aclass_pos + c * REG_COUNT(OtAlertAClass) +
                        offsetof(OtAlertAClass, esc_cnt) / sizeof(OtShadowReg);
         uint32_t esc_cnt = ot_alert_reg_esc_count_read(s, reg);
-        ot_alert_set_dump_bits(dump, 12u + c * 32u, 32u, esc_cnt);
+        ot_alert_set_dump_bits(dump,
+                               CRASHDUMP_ESC_CNT_BIT + c * PARAM_ESC_CNT_DW,
+                               PARAM_ESC_CNT_DW, esc_cnt);
     }
 
     /* class_accum_cnt[0..3]: 4 x 16 bits at bit 140..203 */
-    for (unsigned c = 0; c < s->n_classes && c < 4u; c++) {
-        uint32_t accum_cnt = DVAL(s->regs.classes[c].accum_cnt) & 0xffffu;
-        ot_alert_set_dump_bits(dump, 140u + c * 16u, 16u, accum_cnt);
+    for (unsigned c = 0; c < s->n_classes && c < PARAM_N_CLASSES; c++) {
+        uint32_t accum_cnt =
+            DVAL(s->regs.classes[c].accum_cnt) & CLASS_ACCUM_CNT_MASK;
+        ot_alert_set_dump_bits(dump,
+                               CRASHDUMP_ACCUM_CNT_BIT + c * PARAM_ACCU_CNT_DW,
+                               PARAM_ACCU_CNT_DW, accum_cnt);
     }
 
     /* loc_alert_cause[6:0]: 7 bits at bit 204..210 */
@@ -536,20 +573,23 @@ static void ot_alert_build_crashdump(OtAlertState *s, uint32_t dump[9])
             loc_cause |= (1u << i);
         }
     }
-    ot_alert_set_dump_bits(dump, 204u, 7u, loc_cause);
+    ot_alert_set_dump_bits(dump, CRASHDUMP_LOC_CAUSE_BIT, LOCAL_ALERT_COUNT,
+                           loc_cause);
 
     /* alert_cause[0..65]: up to 66 bits at bit 211..276 */
-    for (unsigned i = 0; i < s->n_alerts && i < 66u; i++) {
+    for (unsigned i = 0; i < s->n_alerts && i < CRASHDUMP_MAX_ALERTS; i++) {
         uint32_t cause =
             (DVAL(s->regs.alerts.cause[i]) & ALERT_CAUSE_EN_MASK) ? 1u : 0u;
-        ot_alert_set_dump_bits(dump, 211u + i, 1u, cause);
+        ot_alert_set_dump_bits(dump, CRASHDUMP_ALERT_CAUSE_BIT + i, 1u, cause);
     }
 }
 
-void ot_alert_get_crash_dump(OtAlertState *s, uint32_t dump[9])
+void ot_alert_get_crash_dump(OtAlertState *s,
+                             uint32_t dump[OT_ALERT_CRASHDUMP_WORDS])
 {
     if (s->crashdump_latched != 0) {
-        memcpy(dump, s->latched_dump, sizeof(uint32_t) * 9u);
+        memcpy(dump, s->latched_dump,
+               sizeof(uint32_t) * OT_ALERT_CRASHDUMP_WORDS);
     } else {
         ot_alert_build_crashdump(s, dump);
     }
@@ -691,19 +731,19 @@ static uint32_t ot_alert_get_phase_signals_mask(const OtAlertState *s,
 
     if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E0) &&
         SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E0) == phase) {
-        mask |= (1u << 0);
+        mask |= BIT(ESC_SIG_0);
     }
     if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E1) &&
         SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E1) == phase) {
-        mask |= (1u << 1);
+        mask |= BIT(ESC_SIG_1);
     }
     if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E2) &&
         SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E2) == phase) {
-        mask |= (1u << 2);
+        mask |= BIT(ESC_SIG_2);
     }
     if (SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_EN_E3) &&
         SHARED_FIELD_EX32(ctrl, CLASS_CTRL_SHADOWED_MAP_E3) == phase) {
-        mask |= (1u << 3);
+        mask |= BIT(ESC_SIG_3);
     }
     return mask;
 }
@@ -974,7 +1014,8 @@ static bool ot_alert_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
     return (s->access_table[reg].permit & ~reg_be) == 0u;
 }
 
@@ -1074,7 +1115,7 @@ static void ot_alert_check_ping_timer(OtAlertState *s)
     bool ping_en = (bool)ot_shadow_reg_peek(&s->regs.ping->timer_en_shadowed);
     uint32_t timeout = ot_shadow_reg_peek(&s->regs.ping->timeout_cyc_shadowed);
 
-    if (ping_en && timeout > 0 && timeout <= 2) {
+    if (ping_en && timeout > 0 && timeout <= PING_SPURIOUS_TIMEOUT_MAX) {
         ot_alert_raise_local(s, LOCAL_ALERT_ALERT_PINGFAIL);
         ot_alert_raise_local(s, LOCAL_ALERT_ESC_PINGFAIL);
         ot_alert_signal_tx(s, 0, 1);
@@ -1237,7 +1278,7 @@ static void ot_alert_fill_access_table(OtAlertState *s)
         table[offset++] = R_ACC(esc_count_read, read_only);
 
         /* CLASS_STATE */
-        table[offset++] = R_ACC_M(direct_read, read_only, 0x7u);
+        table[offset++] = R_ACC_M(direct_read, read_only, CLASS_STATE_MASK);
     }
 
     g_assert(offset == s->reg_count);
@@ -1281,7 +1322,8 @@ static void ot_alert_fill_entropy(void *opaque, uint32_t bits, bool fips)
      * cycles) at the 24 MHz I/O Div4 clock (~21.845 ms).
      */
     uint32_t pclk = MAX(s->pclks[OT_ALERT_CLOCK_SRC_IO], 1u);
-    uint64_t reseed_ns = muldiv64(0x7ffffULL, NANOSECONDS_PER_SECOND, pclk);
+    uint64_t reseed_ns =
+        muldiv64(PING_RESEED_TIMER_CYCLES, NANOSECONDS_PER_SECOND, pclk);
     timer_mod(&s->reseed_timer,
               qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + (int64_t)reseed_ns);
 }
@@ -1318,7 +1360,8 @@ static void ot_alert_reset_enter(Object *obj, ResetType type)
 
     timer_del(&s->reseed_timer);
     s->entropy_requested = false;
-    timer_mod(&s->reseed_timer, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 100000LL);
+    timer_mod(&s->reseed_timer,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + PING_RESEED_INIT_DELAY_NS);
 
     for (unsigned ix = 0; ix < s->n_classes; ix++) {
         qemu_bh_cancel(s->schedulers[ix].esc_releaser);
