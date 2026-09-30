@@ -1398,7 +1398,7 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
             OT_DJ_SOC_DEVLINK("clock-src", AST)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_UINT_PROP("version", OT_CLKMGR_VERSION_DJ)
+            IBEX_DEV_UINT_PROP("version", OT_VER_DJ)
         ),
     },
     [OT_DJ_SOC_DEV_PINMUX] = {
