@@ -330,10 +330,11 @@ static void ot_ibex_wrapper_update_alerts(OtIbexWrapperState *s)
     if (s->regs.sw_recov_err != OT_MULTIBITBOOL4_FALSE) {
         level |= ALERT_RECOV_SW_MASK;
     }
-    if ((s->regs.err_status &
-         (ERR_STATUS_REG_INTG_MASK | ERR_STATUS_FATAL_INTG_MASK |
-          ERR_STATUS_FATAL_CORE_MASK)) ||
-        s->cheriot_switch_error) {
+    uint32_t fatal_err_mask =
+        ERR_STATUS_REG_INTG_MASK | ERR_STATUS_FATAL_INTG_MASK |
+        ERR_STATUS_FATAL_CORE_MASK;
+    bool has_fatal_err = (s->regs.err_status & fatal_err_mask) != 0u;
+    if (has_fatal_err || s->cheriot_switch_error) {
         level |= ALERT_FATAL_HW_MASK;
     }
 
@@ -1039,9 +1040,10 @@ static bool ot_ibex_wrapper_rnd_is_fetching(OtIbexWrapperState *s)
     if (!(s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK)) {
         ot_ibex_wrapper_request_entropy(s);
         if (bql_locked()) {
-            for (int i = 0; i < 4 && !(s->regs.rnd_status &
-                                       RND_STATUS_RND_DATA_VALID_MASK);
-                 i++) {
+            for (int i = 0; i < 4; i++) {
+                if (s->regs.rnd_status & RND_STATUS_RND_DATA_VALID_MASK) {
+                    break;
+                }
                 qemu_clock_run_timers(OT_VIRTUAL_CLOCK);
                 aio_bh_poll(qemu_get_aio_context());
             }
@@ -1314,8 +1316,14 @@ static bool ot_ibex_wrapper_regs_accepts(
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
     uint8_t permit = reg < s->reg_count ? s->access_table[reg].permit : 0u;
+    if (permit == 0u) {
+        return false;
+    }
+    if (!is_write) {
+        return true;
+    }
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 0x3u));
-    return permit != 0u && (!is_write || (permit & ~reg_be) == 0u);
+    return (permit & ~reg_be) == 0u;
 }
 
 static uint64_t
@@ -1408,8 +1416,8 @@ static void ot_ibex_wrapper_write_mcounteren_writable(
         return;
     }
     s->regs.mcounteren_writable = val & 0xfu;
-    riscv_cpu_set_mcounteren_writable(s->cpu, s->regs.mcounteren_writable ==
-                                                  OT_MULTIBITBOOL4_TRUE);
+    bool writable = (s->regs.mcounteren_writable == OT_MULTIBITBOOL4_TRUE);
+    riscv_cpu_set_mcounteren_writable(s->cpu, writable);
 }
 
 static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
@@ -1693,13 +1701,14 @@ static void ot_ibex_wrapper_reset_enter(Object *obj, ResetType type)
     memset(&s->regs, 0, offsetof(OtIbexWrapperRegs, remap));
     s->regs.sw_recov_err = OT_MULTIBITBOOL4_FALSE;
     s->regs.sw_fatal_err = OT_MULTIBITBOOL4_FALSE;
+    const OtIbexWrapperConfig *cfg = &IBEX_WRAPPER_CONFIG[s->version];
     s->regs.cheriot_ena = 0x9;
     s->regs.cheriot_lock = 0x9;
     s->cheriot_locked = false;
     s->cheriot_switch_error = false;
     s->regs.mcounteren_writable_regwen = 0x1u;
     s->regs.mcounteren_writable = OT_MULTIBITBOOL4_TRUE;
-    riscv_cpu_set_mcounteren_writable(s->cpu, true);
+    riscv_cpu_set_mcounteren_writable(s->cpu, cfg->has_cheriot_mcounteren);
     qemu_set_irq(s->cheriot_ena_out, 0x9);
     for (unsigned aix = 0; aix < ACCESS_COUNT; aix++) {
         memset(s->regs.remap[aix], 0,
