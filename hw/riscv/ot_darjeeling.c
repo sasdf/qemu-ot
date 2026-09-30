@@ -1367,7 +1367,7 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clocks", "main,io"),
             IBEX_DEV_UINT_PROP("num-rom", 2u),
-            IBEX_DEV_UINT_PROP("version", OT_PWRMGR_VERSION_DJ)
+            IBEX_DEV_UINT_PROP("version", OT_VER_DJ)
         ),
     },
     [OT_DJ_SOC_DEV_RSTMGR] = {

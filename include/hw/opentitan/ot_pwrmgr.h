@@ -34,13 +34,6 @@
 #define TYPE_OT_PWRMGR "ot-pwrmgr"
 OBJECT_DECLARE_TYPE(OtPwrMgrState, OtPwrMgrClass, OT_PWRMGR)
 
-/* Supported PowerManager versions */
-typedef enum {
-    OT_PWRMGR_VERSION_EG_1_0_0,
-    OT_PWRMGR_VERSION_DJ,
-    OT_PWRMGR_VERSION_COUNT,
-} OtPwrMgrVersion;
-
 /* Union of PWRMGR_PARAM_*_WKUP_REQ_IDX definitions for all supported tops */
 typedef enum {
     OT_PWRMGR_WAKEUP_SYSRST,
