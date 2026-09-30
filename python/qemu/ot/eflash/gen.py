@@ -58,6 +58,9 @@ class FlashGen:
     BYTES_PER_WORD = 8
     BYTES_PER_PAGE = 2048
     BYTES_PER_BANK = 524288
+    EXT_PAGES_PER_BANK = 512
+    EXT_BYTES_PER_BANK = EXT_PAGES_PER_BANK * BYTES_PER_PAGE
+    ERASED_BYTE = b'\xff'
     CHIP_ROM_EXT_SIZE_MAX = 0x10000
 
     HEADER_FORMAT = {
@@ -369,12 +372,12 @@ class FlashGen:
                     continue
                 with open(parts[0], 'rb') as bfp:
                     raw_data = bfp.read()
-                max_end = max(address + len(raw_data),
-                              address + len(raw_data.rstrip(b'\xff')))
+                trimmed_len = len(raw_data.rstrip(self.ERASED_BYTE))
+                max_end = max(address + len(raw_data), address + trimmed_len)
                 if max_offset < max_end <= 2 * max_offset:
                     # pylint: disable=invalid-name
-                    self.PAGES_PER_BANK = 512
-                    self.BYTES_PER_BANK = 1048576
+                    self.PAGES_PER_BANK = self.EXT_PAGES_PER_BANK
+                    self.BYTES_PER_BANK = self.EXT_BYTES_PER_BANK
                     max_offset = self.NUM_BANKS * self.BYTES_PER_BANK
                     tfmt = ''.join(self.DEBUG_TRAILER_FORMAT.values())
                     trailer_size = scalc(tfmt)
@@ -408,7 +411,7 @@ class FlashGen:
                 raise ValueError(f'Invalid address 0x{address:x} for bin '
                                  f'{basename(bin_filename)}')
             with open(bin_filename, 'rb') as bfp:
-                data = bfp.read().rstrip(b'\xff')
+                data = bfp.read().rstrip(self.ERASED_BYTE)
             address_end = address + len(data)
             if not 0 <= address_end <= max_offset:
                 raise ValueError(f'Binary {basename(bin_filename)} at '
