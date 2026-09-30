@@ -356,7 +356,8 @@ impl Executer {
                     }
                     ExceptionCause::EWfi => unreachable!(),
                     ExceptionCause::EFatal => {
-                        let fatal_bits = self.registers.fatal_bits.load(Ordering::Relaxed);
+                        let fatal_bits =
+                            self.registers.fatal_bits.load(Ordering::Relaxed);
                         (true, fatal_bits | val.unwrap_or(0))
                     }
                 };
@@ -368,16 +369,18 @@ impl Executer {
                     | ErrBits::LOOP.bits()
                     | ErrBits::KEY_INVALID.bits()
                     | ErrBits::MAI_SOFTWARE_ERROR.bits();
+                const CTRL_SW_ERRS_FATAL_MASK: u32 = 1 << 0;
 
                 // ctrl: "Controls the reaction to software errors.
                 // When set software errors produce fatal errors, rather than recoverable errors."
                 let is_sw_err = (error & SW_ERR_MASK) != 0;
-                let sw_errs_fatal = (self.registers.ctrl.load(Ordering::Relaxed) & 0x1) != 0;
+                let ctrl_val = self.registers.ctrl.load(Ordering::Relaxed);
+                let sw_errs_fatal = (ctrl_val & CTRL_SW_ERRS_FATAL_MASK) != 0;
                 if is_sw_err && sw_errs_fatal {
                     fatal = true;
                     error |= ErrBits::FATAL_SOFTWARE.bits();
                 }
-                // otbn.sv:999: err_bits_q is updated on done_core (`err_bits_q <= err_bits`)
+                // otbn.sv:999: err_bits_q is updated on done_core
                 self.registers.err_bits.store(error, Ordering::Relaxed);
             }
         }
@@ -394,7 +397,11 @@ impl Executer {
         // operation on its side is over. Busy status is updated on that ack.
     }
 
-    fn do_execute(&mut self, dump: bool, resuming: bool) -> insn_exec::InstructionTrap {
+    fn do_execute(
+        &mut self,
+        dump: bool,
+        resuming: bool,
+    ) -> insn_exec::InstructionTrap {
         let mut executor = insn_exec::InstructionExecutor {
             hart_state: &mut self.hart_state,
             imem: &mut *self.imem.try_lock().unwrap(),
@@ -439,9 +446,9 @@ impl Executer {
                 }
             }
 
+            let status_val = self.registers.status.load(Ordering::Relaxed);
             if self.registers.resetting.load(Ordering::Relaxed)
-                || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
-                    == Status::Locked
+                || Status::from_u32(status_val) == Status::Locked
             {
                 return insn_exec::InstructionTrap::Exception(
                     ExceptionCause::ECallMMode,
@@ -459,9 +466,9 @@ impl Executer {
                 ))
             };
             if let Err(trap) = result {
+                let status_val = self.registers.status.load(Ordering::Relaxed);
                 if self.registers.resetting.load(Ordering::Relaxed)
-                    || Status::from_u32(self.registers.status.load(Ordering::Relaxed))
-                        == Status::Locked
+                    || Status::from_u32(status_val) == Status::Locked
                 {
                     return trap;
                 }
