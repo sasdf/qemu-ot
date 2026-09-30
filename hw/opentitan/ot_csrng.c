@@ -407,6 +407,7 @@ typedef struct {
     uint32_t err_code_mask;
     uint32_t fatal_loc_events_mask;
     uint32_t disabled_err_mask;
+    uint32_t state_db_id_mask;
 } OtCSRNGConfig;
 
 static const OtCSRNGConfig CSRNG_CONFIG[OT_VER_COUNT] = {
@@ -415,18 +416,21 @@ static const OtCSRNGConfig CSRNG_CONFIG[OT_VER_COUNT] = {
         .err_code_mask = 0x77f0ffffu,
         .fatal_loc_events_mask = 0x07f00000u,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
+        .state_db_id_mask = 0xfu,
     },
     [OT_VER_DJ] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV1,
         .err_code_mask = 0x77f0ffffu,
         .fatal_loc_events_mask = 0x07f00000u,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
+        .state_db_id_mask = 0xfu,
     },
     [OT_VER_EG_2_0_0] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV2,
         .err_code_mask = 0x76700003u,
         .fatal_loc_events_mask = 0x06700000u,
         .disabled_err_mask = 0u,
+        .state_db_id_mask = 0x3u,
     },
 };
 
@@ -924,8 +928,11 @@ static void ot_csrng_drng_generate(OtCSRNGInstance *inst, uint32_t *out,
                       &drng->ecb);
     g_assert(res == CRYPT_OK);
 
-    if (ot_csrng_get_slot(inst) == SW_INSTANCE_ID && drng->prev_genbits_valid &&
-        memcmp(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits)) == 0) {
+    bool is_sw = ot_csrng_get_slot(inst) == SW_INSTANCE_ID;
+    bool bus_cmp_match =
+        drng->prev_genbits_valid &&
+        memcmp(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits)) == 0;
+    if (is_sw && bus_cmp_match) {
         OtCSRNGState *s = inst->parent;
         s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CS_BUS_CMP_ALERT_MASK;
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
@@ -1821,10 +1828,10 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
 
     unsigned appid = s->state_db_dump_id;
     uint32_t val32 = 0;
+    bool app_read_en = appid < N_APP_COUNT &&
+                       ((s->regs[R_INT_STATE_READ_ENABLE] >> appid) & 0x1u);
 
-    if (appid < N_APP_COUNT &&
-        ((s->regs[R_INT_STATE_READ_ENABLE] >> appid) & 0x1u) &&
-        s->state_db_ix < 14u) {
+    if (app_read_en && s->state_db_ix < 14u) {
         OtCSRNGInstance *inst = &s->instances[appid];
         OtCSRNGDrng *drng = &inst->drng;
         unsigned base;
@@ -1842,10 +1849,12 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
             base = 12u - s->state_db_ix;
             val32 = ldl_be_p(&drng->key[base * sizeof(uint32_t)]);
             break;
-        case 13u: /* Status + Compliance, only 8 LSBs matter */
-            val32 = (uint32_t)((((uint8_t)drng->instantiated) << 0u) |
-                               (((uint8_t)!drng->no_fips) << 1u));
+        case 13u: { /* Status + Compliance, only 8 LSBs matter */
+            uint32_t inst_st = (uint32_t)drng->instantiated;
+            uint32_t fips_st = (uint32_t)(!drng->no_fips);
+            val32 = inst_st | (fips_st << 1u);
             break;
+        }
         default:
             val32 = 0;
             break;
@@ -2129,7 +2138,8 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         val32 &= R_INT_STATE_NUM_VAL_MASK;
         s->regs[reg] = val32;
         if (s->enabled) {
-            s->state_db_dump_id = val32;
+            uint32_t id_mask = CSRNG_CONFIG[s->version].state_db_id_mask;
+            s->state_db_dump_id = val32 & id_mask;
         }
         s->state_db_ix = (s->enabled && s->read_int_granted) ? 0u : 0xfu;
         if (val32 > OT_CSRNG_HW_APP_MAX) {
