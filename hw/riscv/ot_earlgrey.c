@@ -1787,6 +1787,26 @@ struct OtEGMachineClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    const uint32_t *pmp_addrs;
+    bool use_v2_devices;
+} OtEGSoCConfig;
+
+static const OtEGSoCConfig EG_SOC_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .pmp_addrs = ot_eg_pmp_addrs,
+        .use_v2_devices = false,
+    },
+    [OT_VER_DJ] = {
+        .pmp_addrs = ot_eg_pmp_addrs,
+        .use_v2_devices = false,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .pmp_addrs = ot_eg_v2_pmp_addrs,
+        .use_v2_devices = true,
+    },
+};
+
 /* ------------------------------------------------------------------------ */
 /* Device Configuration */
 /* ------------------------------------------------------------------------ */
@@ -1863,10 +1883,7 @@ static void ot_eg_soc_hart_configure(DeviceState *dev, const IbexDeviceDef *def,
     qdev_prop_set_array(dev, "pmp_cfg", pmp_cfg);
 
     OtEGSoCState *soc = RISCV_OT_EG_SOC(parent);
-    const uint32_t *addrs =
-        (soc->version == OT_VER_EG_1_0_0) ?
-            ot_eg_pmp_addrs :
-            ot_eg_v2_pmp_addrs;
+    const uint32_t *addrs = EG_SOC_CONFIG[soc->version].pmp_addrs;
     pmp_addr = qlist_new();
     for (unsigned ix = 0; ix < ARRAY_SIZE(ot_eg_pmp_addrs); ix++) {
         qlist_append_int(pmp_addr, addrs[ix]);
@@ -2494,16 +2511,17 @@ static void ot_eg_soc_realize(DeviceState *dev, Error **errp)
 
     if (s->version == UINT8_MAX) {
         QemuOptsList *optlist = qemu_find_opts("ot_device");
-        s->version = (optlist && qemu_opts_find(optlist, "ot-keymgr_dpe")) ?
-                         OT_VER_EG_2_0_0 :
-                         OT_VER_EG_1_0_0;
+        bool has_dpe = optlist && qemu_opts_find(optlist, "ot-keymgr_dpe");
+        s->version = has_dpe ? OT_VER_EG_2_0_0 : OT_VER_EG_1_0_0;
     }
     g_assert(s->version < OT_VER_COUNT && s->version != OT_VER_DJ);
 
+    const OtEGSoCConfig *cfg = &EG_SOC_CONFIG[s->version];
     size_t dev_count = ARRAY_SIZE(ot_eg_soc_devices);
-    const IbexDeviceDef *defs =
-        (s->version == OT_VER_EG_1_0_0) ? ot_eg_soc_devices :
-                                          ot_eg_soc_get_v2_devices(&dev_count);
+    const IbexDeviceDef *defs = ot_eg_soc_devices;
+    if (cfg->use_v2_devices) {
+        defs = ot_eg_soc_get_v2_devices(&dev_count);
+    }
 
     s->devices = ibex_create_devices(defs, dev_count, DEVICE(s));
 
