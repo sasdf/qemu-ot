@@ -118,12 +118,18 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     hw_in[0] = s->bat_disable_hw ? 1u : 0u;
     hw_in[1] = s->ec_rst_l_hw ? 1u : 0u;
     hw_in[2] = pwrb_int;
-    hw_in[3] =
-        (ab_cond && ((ab_ctl >> 0u) & 1u)) ? ((ab_ctl >> 4u) & 1u) : key0_int;
-    hw_in[4] =
-        (ab_cond && ((ab_ctl >> 1u) & 1u)) ? ((ab_ctl >> 5u) & 1u) : key1_int;
-    hw_in[5] =
-        (ab_cond && ((ab_ctl >> 2u) & 1u)) ? ((ab_ctl >> 6u) & 1u) : key2_int;
+    hw_in[3] = key0_int;
+    if (ab_cond && ((ab_ctl >> 0u) & 1u)) {
+        hw_in[3] = (ab_ctl >> 4u) & 1u;
+    }
+    hw_in[4] = key1_int;
+    if (ab_cond && ((ab_ctl >> 1u) & 1u)) {
+        hw_in[4] = (ab_ctl >> 5u) & 1u;
+    }
+    hw_in[5] = key2_int;
+    if (ab_cond && ((ab_ctl >> 2u) & 1u)) {
+        hw_in[5] = (ab_ctl >> 6u) & 1u;
+    }
     hw_in[6] = s->z3_wakeup_hw ? 1u : 0u;
     hw_in[7] = 0u; /* flash_wp_l has no passthrough input */
 
@@ -137,9 +143,12 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
         bool val = (out_val >> b) & 1u;
         bool allow0 = (allow_ctl >> b) & 1u;
         bool allow1 = (allow_ctl >> (b + 8u)) & 1u;
-        uint32_t bit_out = (en && allow0 && !val) ? 0u :
-                           (en && allow1 && val)  ? 1u :
-                                                    hw_in[b];
+        uint32_t bit_out = hw_in[b];
+        if (en && allow0 && !val) {
+            bit_out = 0u;
+        } else if (en && allow1 && val) {
+            bit_out = 1u;
+        }
         out |= (bit_out << b);
     }
 
@@ -508,10 +517,14 @@ static bool ot_sysrst_ctrl_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint32_t mask = ot_sysrst_ctrl_reg_mask(reg);
-    uint8_t permit = (mask > 0x1ffffu) ? 0xfu :
-                     (mask > 0xffffu)  ? 0x7u :
-                     (mask > 0xffu)    ? 0x3u :
-                                         0x1u;
+    uint8_t permit = 0x1u;
+    if (mask > 0x1ffffu) {
+        permit = 0xfu;
+    } else if (mask > 0xffffu) {
+        permit = 0x7u;
+    } else if (mask > 0xffu) {
+        permit = 0x3u;
+    }
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
     return (permit & ~reg_be) == 0u;
 }
