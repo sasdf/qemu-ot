@@ -389,7 +389,7 @@ static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
         op = 0x1u;
     }
     uint32_t mode = FIELD_EX32(val, CTRL_SHADOWED, MODE);
-    uint32_t none_mode = (s->version >= 2u) ? 0x3fu : 0x20u;
+    uint32_t none_mode = (s->version == OT_VER_EG_2_0_0) ? 0x3fu : 0x20u;
     switch (mode) {
     case 0x01u:
     case 0x02u:
@@ -398,7 +398,7 @@ static uint32_t ot_aes_sanitize_ctrl(OtAESState *s, uint32_t val)
     case 0x10u:
         break;
     case 0x20u:
-        if (s->version >= 2u && s->gcm_supported) {
+        if (s->version == OT_VER_EG_2_0_0 && s->gcm_supported) {
             break;
         }
         mode = none_mode;
@@ -1536,7 +1536,7 @@ static bool ot_aes_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     OtAESState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    if (s->version < 2u && reg == R_CTRL_GCM_SHADOWED) {
+    if (s->version == OT_VER_EG_1_0_0 && reg == R_CTRL_GCM_SHADOWED) {
         return false;
     }
     if (!is_write) {
@@ -1557,7 +1557,7 @@ static const Property ot_aes_properties[] = {
                      DeviceState *),
     DEFINE_PROP_LINK("edn", OtAESState, edn.device, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_UINT8("edn-ep", OtAESState, edn.ep, UINT8_MAX),
-    DEFINE_PROP_UINT8("version", OtAESState, version, 1u),
+    DEFINE_PROP_UINT8("version", OtAESState, version, OT_VER_EG_1_0_0),
     /*
      * some time-sensitive OT tests requires vCPU to be scheduled before AES
      * round is executed, in which case this property should be reset. In most
@@ -1593,7 +1593,8 @@ static void ot_aes_reset_enter(Object *obj, ResetType type)
     memset(r, 0, sizeof(*r));
     memset(s->sl_key, 0, sizeof(*s->sl_key));
 
-    ot_shadow_reg_init(&r->ctrl, (s->version >= 2u) ? 0x11fdu : 0x1181u);
+    ot_shadow_reg_init(&r->ctrl,
+                       (s->version == OT_VER_EG_2_0_0) ? 0x11fdu : 0x1181u);
     ot_shadow_reg_init(&r->ctrl_aux, 1u);
     ot_shadow_reg_init(&r->ctrl_gcm, 0x0401u);
     r->ctrl_aux_regwen = 1u;
@@ -1658,6 +1659,7 @@ static void ot_aes_realize(DeviceState *dev, Error **errp)
     g_assert(s->ot_id);
     g_assert(s->clock_name);
     g_assert(s->clock_src);
+    g_assert(s->version < OT_VER_COUNT);
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_aes_clock_input, OT_AES_CLOCK_INPUT,
                             1);
