@@ -98,10 +98,27 @@ REG32(FAULT_STATUS, 0x40u)
     FIELD(FAULT_STATUS, MAIN_PD_GLITCH, 2u, 1u)
 /* clang-format on */
 
-#define CDC_SYNC_PULSE_DURATION_NS 1000u /* 1us */
+#define CDC_SYNC_PULSE_DURATION_NS     1000u /* 1us */
+#define PWRMGR_GLITCH_CHECK_MAX_COUNT  50000u
+#define PWRMGR_WAKE_INFO_POLL_SLEEP_US 5000
+#define PWRMGR_SENSOR_AST_ALERT_IDX    0u
+#define PWRMGR_SYSRST_RESET_EN_MASK    (1u << 0u)
+#define PWRMGR_PERMIT_1B               0x1u
+#define PWRMGR_PERMIT_2B               0x3u
+#define PWRMGR_PERMIT_4B               0xfu
 
 #define PWRMGR_WAKEUP_MAX  ((unsigned)OT_PWRMGR_WAKEUP_COUNT)
 #define PWRMGR_RST_REQ_MAX 2u
+
+#define PWRMGR_EG_WAKEUP_COUNT 6u
+#define PWRMGR_EG_RESET_COUNT  2u
+#define PWRMGR_EG_RESET_MASK   ((1u << PWRMGR_EG_RESET_COUNT) - 1u)
+#define PWRMGR_EG_CONTROL_MASK \
+    (R_CONTROL_LOW_POWER_HINT_MASK | R_CONTROL_CORE_CLK_EN_MASK | \
+     R_CONTROL_IO_CLK_EN_MASK | R_CONTROL_USB_CLK_EN_LP_MASK | \
+     R_CONTROL_USB_CLK_EN_ACTIVE_MASK | R_CONTROL_MAIN_PD_N_MASK)
+#define PWRMGR_EG_CONTROL_RES_VAL \
+    (R_CONTROL_MAIN_PD_N_MASK | R_CONTROL_USB_CLK_EN_ACTIVE_MASK)
 
 /* special exit error code to report escalation panic */
 #define EXIT_ESCALATION_PANIC 39
@@ -358,11 +375,11 @@ static const OtPwrMgrConfig PWRMGR_CONFIG[OT_VER_COUNT] = {
         .control_res_val = 0x40u, /* MAIN_PD_N */
     },
     [OT_VER_EG_2_0_0] = {
-        .wakeup_count = 6u,
-        .reset_count = 2u,
-        .reset_mask = 0x3u,
-        .control_mask = 0x1f1u,
-        .control_res_val = 0x180u, /* Same as EG_1_0_0 */
+        .wakeup_count = PWRMGR_EG_WAKEUP_COUNT,
+        .reset_count = PWRMGR_EG_RESET_COUNT,
+        .reset_mask = PWRMGR_EG_RESET_MASK,
+        .control_mask = PWRMGR_EG_CONTROL_MASK,
+        .control_res_val = PWRMGR_EG_CONTROL_RES_VAL, /* Same as EG_1_0_0 */
     },
 };
 
@@ -598,8 +615,9 @@ void ot_pwrmgr_trigger_check(OtPwrMgrState *s)
     if (!s) {
         return;
     }
-    s->glitch_check_count = 50000u;
-    timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+    s->glitch_check_count = PWRMGR_GLITCH_CHECK_MAX_COUNT;
+    timer_mod(s->cdc_sync,
+              qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + CDC_SYNC_PULSE_DURATION_NS);
 }
 
 void ot_pwrmgr_cancel_check(OtPwrMgrState *s)
@@ -635,7 +653,8 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         CPUState *cpu = qemu_get_cpu(0);
         if (!s->in_low_power && cpu && !cpu->halted) {
             /* Wait until CPU executes WFI (core_sleeping_i == 1) */
-            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                       CDC_SYNC_PULSE_DURATION_NS);
             return;
         }
         if (!s->in_low_power) {
@@ -676,7 +695,8 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
                 OtSensorEgState *sensor = (OtSensorEgState *)
                     object_resolve_path_type("", TYPE_OT_SENSOR_EG, NULL);
                 if (sensor) {
-                    ot_sensor_eg_trigger_recov_event(sensor, 0u);
+                    ot_sensor_eg_trigger_recov_event(
+                        sensor, PWRMGR_SENSOR_AST_ALERT_IDX);
                     return;
                 }
             }
@@ -703,12 +723,13 @@ static void ot_pwrmgr_check_wakeup(OtPwrMgrState *s)
         CPUState *cpu = qemu_get_cpu(0);
         if (cpu && !cpu->halted) {
             s->glitch_check_count--;
-            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + 1000);
+            timer_mod(s->cdc_sync, qemu_clock_get_ns(OT_VIRTUAL_CLOCK) +
+                                       CDC_SYNC_PULSE_DURATION_NS);
             return;
         }
         s->glitch_check_count = 0;
         if (cpu && cpu->halted && s->slow_regs.wakeup_en == 0u &&
-            !(s->slow_regs.reset_en & 1u)) {
+            !(s->slow_regs.reset_en & PWRMGR_SYSRST_RESET_EN_MASK)) {
             OtAonTimerState *aon = (OtAonTimerState *)
                 object_resolve_path_type("", TYPE_OT_AON_TIMER, NULL);
             if (aon && !ot_aon_timer_is_active(aon)) {
@@ -1266,7 +1287,7 @@ static void ot_pwrmgr_regs_write(void *opaque, hwaddr addr, uint64_t val64,
         if (!s->in_low_power && bql_locked()) {
             replay_mutex_unlock();
             bql_unlock();
-            g_usleep(5000);
+            g_usleep(PWRMGR_WAKE_INFO_POLL_SLEEP_US);
             replay_mutex_lock();
             bql_lock();
         }
@@ -1297,8 +1318,10 @@ static bool ot_pwrmgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
-    uint32_t permit = (R32_OFF(addr) == R_CONTROL) ? 0x3u : 0x1u;
-    uint32_t be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    uint32_t permit =
+        (R32_OFF(addr) == R_CONTROL) ? PWRMGR_PERMIT_2B : PWRMGR_PERMIT_1B;
+    uint32_t be = (((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u))) &
+                  PWRMGR_PERMIT_4B;
     return !is_write || (permit & ~be) == 0u;
 }
 
@@ -1369,8 +1392,8 @@ static void ot_pwrmgr_reset_enter(Object *obj, ResetType type)
     } else {
         s->wake_info_recording = false;
         s->regs[R_CONTROL] = PWRMGR_CONFIG[s->version].control_res_val;
-        s->regs[R_WAKEUP_EN_REGWEN] = 0x1u;
-        s->regs[R_RESET_EN_REGWEN] = 0x1u;
+        s->regs[R_WAKEUP_EN_REGWEN] = R_WAKEUP_EN_REGWEN_EN_MASK;
+        s->regs[R_RESET_EN_REGWEN] = R_RESET_EN_REGWEN_EN_MASK;
     }
 
     s->regs[R_CTRL_CFG_REGWEN] = 0x1u;
