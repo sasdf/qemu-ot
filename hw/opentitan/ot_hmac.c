@@ -49,10 +49,20 @@
 #define OT_HMAC_FIFO_LENGTH 64u
 
 /* Maximum digest length is 64 bytes (512 bits) */
-#define OT_HMAC_MAX_DIGEST_LENGTH 64u
+#define OT_HMAC_MAX_DIGEST_LENGTH   64u
+#define OT_HMAC_MAX_DIGEST_WORDS    (OT_HMAC_MAX_DIGEST_LENGTH / sizeof(uint32_t))
+#define OT_HMAC_SHA256_DIGEST_WORDS 8u
+#define OT_HMAC_SHA384_STATE_DWORDS 6u
+#define OT_HMAC_SHA512_STATE_DWORDS 8u
 
 /* Maximum key length is 128 bytes (1024 bits) */
 #define OT_HMAC_MAX_KEY_LENGTH 128u
+
+/* Subword write byte-enable permits (hmac_reg_pkg::HMAC_PERMIT) */
+#define OT_HMAC_REG_ADDR_OFFSET_MASK 0x3u
+#define OT_HMAC_BE_PERMIT_1B         0x1u
+#define OT_HMAC_BE_PERMIT_2B         0x3u
+#define OT_HMAC_BE_PERMIT_4B         0xfu
 
 #define PARAM_NUM_IRQS 3u
 
@@ -582,16 +592,17 @@ static void ot_hmac_sha_done(OtHMACState *s)
 {
     switch (s->ctx->digest_size_started) {
     case HMAC_SHA2_256: {
-        uint32_t tmp[8];
+        uint32_t tmp[OT_HMAC_SHA256_DIGEST_WORDS];
         sha256_done(&s->ctx->state, (uint8_t *)tmp);
-        for (unsigned idx = 0; idx < 8u; idx++) {
+        for (unsigned idx = 0; idx < OT_HMAC_SHA256_DIGEST_WORDS; idx++) {
             s->regs->digest[idx * 2 + 1] = tmp[idx];
         }
         return;
     }
     case HMAC_SHA2_384:
         sha384_done(&s->ctx->state, (uint8_t *)s->regs->digest);
-        for (unsigned idx = 6u; idx < 8u; idx++) {
+        for (unsigned idx = OT_HMAC_SHA384_STATE_DWORDS;
+             idx < OT_HMAC_SHA512_STATE_DWORDS; idx++) {
             STORE64H(s->ctx->state.sha512.state[idx],
                      s->regs->digest + 2 * idx);
         }
@@ -631,9 +642,9 @@ static void ot_hmac_compute_digest(OtHMACState *s)
         }
         ot_hmac_sha_init(s, false);
         ot_hmac_sha_process(s, (const uint8_t *)opad, pad_length_b, false);
-        uint32_t inner_digest[16];
+        uint32_t inner_digest[OT_HMAC_MAX_DIGEST_WORDS];
         if (s->ctx->digest_size_started == HMAC_SHA2_256) {
-            for (unsigned idx = 0; idx < 8u; idx++) {
+            for (unsigned idx = 0; idx < OT_HMAC_SHA256_DIGEST_WORDS; idx++) {
                 inner_digest[idx] = s->regs->digest[2 * idx + 1];
             }
         } else {
@@ -722,14 +733,15 @@ static bool ot_hmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     if (!is_write) {
         return true;
     }
-    uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
+    uint32_t byte_off = (uint32_t)(addr & OT_HMAC_REG_ADDR_OFFSET_MASK);
+    uint32_t reg_be = (((1u << size) - 1u) << byte_off) & OT_HMAC_BE_PERMIT_4B;
     uint32_t permit;
     if (reg <= R_ALERT_TEST || reg == R_CMD) {
-        permit = 0x1u;
+        permit = OT_HMAC_BE_PERMIT_1B;
     } else if (reg == R_CFG || reg == R_STATUS) {
-        permit = 0x3u;
+        permit = OT_HMAC_BE_PERMIT_2B;
     } else {
-        permit = 0xfu;
+        permit = OT_HMAC_BE_PERMIT_4B;
     }
     return (permit & ~reg_be) == 0u;
 }
@@ -798,6 +810,7 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         if (!fifo8_is_empty(&s->input_fifo) && ot_hmac_get_curlen(s) != 0) {
             ot_hmac_process_fifo(s);
         }
+
         /*
          * We use a SHA library that computes in native (little) endian-ness,
          * but produces a big-endian digest upon termination. To ensure
@@ -810,7 +823,8 @@ static uint64_t ot_hmac_regs_read(void *opaque, hwaddr addr, unsigned size)
         unsigned idx = reg - R_DIGEST_0;
         if (s->ctx->digest_size_started == HMAC_SHA2_256 ||
             s->ctx->digest_size_started == HMAC_SHA2_NONE) {
-            raw_val = s->regs->digest[(idx % 8) * 2 + 1];
+            unsigned w_idx = (idx % OT_HMAC_SHA256_DIGEST_WORDS) * 2 + 1;
+            raw_val = s->regs->digest[w_idx];
         } else {
             raw_val = s->regs->digest[idx];
         }
@@ -1194,7 +1208,8 @@ static void ot_hmac_regs_write(void *opaque, hwaddr addr, uint64_t value,
         }
         digest_size = ot_hmac_get_digest_size(s->regs->cfg);
         if (digest_size == HMAC_SHA2_NONE ||
-            (digest_size == HMAC_SHA2_256 && (reg - R_DIGEST_0) >= 8u)) {
+            (digest_size == HMAC_SHA2_256 &&
+             (reg - R_DIGEST_0) >= OT_HMAC_SHA256_DIGEST_WORDS)) {
             break;
         }
 
