@@ -137,6 +137,18 @@ REG32(MAIN_SM_STATE, 0x44u)
 #define ERR_CODE_FIFO_FATAL_MASK \
     (R_ERR_CODE_SFIFO_RESCMD_ERR_MASK | R_ERR_CODE_SFIFO_GENCMD_ERR_MASK)
 
+#define REG_PERMIT_1B 0x1u
+#define REG_PERMIT_2B 0x3u
+#define REG_PERMIT_4B 0xfu
+
+#define EDN_BUS_CMP_WORD_COUNT   (sizeof(uint64_t) / sizeof(uint32_t))
+#define EDN_HW_BITS_FIFO_PACKETS 2u
+#define EDN_SW_BITS_FIFO_PACKETS 16u
+#define EDN_HW_BITS_FIFO_WORDS \
+    (OT_CSRNG_PACKET_WORD_COUNT * EDN_HW_BITS_FIFO_PACKETS)
+#define EDN_SW_BITS_FIFO_WORDS \
+    (OT_CSRNG_PACKET_WORD_COUNT * EDN_SW_BITS_FIFO_PACKETS)
+
 #define ALERT_STATUS_BIT(_x_) R_RECOV_ALERT_STS_##_x_##_FIELD_ALERT_MASK
 
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
@@ -225,7 +237,7 @@ typedef struct {
     bool sw_ack; /* last SW command has been completed */
     bool instantiated; /* instantiated state, not yet uninstantiated */
     bool no_fips; /* true if 1+ rcv entropy packets were no FIPS-compliant */
-    uint32_t prev_bits[2]; /* 64-bit cs_rdata_capt_q (packer_cs_rdata[63:0]) */
+    uint32_t prev_bits[EDN_BUS_CMP_WORD_COUNT]; /* cs_rdata_capt_q */
     bool prev_bits_valid;
 } OtEDNCSRNG;
 
@@ -616,8 +628,8 @@ static bool ot_edn_update_genbits_ready(OtEDNState *s)
     OtEDNCSRNG *c = &s->rng;
 
     unsigned max_words = (s->state == EDN_SW_PORT_MODE) ?
-                             (OT_CSRNG_PACKET_WORD_COUNT * 16u) :
-                             (OT_CSRNG_PACKET_WORD_COUNT * 2u);
+                             EDN_SW_BITS_FIFO_WORDS :
+                             EDN_HW_BITS_FIFO_WORDS;
     bool accept_entropy =
         ot_edn_is_enabled(s) && (c->rem_packet_count > 0) &&
         (ot_fifo32_num_used(&c->bits_fifo) + OT_CSRNG_PACKET_WORD_COUNT <=
@@ -1657,15 +1669,24 @@ static void ot_edn_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 };
 
 static const uint8_t EDN_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x1u,      [R_INTR_ENABLE] = 0x1u,
-    [R_INTR_TEST] = 0x1u,       [R_ALERT_TEST] = 0x1u,
-    [R_REGWEN] = 0x1u,          [R_CTRL] = 0x3u,
-    [R_BOOT_INS_CMD] = 0xfu,    [R_BOOT_GEN_CMD] = 0xfu,
-    [R_SW_CMD_REQ] = 0xfu,      [R_SW_CMD_STS] = 0x1u,
-    [R_HW_CMD_STS] = 0x3u,      [R_RESEED_CMD] = 0xfu,
-    [R_GENERATE_CMD] = 0xfu,    [R_MAX_NUM_REQS_BETWEEN_RESEEDS] = 0xfu,
-    [R_RECOV_ALERT_STS] = 0x3u, [R_ERR_CODE] = 0xfu,
-    [R_ERR_CODE_TEST] = 0x1u,   [R_MAIN_SM_STATE] = 0x3u,
+    [R_INTR_STATE] = REG_PERMIT_1B,
+    [R_INTR_ENABLE] = REG_PERMIT_1B,
+    [R_INTR_TEST] = REG_PERMIT_1B,
+    [R_ALERT_TEST] = REG_PERMIT_1B,
+    [R_REGWEN] = REG_PERMIT_1B,
+    [R_CTRL] = REG_PERMIT_2B,
+    [R_BOOT_INS_CMD] = REG_PERMIT_4B,
+    [R_BOOT_GEN_CMD] = REG_PERMIT_4B,
+    [R_SW_CMD_REQ] = REG_PERMIT_4B,
+    [R_SW_CMD_STS] = REG_PERMIT_1B,
+    [R_HW_CMD_STS] = REG_PERMIT_2B,
+    [R_RESEED_CMD] = REG_PERMIT_4B,
+    [R_GENERATE_CMD] = REG_PERMIT_4B,
+    [R_MAX_NUM_REQS_BETWEEN_RESEEDS] = REG_PERMIT_4B,
+    [R_RECOV_ALERT_STS] = REG_PERMIT_2B,
+    [R_ERR_CODE] = REG_PERMIT_4B,
+    [R_ERR_CODE_TEST] = REG_PERMIT_1B,
+    [R_MAIN_SM_STATE] = REG_PERMIT_2B,
 };
 
 static bool ot_edn_regs_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -1673,7 +1694,8 @@ static bool ot_edn_regs_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     (void)opaque;
     (void)attrs;
-    uint8_t mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    unsigned byte_off = (unsigned)(addr & (sizeof(uint32_t) - 1u));
+    uint8_t mask = (uint8_t)(((1u << size) - 1u) << byte_off);
     return !is_write || !(EDN_PERMIT[R32_OFF(addr)] & ~mask);
 }
 
@@ -1757,7 +1779,7 @@ static void ot_edn_init(Object *obj)
 
     s->ep_bh = qemu_bh_new(&ot_edn_handle_ep_request, s);
 
-    ot_fifo32_create(&c->bits_fifo, OT_CSRNG_PACKET_WORD_COUNT * 16u);
+    ot_fifo32_create(&c->bits_fifo, EDN_SW_BITS_FIFO_WORDS);
     ot_fifo32_create(&c->cmd_gen_fifo, OT_CSRNG_CMD_WORD_MAX);
     ot_fifo32_create(&c->cmd_reseed_fifo, OT_CSRNG_CMD_WORD_MAX);
 
