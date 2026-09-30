@@ -691,24 +691,17 @@ static uint32_t ot_spi_host_get_status(OtSPIHostState *s)
     status = FIELD_DP32(status, STATUS, TXFULL,
                         (uint32_t)txfifo_is_full(s->tx_fifo));
     bool combinational_txstall = false;
-    unsigned latest_clkdiv = s->last_clkdiv;
+    const CmdFifoSlot *cand = NULL;
     if (s->active.state != CMD_NONE) {
-        if (ot_spi_host_is_tx(s->active.cmd.command) &&
-            txfifo_is_empty(s->tx_fifo)) {
-            if (FIELD_EX32(s->active.cmd.opts, CONFIGOPTS, CLKDIV) ==
-                    latest_clkdiv ||
-                s->fsm.transaction) {
-                combinational_txstall = true;
-            }
-        }
+        cand = &s->active.cmd;
     } else if (!cmdfifo_is_empty(s->cmd_fifo)) {
-        if (ot_spi_host_is_tx(s->cmd_fifo->data[s->cmd_fifo->head].command) &&
-            txfifo_is_empty(s->tx_fifo)) {
-            if (FIELD_EX32(s->cmd_fifo->data[s->cmd_fifo->head].opts,
-                           CONFIGOPTS, CLKDIV) == latest_clkdiv ||
-                s->fsm.transaction) {
-                combinational_txstall = true;
-            }
+        cand = &s->cmd_fifo->data[s->cmd_fifo->head];
+    }
+    if (cand && ot_spi_host_is_tx(cand->command) &&
+        txfifo_is_empty(s->tx_fifo)) {
+        unsigned cand_clkdiv = FIELD_EX32(cand->opts, CONFIGOPTS, CLKDIV);
+        if (cand_clkdiv == s->last_clkdiv || s->fsm.transaction) {
+            combinational_txstall = true;
         }
     }
     if (timer_pending(s->fsm_delay)) {
@@ -1444,15 +1437,17 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_COMMAND: {
         if (SPI_HOST_CONFIG[s->version].cmd_14b_layout) {
             /*
-             * Earlgrey v1 (v2 IP) uses 14-bit COMMAND layout:
+             * Earlgrey v1 uses 14-bit COMMAND layout:
              *   LEN[8:0], CSAAT[9], SPEED[11:10], DIRECTION[13:12]
-             * Convert to canonical v3 layout:
+             * Convert to canonical layout:
              *   CSAAT[0], SPEED[2:1], DIRECTION[4:3], LEN[24:5]
              */
             val32 &= 0x3fffu;
-            val32 = ((val32 & 0x1ffu) << 5u) | (((val32 >> 9u) & 0x1u) << 0u) |
-                    (((val32 >> 10u) & 0x3u) << 1u) |
-                    (((val32 >> 12u) & 0x3u) << 3u);
+            uint32_t len = (val32 & 0x1ffu) << 5u;
+            uint32_t csaat = ((val32 >> 9u) & 0x1u) << 0u;
+            uint32_t speed = ((val32 >> 10u) & 0x3u) << 1u;
+            uint32_t direction = ((val32 >> 12u) & 0x3u) << 3u;
+            val32 = len | csaat | speed | direction;
         } else {
             val32 &= R_COMMAND_MASK;
         }
