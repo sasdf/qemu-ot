@@ -140,8 +140,6 @@ REG32(WKUP_CAUSE,
       A_WKUP_DETECTOR_PADSEL + REG_SIZE(PARAM_N_WKUP_DETECT))
 /* clang-format on */
 
-#define MIO_PAD_ATTR_MASK               0x0010008fu
-#define DIO_PAD_ATTR_MASK               0x0010008fu
 #define MIO_PAD_SLEEP_MODE_OUT_TIE_LOW  0x0u
 #define MIO_PAD_SLEEP_MODE_OUT_TIE_HIGH 0x1u
 #define MIO_PAD_SLEEP_MODE_OUT_HIGH_Z   0x2u
@@ -181,13 +179,13 @@ typedef struct {
 
 static const OtPinmuxEgConfig PINMUX_EG_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
-        .mio_pad_attr_mask = MIO_PAD_ATTR_MASK,
-        .dio_pad_attr_mask = DIO_PAD_ATTR_MASK,
+        .mio_pad_attr_mask = 0x0010008fu,
+        .dio_pad_attr_mask = 0x0010008fu,
         .dio_usb_pad_attr_mask = 0x0000008du,
     },
     [OT_VER_DJ] = {
-        .mio_pad_attr_mask = MIO_PAD_ATTR_MASK,
-        .dio_pad_attr_mask = DIO_PAD_ATTR_MASK,
+        .mio_pad_attr_mask = 0x0010008fu,
+        .dio_pad_attr_mask = 0x0010008fu,
         .dio_usb_pad_attr_mask = 0x0000008du,
     },
     [OT_VER_EG_2_0_0] = {
