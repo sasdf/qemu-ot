@@ -151,6 +151,7 @@ REG32(MANUAL_PAD_ATTR_3, 0x70u)
 #define R_LAST_REG (R_MANUAL_PAD_ATTR_3)
 #define REGS_COUNT (R_LAST_REG + 1u)
 #define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
+#define MMIO_SIZE  0x80u
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
@@ -503,7 +504,7 @@ static void ot_sensor_eg_init(Object *obj)
     OtSensorEgState *s = OT_SENSOR_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_sensor_eg_regs_ops, s,
-                          TYPE_OT_SENSOR_EG, 0x80u);
+                          TYPE_OT_SENSOR_EG, MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->regs = g_new0(uint32_t, REGS_COUNT);
