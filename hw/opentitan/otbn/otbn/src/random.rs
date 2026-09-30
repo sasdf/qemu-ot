@@ -12,6 +12,9 @@ use super::comm;
 use super::xoshiro256pp::Xoshiro256PlusPlus;
 use crate::{CSRNG, PRNG};
 
+const RND_WAIT_TIMEOUT: Duration = Duration::from_millis(50);
+const URND_WAIT_TIMEOUT: Duration = Duration::from_millis(5);
+
 #[derive(Default)]
 pub struct RndCache {
     value: u256,
@@ -82,7 +85,7 @@ impl Rnd {
         /* called from OTBN processor (CSR) */
         let mut cache = self.cache.lock().unwrap();
         if cache.available || cache.pending {
-            /* cache is already loaded or fetch is already in flight, nothing to do */
+            /* cache is already loaded or fetch is in flight, nothing to do */
             return;
         }
         cache.pending = true;
@@ -117,10 +120,12 @@ impl CSRNG for Rnd {
             while !cache.available && !self.aborted.load(Ordering::Relaxed) {
                 let result = self
                     .wait
-                    .wait_timeout(cache, Duration::from_millis(50))
+                    .wait_timeout(cache, RND_WAIT_TIMEOUT)
                     .unwrap();
                 cache = result.0;
-                if result.1.timed_out() && !cache.available && !self.aborted.load(Ordering::Relaxed)
+                if result.1.timed_out()
+                    && !cache.available
+                    && !self.aborted.load(Ordering::Relaxed)
                 {
                     self.fetch();
                 }
@@ -224,10 +229,13 @@ impl SyncUrnd {
         while !*sync && !self.aborted.load(Ordering::Relaxed) {
             let result = self
                 .wait
-                .wait_timeout(sync, Duration::from_millis(5))
+                .wait_timeout(sync, URND_WAIT_TIMEOUT)
                 .unwrap();
             sync = result.0;
-            if result.1.timed_out() && !*sync && !self.aborted.load(Ordering::Relaxed) {
+            if result.1.timed_out()
+                && !*sync
+                && !self.aborted.load(Ordering::Relaxed)
+            {
                 self.request_reseed();
             }
         }
