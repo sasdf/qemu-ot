@@ -55,10 +55,8 @@ enum OtOTBNStatus {
 
 enum OtOTBNRandomSource { OT_OTBN_URND, OT_OTBN_RND, OT_OTBN_RND_COUNT };
 
-#define OT_OTBN_IMEM_SIZE     (8U << 10U)
-#define OT_OTBN_DMEM_SIZE     (3U << 10U)
-#define OT_OTBN_V2_IMEM_SIZE  (16U << 10U)
-#define OT_OTBN_V2_DMEM_SIZE  (16U << 10U)
+#define OT_OTBN_IMEM_SIZE (8U << 10U)
+#define OT_OTBN_DMEM_SIZE (3U << 10U)
 
 #define OT_OTBN_RANDOM_BIT_WIDTH 256u
 #define OT_OTBN_RANDOM_WORD_COUNT \

@@ -229,8 +229,8 @@ static const OtOTBNConfig OTBN_CONFIG[OT_VER_COUNT] = {
         .has_scratch = false,
     },
     [OT_VER_EG_2_0_0] = {
-        .imem_size = OT_OTBN_V2_IMEM_SIZE,
-        .dmem_pub_size = OT_OTBN_V2_DMEM_SIZE,
+        .imem_size = 16u << 10u,
+        .dmem_pub_size = 16u << 10u,
         .dmem_size = 32u << 10u,
         .ctrl_mask = R_CTRL_SW_ERRS_FATAL_MASK | R_CTRL_WFI_ENABLED_MASK |
                      R_CTRL_URND_CTRL_ENABLED_MASK,
