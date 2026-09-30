@@ -198,17 +198,21 @@ struct OtGpioEgClass {
 
 typedef struct {
     unsigned regs_count;
+    bool v2_outsel;
 } OtGpioEgConfig;
 
 static const OtGpioEgConfig GPIO_EG_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
+        .v2_outsel = false,
     },
     [OT_VER_DJ] = {
         .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
+        .v2_outsel = false,
     },
     [OT_VER_EG_2_0_0] = {
         .regs_count = REGS_COUNT,
+        .v2_outsel = true,
     },
 };
 
@@ -262,7 +266,7 @@ static void ot_gpio_eg_update_intr_edge(OtGpioEgState *s, uint32_t prev)
 static uint32_t
 ot_gpio_eg_normalize_outsel(const OtGpioEgState *s, uint32_t outsel)
 {
-    if (s->version >= 2u) {
+    if (GPIO_EG_CONFIG[s->version].v2_outsel) {
         if (outsel == 49u || outsel == 50u) {
             /* Earlgrey v2: SpiHost1Sck (49) / SpiHost1Csb (50) -> v1 (53/54) */
             return outsel + 4u;
