@@ -723,9 +723,14 @@ static bool ot_hmac_regs_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
-    uint32_t permit = (reg <= R_ALERT_TEST || reg == R_CMD) ?
-                          0x1u :
-                          ((reg == R_CFG || reg == R_STATUS) ? 0x3u : 0xfu);
+    uint32_t permit;
+    if (reg <= R_ALERT_TEST || reg == R_CMD) {
+        permit = 0x1u;
+    } else if (reg == R_CFG || reg == R_STATUS) {
+        permit = 0x3u;
+    } else {
+        permit = 0xfu;
+    }
     return (permit & ~reg_be) == 0u;
 }
 
