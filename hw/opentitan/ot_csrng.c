@@ -168,6 +168,50 @@ REG32(MAIN_SM_STATE, 0x5cu)
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_CMD_SEQ_ALERT_MASK | \
      R_RECOV_ALERT_STS_CMD_STAGE_INVALID_RESEED_CNT_ALERT_MASK)
 
+#define OT_CSRNG_MMIO_SIZE 0x80u
+
+#define REG_PERMIT_1B 0x1u
+#define REG_PERMIT_2B 0x3u
+#define REG_PERMIT_4B 0xfu
+
+#define STATE_DB_V_FIRST_WORD   1u
+#define STATE_DB_V_LAST_WORD    4u
+#define STATE_DB_KEY_FIRST_WORD 5u
+#define STATE_DB_KEY_LAST_WORD  12u
+#define STATE_DB_STS_WORD       13u
+#define STATE_DB_WORD_COUNT     14u
+#define STATE_DB_PTR_RESET      0xfu
+#define STATE_DB_PTR_MASK       0xfu
+#define STATE_DB_ID_MASK_V2     0x3u
+
+#define ERR_CODE_FIFO_GENERIC_MASK \
+    (R_ERR_CODE_FIFO_WRITE_ERR_MASK | R_ERR_CODE_FIFO_READ_ERR_MASK | \
+     R_ERR_CODE_FIFO_STATE_ERR_MASK)
+#define ERR_CODE_FATAL_LOC_V2_MASK \
+    (R_ERR_CODE_CMD_STAGE_SM_ERR_MASK | R_ERR_CODE_MAIN_SM_ERR_MASK | \
+     R_ERR_CODE_DRBG_GEN_SM_ERR_MASK | R_ERR_CODE_AES_CIPHER_SM_ERR_MASK | \
+     R_ERR_CODE_CMD_GEN_CNT_ERR_MASK)
+#define ERR_CODE_FATAL_LOC_V1_MASK \
+    (ERR_CODE_FATAL_LOC_V2_MASK | R_ERR_CODE_DRBG_UPDBE_SM_ERR_MASK | \
+     R_ERR_CODE_DRBG_UPDOB_SM_ERR_MASK)
+#define ERR_CODE_SFIFO_V2_MASK \
+    (R_ERR_CODE_SFIFO_CMD_ERR_MASK | R_ERR_CODE_SFIFO_GENBITS_ERR_MASK)
+#define ERR_CODE_SFIFO_V1_MASK \
+    (ERR_CODE_SFIFO_V2_MASK | R_ERR_CODE_SFIFO_CMDREQ_ERR_MASK | \
+     R_ERR_CODE_SFIFO_RCSTAGE_ERR_MASK | R_ERR_CODE_SFIFO_KEYVRC_ERR_MASK | \
+     R_ERR_CODE_SFIFO_UPDREQ_ERR_MASK | R_ERR_CODE_SFIFO_BENCREQ_ERR_MASK | \
+     R_ERR_CODE_SFIFO_BENCACK_ERR_MASK | R_ERR_CODE_SFIFO_PDATA_ERR_MASK | \
+     R_ERR_CODE_SFIFO_FINAL_ERR_MASK | R_ERR_CODE_SFIFO_GBENCACK_ERR_MASK | \
+     R_ERR_CODE_SFIFO_GRCSTAGE_ERR_MASK | R_ERR_CODE_SFIFO_GGENREQ_ERR_MASK | \
+     R_ERR_CODE_SFIFO_GADSTAGE_ERR_MASK | R_ERR_CODE_SFIFO_GGENBITS_ERR_MASK | \
+     R_ERR_CODE_SFIFO_BLKENC_ERR_MASK)
+#define ERR_CODE_MASK_V1 \
+    (ERR_CODE_FIFO_GENERIC_MASK | ERR_CODE_FATAL_LOC_V1_MASK | \
+     ERR_CODE_SFIFO_V1_MASK)
+#define ERR_CODE_MASK_V2 \
+    (ERR_CODE_FIFO_GENERIC_MASK | ERR_CODE_FATAL_LOC_V2_MASK | \
+     ERR_CODE_SFIFO_V2_MASK)
+
 #define OT_CSRNG_AES_KEY_SIZE   32u /* 256 bits */
 #define OT_CSRNG_AES_BLOCK_SIZE 16u /* 128 bits */
 
@@ -306,7 +350,7 @@ typedef struct {
     bool no_fips;
     bool force_fips;
     bool no_glast_update;
-    uint32_t prev_genbits[2]; /* 64-bit cs_rdata_capt_q bus compare */
+    uint32_t prev_genbits[OT_CSRNG_AES_BLOCK_DWORD]; /* cs_rdata_capt_q */
     bool prev_genbits_valid;
 } OtCSRNGDrng;
 
@@ -413,24 +457,24 @@ typedef struct {
 static const OtCSRNGConfig CSRNG_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV1,
-        .err_code_mask = 0x77f0ffffu,
-        .fatal_loc_events_mask = 0x07f00000u,
+        .err_code_mask = ERR_CODE_MASK_V1,
+        .fatal_loc_events_mask = ERR_CODE_FATAL_LOC_V1_MASK,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
-        .state_db_id_mask = 0xfu,
+        .state_db_id_mask = R_INT_STATE_NUM_VAL_MASK,
     },
     [OT_VER_DJ] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV1,
-        .err_code_mask = 0x77f0ffffu,
-        .fatal_loc_events_mask = 0x07f00000u,
+        .err_code_mask = ERR_CODE_MASK_V1,
+        .fatal_loc_events_mask = ERR_CODE_FATAL_LOC_V1_MASK,
         .disabled_err_mask = R_ERR_CODE_CMD_GEN_CNT_ERR_MASK,
-        .state_db_id_mask = 0xfu,
+        .state_db_id_mask = R_INT_STATE_NUM_VAL_MASK,
     },
     [OT_VER_EG_2_0_0] = {
         .fsm_state_codes = OtCSRNGFsmStateCodeV2,
-        .err_code_mask = 0x76700003u,
-        .fatal_loc_events_mask = 0x06700000u,
+        .err_code_mask = ERR_CODE_MASK_V2,
+        .fatal_loc_events_mask = ERR_CODE_FATAL_LOC_V2_MASK,
         .disabled_err_mask = 0u,
-        .state_db_id_mask = 0x3u,
+        .state_db_id_mask = STATE_DB_ID_MASK_V2,
     },
 };
 
@@ -929,16 +973,17 @@ static void ot_csrng_drng_generate(OtCSRNGInstance *inst, uint32_t *out,
     g_assert(res == CRYPT_OK);
 
     bool is_sw = ot_csrng_get_slot(inst) == SW_INSTANCE_ID;
+    const uint32_t *capt_words = &out[OT_CSRNG_AES_BLOCK_DWORD];
     bool bus_cmp_match =
         drng->prev_genbits_valid &&
-        memcmp(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits)) == 0;
+        memcmp(drng->prev_genbits, capt_words, sizeof(drng->prev_genbits)) == 0;
     if (is_sw && bus_cmp_match) {
         OtCSRNGState *s = inst->parent;
         s->regs[R_RECOV_ALERT_STS] |= R_RECOV_ALERT_STS_CS_BUS_CMP_ALERT_MASK;
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 1);
         ibex_irq_set(&s->alerts[ALERT_RECOVERABLE], 0);
     }
-    memcpy(drng->prev_genbits, &out[2], sizeof(drng->prev_genbits));
+    memcpy(drng->prev_genbits, capt_words, sizeof(drng->prev_genbits));
     drng->prev_genbits_valid = true;
 
     xtrace_ot_csrng_show_buffer(ot_csrng_get_slot(inst), "out", out,
@@ -1170,7 +1215,7 @@ static void ot_csrng_handle_enable(OtCSRNGState *s)
 
         /* csrng_state_db.sv:163, 172: !state_db_enable_i resets ptr & dump_id
          */
-        s->state_db_ix = 0xfu;
+        s->state_db_ix = STATE_DB_PTR_RESET;
         s->state_db_dump_id = 0u;
 
         if (s->state != CSRNG_ERROR) {
@@ -1820,7 +1865,7 @@ next:
 static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
 {
     if (!s->enabled || !s->read_int_granted) {
-        s->state_db_ix = 0xfu;
+        s->state_db_ix = STATE_DB_PTR_RESET;
         qemu_log_mask(LOG_GUEST_ERROR, "%s: read state db disabled\n",
                       __func__);
         return 0;
@@ -1831,7 +1876,7 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
     bool app_read_en = appid < N_APP_COUNT &&
                        ((s->regs[R_INT_STATE_READ_ENABLE] >> appid) & 0x1u);
 
-    if (app_read_en && s->state_db_ix < 14u) {
+    if (app_read_en && s->state_db_ix < STATE_DB_WORD_COUNT) {
         OtCSRNGInstance *inst = &s->instances[appid];
         OtCSRNGDrng *drng = &inst->drng;
         unsigned base;
@@ -1839,17 +1884,17 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
         case 0: /* Reseed counter */
             val32 = drng->reseed_counter;
             break;
-        case 1u ... 4u: /* V (counter) */
+        case STATE_DB_V_FIRST_WORD ... STATE_DB_V_LAST_WORD: /* V (counter) */
             /* use big endian and reverse order to match OpenTitan order */
-            base = 4u - s->state_db_ix;
+            base = STATE_DB_V_LAST_WORD - s->state_db_ix;
             val32 = ldl_be_p(&drng->v_counter[base * sizeof(uint32_t)]);
             break;
-        case 5u ... 12u: /* Key */
+        case STATE_DB_KEY_FIRST_WORD ... STATE_DB_KEY_LAST_WORD: /* Key */
             /* use big endian and reverse order to match OpenTitan order */
-            base = 12u - s->state_db_ix;
+            base = STATE_DB_KEY_LAST_WORD - s->state_db_ix;
             val32 = ldl_be_p(&drng->key[base * sizeof(uint32_t)]);
             break;
-        case 13u: { /* Status + Compliance, only 8 LSBs matter */
+        case STATE_DB_STS_WORD: { /* Status + Compliance, only 8 LSBs matter */
             uint32_t inst_st = (uint32_t)drng->instantiated;
             uint32_t fips_st = (uint32_t)(!drng->no_fips);
             val32 = inst_st | (fips_st << 1u);
@@ -1870,8 +1915,8 @@ static uint32_t ot_csrng_read_state_db(OtCSRNGState *s)
      * Reading when reg_rd_ptr_q == 4'hd (13) advances ptr to 4'he, which
      * wraps to 4'h0 on the next cycle.
      */
-    s->state_db_ix = (s->state_db_ix + 1u) & 0xfu;
-    if (s->state_db_ix == 0xeu) {
+    s->state_db_ix = (s->state_db_ix + 1u) & STATE_DB_PTR_MASK;
+    if (s->state_db_ix == STATE_DB_WORD_COUNT) {
         s->state_db_ix = 0u;
     }
 
@@ -1900,18 +1945,19 @@ static bool ot_csrng_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     case R_GENBITS:
     case R_INT_STATE_VAL:
     case R_ERR_CODE:
-        permit = 0xfu;
+        permit = REG_PERMIT_4B;
         break;
     case R_CTRL:
     case R_HW_EXC_STS:
     case R_RECOV_ALERT_STS:
-        permit = 0x3u;
+        permit = REG_PERMIT_2B;
         break;
     default:
-        permit = 0x1u;
+        permit = REG_PERMIT_1B;
         break;
     }
-    uint32_t reg_be = (((1u << size) - 1u) << (addr & 0x3u)) & 0xfu;
+    unsigned byte_off = (unsigned)(addr & (sizeof(uint32_t) - 1u));
+    uint32_t reg_be = (((1u << size) - 1u) << byte_off) & REG_PERMIT_4B;
     return (permit & ~reg_be) == 0u;
 }
 
@@ -2093,7 +2139,7 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
                 s->read_int_granted = false;
             }
             if (!s->enabled || !s->read_int_granted) {
-                s->state_db_ix = 0xfu;
+                s->state_db_ix = STATE_DB_PTR_RESET;
             }
         }
         break;
@@ -2141,7 +2187,8 @@ static void ot_csrng_regs_write(void *opaque, hwaddr addr, uint64_t val64,
             uint32_t id_mask = CSRNG_CONFIG[s->version].state_db_id_mask;
             s->state_db_dump_id = val32 & id_mask;
         }
-        s->state_db_ix = (s->enabled && s->read_int_granted) ? 0u : 0xfu;
+        s->state_db_ix =
+            (s->enabled && s->read_int_granted) ? 0u : STATE_DB_PTR_RESET;
         if (val32 > OT_CSRNG_HW_APP_MAX) {
             qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid INT_STATE_NUM %u\n",
                           __func__, val32);
@@ -2268,7 +2315,7 @@ static void ot_csrng_reset_enter(Object *obj, ResetType type)
     s->sw_app_granted = false;
     s->read_int_granted = false;
     s->es_retry_count = 0;
-    s->state_db_ix = 0xfu;
+    s->state_db_ix = STATE_DB_PTR_RESET;
     s->state_db_dump_id = 0u;
     s->state = CSRNG_IDLE;
 
@@ -2312,7 +2359,7 @@ static void ot_csrng_init(Object *obj)
     OtCSRNGState *s = OT_CSRNG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_csrng_regs_ops, s, TYPE_OT_CSRNG,
-                          MAX(REGS_SIZE, 0x80u));
+                          MAX(REGS_SIZE, OT_CSRNG_MMIO_SIZE));
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     /* aes_desc is defined in libtomcrypt */
