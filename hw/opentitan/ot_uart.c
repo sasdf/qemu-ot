@@ -136,6 +136,33 @@ REG32(TIMEOUT_CTRL, 0x30u)
 #define OT_UART_RX_FIFO_SIZE         64u
 #define OT_UART_RX_STAGING_FIFO_SIZE 2048u
 #define OT_UART_IRQ_NUM              9u
+#define OT_UART_MAX_INSTANCES        4u
+
+#define OT_PINMUX_INSEL_CONSTANT_MAX  1u
+#define OT_PINMUX_OUTSEL_CONSTANT_MAX 2u
+#define OT_PINMUX_INSEL_UART0_RX      42u
+#define OT_PINMUX_OUTSEL_UART0_TX     45u
+
+#define OT_UART_FRAME_BITS            10u
+#define OT_UART_OVERSAMPLE_SHIFT      4u
+#define OT_UART_DEFAULT_CHAR_NS       86805LL
+#define OT_UART_MIN_BIT_NS            100LL
+#define OT_UART_TX_TIMER_THRESHOLD_NS 100000LL
+
+#define OT_UART_RX_PACE_POLL_MIN    2u
+#define OT_UART_RX_POLL_THRESHOLD   4u
+#define OT_UART_RX_RECENT_WINDOW_NS 1500000000LL
+#define OT_UART_RX_RECENT_SLEEP_US  200u
+#define OT_UART_RX_IDLE_SLEEP_US    10u
+#define OT_UART_RX_MAX_BIAS_NS      2000000LL
+#define OT_UART_RX_IDLE_MIN_BIAS_NS 1800000LL
+#define OT_UART_RX_PACE_RECENT_NS   150000LL
+#define OT_UART_RX_PACE_IDLE_NS     200000LL
+
+#define OT_UART_PERMIT_1B 0x1u
+#define OT_UART_PERMIT_2B 0x3u
+#define OT_UART_PERMIT_3B 0x7u
+#define OT_UART_PERMIT_4B 0xfu
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
@@ -204,7 +231,7 @@ typedef struct {
     QIOChannel *ioc;
 } OtPtyChardev;
 
-static OtUARTState *ot_uart_instances[4];
+static OtUARTState *ot_uart_instances[OT_UART_MAX_INSTANCES];
 
 struct OtUARTClass {
     SysBusDeviceClass parent_class;
@@ -324,7 +351,7 @@ static CharFrontend *ot_uart_get_tx_chr(OtUARTState *s)
 
 static CharFrontend *ot_uart_get_rx_chr(OtUARTState *s)
 {
-    for (int i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < OT_UART_MAX_INSTANCES; i++) {
         if (ot_uart_instances[i] && ot_uart_instances[i]->rx_target_uart == s) {
             return &ot_uart_instances[i]->chr;
         }
@@ -335,45 +362,60 @@ static CharFrontend *ot_uart_get_rx_chr(OtUARTState *s)
 void ot_uart_update_pinmux(const uint32_t *mio_outsel,
                            const uint32_t *mio_periph_insel)
 {
-    static const unsigned out_pads[4] = { 26u, 14u, 5u, 1u };
-    static const unsigned in_sels[4] = { 27u, 15u, 6u, 2u };
+    static const unsigned out_pads[OT_UART_MAX_INSTANCES] = {
+        26u,
+        14u,
+        5u,
+        1u,
+    };
+    static const unsigned in_sels[OT_UART_MAX_INSTANCES] = {
+        27u,
+        15u,
+        6u,
+        2u,
+    };
 
-    for (int u = 0; u < 4; u++) {
+    for (unsigned u = 0; u < OT_UART_MAX_INSTANCES; u++) {
         OtUARTState *s = ot_uart_instances[u];
         if (s) {
             OtUARTState *owner = NULL;
-            for (int ch = 0; ch < 4; ch++) {
-                if (mio_outsel[out_pads[ch]] == (uint32_t)(45 + u)) {
+            for (unsigned ch = 0; ch < OT_UART_MAX_INSTANCES; ch++) {
+                if (mio_outsel[out_pads[ch]] ==
+                    (OT_PINMUX_OUTSEL_UART0_TX + u)) {
                     owner = ot_uart_instances[ch];
                     break;
                 }
             }
-            if (!owner && mio_outsel[out_pads[u]] <= 2u) {
+            if (!owner &&
+                mio_outsel[out_pads[u]] <= OT_PINMUX_OUTSEL_CONSTANT_MAX) {
                 owner = s;
             }
             s->tx_chr_owner = owner;
         }
     }
 
-    for (int ch = 0; ch < 4; ch++) {
+    for (unsigned ch = 0; ch < OT_UART_MAX_INSTANCES; ch++) {
         OtUARTState *ch_dev = ot_uart_instances[ch];
         if (ch_dev) {
             OtUARTState *target = NULL;
-            for (int u = 0; u < 4; u++) {
-                if (mio_periph_insel[42 + u] == in_sels[ch]) {
+            for (unsigned u = 0; u < OT_UART_MAX_INSTANCES; u++) {
+                if (mio_periph_insel[OT_PINMUX_INSEL_UART0_RX + u] ==
+                    in_sels[ch]) {
                     target = ot_uart_instances[u];
                     break;
                 }
             }
-            if (!target && mio_periph_insel[42 + ch] <= 1u &&
-                mio_outsel[out_pads[ch]] <= 2u) {
+            if (!target &&
+                mio_periph_insel[OT_PINMUX_INSEL_UART0_RX + ch] <=
+                    OT_PINMUX_INSEL_CONSTANT_MAX &&
+                mio_outsel[out_pads[ch]] <= OT_PINMUX_OUTSEL_CONSTANT_MAX) {
                 target = ch_dev;
             }
             ch_dev->rx_target_uart = target;
         }
     }
 
-    for (int ch = 0; ch < 4; ch++) {
+    for (unsigned ch = 0; ch < OT_UART_MAX_INSTANCES; ch++) {
         OtUARTState *ch_dev = ot_uart_instances[ch];
         if (ch_dev && ch_dev->rx_target_uart) {
             OtUARTState *target = ch_dev->rx_target_uart;
@@ -460,7 +502,9 @@ static void ot_uart_update_rx_timeout(OtUARTState *s)
             return;
         }
         if (ot_uart_is_rx_enabled(s) && !fifo8_is_empty(&s->rx_fifo)) {
-            int64_t bit_ns = MAX(ot_uart_char_ns(s) / 10LL, 100LL);
+            int64_t bit_ns =
+                MAX(ot_uart_char_ns(s) / (int64_t)OT_UART_FRAME_BITS,
+                    OT_UART_MIN_BIT_NS);
             int64_t delay_ns = bit_ns * (int64_t)val;
             timer_mod(s->rx_timeout_timer,
                       qemu_clock_get_ns(OT_VIRTUAL_CLOCK) + delay_ns);
@@ -484,7 +528,7 @@ static void ot_uart_rx_timeout_timer_cb(void *opaque)
 
 static OtUARTState *ot_uart_get_rx_owner(OtUARTState *s)
 {
-    for (int i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < OT_UART_MAX_INSTANCES; i++) {
         if (ot_uart_instances[i] && ot_uart_instances[i]->rx_target_uart == s) {
             return ot_uart_instances[i];
         }
@@ -707,11 +751,11 @@ static int64_t ot_uart_char_ns(const OtUARTState *s)
 {
     uint32_t nco = FIELD_EX32(s->regs[R_CTRL], CTRL, NCO);
     if (nco && s->pclk) {
-        return (int64_t)((10ULL * NANOSECONDS_PER_SECOND
-                          << (R_CTRL_NCO_LENGTH + 4)) /
-                         ((uint64_t)nco * (uint64_t)s->pclk));
+        uint64_t num = (uint64_t)OT_UART_FRAME_BITS * NANOSECONDS_PER_SECOND
+                       << (R_CTRL_NCO_LENGTH + OT_UART_OVERSAMPLE_SHIFT);
+        return (int64_t)(num / ((uint64_t)nco * (uint64_t)s->pclk));
     }
-    return 86805LL;
+    return OT_UART_DEFAULT_CHAR_NS;
 }
 
 static void ot_uart_tx_timer_cb(void *opaque)
@@ -806,7 +850,7 @@ static void ot_uart_tx_schedule(OtUARTState *s)
                                    INTR_TX_EMPTY_MASK)) != 0 ||
         s->tx_busy || ot_uart_is_sys_loopack_enabled(s) ||
         !qemu_chr_fe_backend_connected(ot_uart_get_tx_chr(s)) ||
-        ot_uart_char_ns(s) > 100000LL;
+        ot_uart_char_ns(s) > OT_UART_TX_TIMER_THRESHOLD_NS;
     if (!use_timer) {
         ot_uart_xmit(s);
         return;
@@ -869,26 +913,30 @@ static void ot_uart_rx_pace_timer_cb(void *opaque)
     OtUARTState *s = opaque;
 
     if (ot_uart_is_rx_enabled(s) && fifo8_is_empty(&s->rx_fifo) &&
-        fifo8_is_empty(&s->rx_staging_fifo) && s->rx_poll_count >= 2u) {
+        fifo8_is_empty(&s->rx_staging_fifo) &&
+        s->rx_poll_count >= OT_UART_RX_PACE_POLL_MIN) {
         int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
         int64_t t0_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-        bool recent =
-            s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL;
+        bool recent = s->last_rx_ns > 0 &&
+                      (now_ns - s->last_rx_ns) < OT_UART_RX_RECENT_WINDOW_NS;
         s->rx_poll_count = 1u;
-        g_usleep(recent ? 200u : 10u);
+        g_usleep(recent ? OT_UART_RX_RECENT_SLEEP_US :
+                          OT_UART_RX_IDLE_SLEEP_US);
         qemu_chr_fe_accept_input(ot_uart_get_rx_chr(s));
         if (fifo8_is_empty(&s->rx_fifo) &&
             fifo8_is_empty(&s->rx_staging_fifo)) {
             int64_t slept_ns =
                 CLAMP(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0_ns, 0LL,
-                      2000000LL);
+                      OT_UART_RX_MAX_BIAS_NS);
             if (!recent) {
-                slept_ns = MAX(slept_ns, 1800000LL);
+                slept_ns = MAX(slept_ns, OT_UART_RX_IDLE_MIN_BIAS_NS);
             }
             icount_advance_bias_ns(slept_ns);
             now_ns += slept_ns;
         }
-        timer_mod(s->rx_pace_timer, now_ns + (recent ? 150000LL : 200000LL));
+        int64_t pace_ns =
+            recent ? OT_UART_RX_PACE_RECENT_NS : OT_UART_RX_PACE_IDLE_NS;
+        timer_mod(s->rx_pace_timer, now_ns + pace_ns);
     } else {
         s->rx_poll_count = 0u;
     }
@@ -905,8 +953,8 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     }
 
-    if (s->rx_poll_count >= 4u && !s->regs[R_INTR_ENABLE] &&
-        fifo8_is_empty(&s->rx_fifo) &&
+    if (s->rx_poll_count >= OT_UART_RX_POLL_THRESHOLD &&
+        !s->regs[R_INTR_ENABLE] && fifo8_is_empty(&s->rx_fifo) &&
         fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE) {
         timer_del(s->rx_timer);
         icount_advance_bias_ns(ot_uart_char_ns(s));
@@ -924,13 +972,16 @@ static uint64_t ot_uart_read(void *opaque, hwaddr addr, unsigned size)
         (fifo8_is_empty(&s->rx_staging_fifo) ||
          (!s->regs[R_INTR_ENABLE] &&
           fifo8_num_used(&s->rx_staging_fifo) > OT_UART_RX_FIFO_SIZE))) {
-        if (++s->rx_poll_count >= 4u && fifo8_is_empty(&s->rx_staging_fifo) &&
+        if (++s->rx_poll_count >= OT_UART_RX_POLL_THRESHOLD &&
+            fifo8_is_empty(&s->rx_staging_fifo) &&
             !timer_pending(s->rx_pace_timer)) {
             int64_t now_ns = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             bool recent =
-                s->last_rx_ns > 0 && (now_ns - s->last_rx_ns) < 1500000000LL;
-            timer_mod(s->rx_pace_timer,
-                      now_ns + (recent ? 150000LL : 200000LL));
+                s->last_rx_ns > 0 &&
+                (now_ns - s->last_rx_ns) < OT_UART_RX_RECENT_WINDOW_NS;
+            int64_t pace_ns =
+                recent ? OT_UART_RX_PACE_RECENT_NS : OT_UART_RX_PACE_IDLE_NS;
+            timer_mod(s->rx_pace_timer, now_ns + pace_ns);
         }
     } else if (!fifo8_is_empty(&s->rx_fifo) ||
                !fifo8_is_empty(&s->rx_staging_fifo)) {
@@ -1150,11 +1201,13 @@ static void ot_uart_write(void *opaque, hwaddr addr, uint64_t val64,
 }
 
 static const uint8_t UART_PERMIT[REGS_COUNT] = {
-    [R_INTR_STATE] = 0x3u,   [R_INTR_ENABLE] = 0x3u, [R_INTR_TEST] = 0x3u,
-    [R_ALERT_TEST] = 0x1u,   [R_CTRL] = 0xfu,        [R_STATUS] = 0x1u,
-    [R_RDATA] = 0x1u,        [R_WDATA] = 0x1u,       [R_FIFO_CTRL] = 0x1u,
-    [R_FIFO_STATUS] = 0x7u,  [R_OVRD] = 0x1u,        [R_VAL] = 0x3u,
-    [R_TIMEOUT_CTRL] = 0xfu,
+    [R_INTR_STATE] = OT_UART_PERMIT_2B,   [R_INTR_ENABLE] = OT_UART_PERMIT_2B,
+    [R_INTR_TEST] = OT_UART_PERMIT_2B,    [R_ALERT_TEST] = OT_UART_PERMIT_1B,
+    [R_CTRL] = OT_UART_PERMIT_4B,         [R_STATUS] = OT_UART_PERMIT_1B,
+    [R_RDATA] = OT_UART_PERMIT_1B,        [R_WDATA] = OT_UART_PERMIT_1B,
+    [R_FIFO_CTRL] = OT_UART_PERMIT_1B,    [R_FIFO_STATUS] = OT_UART_PERMIT_3B,
+    [R_OVRD] = OT_UART_PERMIT_1B,         [R_VAL] = OT_UART_PERMIT_2B,
+    [R_TIMEOUT_CTRL] = OT_UART_PERMIT_4B,
 };
 
 static bool ot_uart_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -1163,7 +1216,8 @@ static bool ot_uart_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t shift = (uint8_t)(addr & (sizeof(uint32_t) - 1u));
+    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << shift);
     return reg < REGS_COUNT &&
            (!is_write || (UART_PERMIT[reg] & ~reg_be) == 0u);
 }
@@ -1282,9 +1336,11 @@ static void ot_uart_realize(DeviceState *dev, Error **errp)
         timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_rx_pace_timer_cb, s);
     s->rx_timeout_timer =
         timer_new_ns(OT_VIRTUAL_CLOCK, ot_uart_rx_timeout_timer_cb, s);
-    if (s->ot_id[0] == 'u' && s->ot_id[1] >= '0' && s->ot_id[1] <= '3' &&
-        s->ot_id[2] == '\0') {
-        ot_uart_instances[s->ot_id[1] - '0'] = s;
+    if (s->ot_id[0] == 'u' && s->ot_id[1] >= '0' && s->ot_id[2] == '\0') {
+        unsigned idx = (unsigned)(s->ot_id[1] - '0');
+        if (idx < OT_UART_MAX_INSTANCES) {
+            ot_uart_instances[idx] = s;
+        }
     }
 
     qemu_chr_fe_set_handlers(&s->chr, ot_uart_can_receive, ot_uart_receive,
