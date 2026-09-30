@@ -81,13 +81,41 @@ REG32(HW_STRAPS_DATA_IN, 0x44u)
 
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 
-#define R_LAST_REG (R_HW_STRAPS_DATA_IN)
-#define REGS_COUNT (R_LAST_REG + 1u)
-#define REGS_SIZE  (REGS_COUNT * sizeof(uint32_t))
+#define R_LAST_REG      (R_HW_STRAPS_DATA_IN)
+#define REGS_COUNT      (R_LAST_REG + 1u)
+#define REGS_COUNT_BASE (R_CTRL_EN_INPUT_FILTER + 1u)
+#define REGS_SIZE       (REGS_COUNT * sizeof(uint32_t))
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
 
 #define ALERT_TEST_MASK (R_ALERT_TEST_FATAL_FAULT_ERR_MASK)
+
+#define GPIO_MMIO_SIZE            0x100u
+#define GPIO_IBUF_SIZE            65536u
+#define GPIO_NUM_I2C              3u
+#define GPIO_PERMIT_1B            0x1u
+#define GPIO_PERMIT_4B            0xfu
+#define GPIO_POLL_SLEEP_THRESHOLD 16u
+#define GPIO_POLL_SLEEP_US        50u
+#define GPIO_I2C_SDA_PIN          7u
+#define GPIO_I2C_SCL_PIN          8u
+#define GPIO_DIO_EC_RST_L_PIN     14u
+#define GPIO_DIO_FLASH_WP_L_PIN   15u
+#define GPIO_DIO_OPEN_DRAIN_MASK \
+    ((1u << GPIO_DIO_EC_RST_L_PIN) | (1u << GPIO_DIO_FLASH_WP_L_PIN))
+
+#define GPIO_BB_TARGET_WAIT_STEP_NS 500000LL
+#define GPIO_BB_I2C_WAIT_STEP_NS    1000000LL
+#define GPIO_BB_DEFAULT_STEP_NS     100000LL
+#define GPIO_BB_WAIT_PWM_TICKS      50000u
+#define GPIO_BB_TAIL_TICKS          20u
+#define GPIO_BB_DEBOUNCE_SAMPLE_IDX 5u
+#define GPIO_BB_SPI_START_PERIODS   10LL
+#define GPIO_BB_I2C_START_PERIODS   100LL
+#define GPIO_BB_RESP_INIT_SIZE      4096u
+#define GPIO_BB_CMD_PARTS           4
+#define GPIO_BB_MAX_SAMPLES         10000000u
+#define GPIO_BATCH_WRITE_CHUNK      4096u
 
 #define REG_NAME_ENTRY(_reg_) [R_##_reg_] = stringify(_reg_)
 
@@ -131,7 +159,7 @@ struct OtGpioEgState {
     MemoryRegion mmio;
 
     uint32_t regs[REGS_COUNT];
-    uint8_t version;
+    bool strap_en;
     uint32_t data_out; /* output data */
     uint32_t data_oe; /* output enable */
     uint32_t data_ii; /* input data from IRQ lines */
@@ -148,7 +176,7 @@ struct OtGpioEgState {
     uint32_t force_oe; /* pinmux sleep force output enable mask */
     uint32_t force_out; /* pinmux sleep force output value mask */
 
-    char ibuf[65536]; /* backed input buffer */
+    char ibuf[GPIO_IBUF_SIZE]; /* backed input buffer */
     unsigned ipos;
     OtGpioEgBackendState backend_state; /* cache */
 
@@ -157,7 +185,7 @@ struct OtGpioEgState {
     OtPwmState *pwm;
     OtSPIHostState *spi_host1;
     OtSysrstCtrlState *sysrst_ctrl;
-    OtI2CState *i2c[3];
+    OtI2CState *i2c[GPIO_NUM_I2C];
     uint64_t time_offset_us;
     uint64_t last_total_us;
     bool explicit_time;
@@ -176,7 +204,7 @@ struct OtGpioEgState {
     uint32_t last_read_data_in;
     uint32_t poll_count;
     int64_t bb_start_ns;
-    unsigned bb_pins[32];
+    unsigned bb_pins[PARAM_NUM_IO];
     unsigned bb_npins;
     unsigned bb_settle_ticks;
     unsigned bb_wait_pwm_ticks;
@@ -194,26 +222,6 @@ struct OtGpioEgState {
 struct OtGpioEgClass {
     SysBusDeviceClass parent_class;
     ResettablePhases parent_phases;
-};
-
-typedef struct {
-    unsigned regs_count;
-    bool v2_outsel;
-} OtGpioEgConfig;
-
-static const OtGpioEgConfig GPIO_EG_CONFIG[OT_VER_COUNT] = {
-    [OT_VER_EG_1_0_0] = {
-        .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
-        .v2_outsel = false,
-    },
-    [OT_VER_DJ] = {
-        .regs_count = R_CTRL_EN_INPUT_FILTER + 1u,
-        .v2_outsel = false,
-    },
-    [OT_VER_EG_2_0_0] = {
-        .regs_count = REGS_COUNT,
-        .v2_outsel = true,
-    },
 };
 
 static OtGpioEgState *ot_gpio_eg_instance;
@@ -263,25 +271,6 @@ static void ot_gpio_eg_update_intr_edge(OtGpioEgState *s, uint32_t prev)
     s->regs[R_INTR_STATE] |= intr_state;
 }
 
-static uint32_t
-ot_gpio_eg_normalize_outsel(const OtGpioEgState *s, uint32_t outsel)
-{
-    if (GPIO_EG_CONFIG[s->version].v2_outsel) {
-        if (outsel == 49u || outsel == 50u) {
-            /* Earlgrey v2: SpiHost1Sck (49) / SpiHost1Csb (50) -> v1 (53/54) */
-            return outsel + 4u;
-        }
-        if (outsel >= 61u && outsel <= 66u) {
-            /*
-             * Earlgrey v2: SysrstCtrlBatDisable..Z3Wakeup (61..66) ->
-             * v1 (72..77)
-             */
-            return outsel + 11u;
-        }
-    }
-    return outsel;
-}
-
 static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
 {
     uint32_t periph_out_v = s->data_out ^ s->invert;
@@ -299,28 +288,31 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
         int level = 0;
 
         if (s->pinmux) {
-            uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
-            uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
             unsigned gp = p;
             if (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) {
                 gp = (unsigned)g_pull;
             }
-            bool is_sysrst_outsel = (outsel >= 35u && outsel <= 42u) ||
-                                    (outsel >= 72u && outsel <= 77u);
+            bool is_sysrst_outsel =
+                (outsel >= OT_PINMUX_EG_OUTSEL_I2C_FIRST &&
+                 outsel <= OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD1) ||
+                (outsel >= OT_PINMUX_EG_OUTSEL_SYSRST_FIRST &&
+                 outsel <= OT_PINMUX_EG_OUTSEL_SYSRST_LAST);
             if ((s->force_en >> gp) & 1u) {
                 if ((s->force_oe >> gp) & 1u) {
                     driven_by_dev = true;
                     level = (int)((s->force_out >> gp) & 1u);
                 }
-            } else if (outsel == 0u) {
+            } else if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ZERO) {
                 driven_by_dev = true;
                 level = 0;
-            } else if (outsel == 1u) {
+            } else if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ONE) {
                 driven_by_dev = true;
                 level = 1;
-            } else if (outsel >= 3u && outsel < 35u) {
-                unsigned g = outsel - 3u;
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_GPIO_BASE &&
+                       outsel < OT_PINMUX_EG_OUTSEL_GPIO_END) {
+                unsigned g = outsel - OT_PINMUX_EG_OUTSEL_GPIO_BASE;
                 if ((periph_out_en >> g) & 1u) {
                     driven_by_dev = true;
                     level = (int)((periph_out_v >> g) & 1u);
@@ -328,17 +320,25 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
             } else if (is_sysrst_outsel && s->sysrst_ctrl) {
                 driven_by_dev = true;
                 level = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
-            } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_PATTGEN_BASE &&
+                       outsel <= OT_PINMUX_EG_OUTSEL_PATTGEN_LAST &&
+                       s->pattgen) {
                 driven_by_dev = true;
-                level = (int)ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
-            } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+                level = (int)ot_pattgen_get_pin_level(
+                    s->pattgen, outsel - OT_PINMUX_EG_OUTSEL_PATTGEN_BASE);
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_PWM_BASE &&
+                       outsel < OT_PINMUX_EG_OUTSEL_PWM_END && s->pwm) {
                 int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
                 driven_by_dev = true;
-                level =
-                    (int)ot_pwm_get_channel_level(s->pwm, outsel - 65u, now_ns);
+                level = (int)
+                    ot_pwm_get_channel_level(s->pwm,
+                                             outsel -
+                                                 OT_PINMUX_EG_OUTSEL_PWM_BASE,
+                                             now_ns);
             }
             if (!driven_by_dev) {
-                if (p == 14u || p == 15u) {
+                if (p == GPIO_DIO_EC_RST_L_PIN ||
+                    p == GPIO_DIO_FLASH_WP_L_PIN) {
                     /* Open-drain DIO pins (IOR8/ec_rst_l, IOR9/flash_wp_l) with
                      * board pull-ups */
                     bool host_low =
@@ -366,7 +366,7 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
 int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
 {
     OtGpioEgState *s = ot_gpio_eg_instance;
-    if (!s || !s->pinmux || mio_pad >= 47u) {
+    if (!s || !s->pinmux || mio_pad >= OT_PINMUX_EG_MIO_PAD_COUNT) {
         return -1;
     }
     uint32_t pad_attr = ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
@@ -375,16 +375,16 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
     if (pad_in_dis) {
         return pad_inv ? 1 : 0;
     }
-    uint32_t raw_outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
-    uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
-    if (outsel == 0u) {
+    uint32_t outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+    if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ZERO) {
         return 0;
     }
-    if (outsel == 1u) {
+    if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ONE) {
         return 1;
     }
-    if (outsel >= 3u && outsel < 35u) {
-        unsigned g_out = outsel - 3u;
+    if (outsel >= OT_PINMUX_EG_OUTSEL_GPIO_BASE &&
+        outsel < OT_PINMUX_EG_OUTSEL_GPIO_END) {
+        unsigned g_out = outsel - OT_PINMUX_EG_OUTSEL_GPIO_BASE;
         if ((s->data_oe >> g_out) & 1u) {
             bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
             uint32_t od_mask = OT_PINMUX_PAD_ATTR_OD_EN_MASK |
@@ -394,13 +394,23 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
                 return g_out_val ? 1 : 0;
             }
         }
-    } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
+    } else if (outsel >= OT_PINMUX_EG_OUTSEL_SYSRST_FIRST &&
+               outsel <= OT_PINMUX_EG_OUTSEL_SYSRST_LAST && s->sysrst_ctrl) {
         return ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
-    } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
-        return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
-    } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+    } else if (outsel >= OT_PINMUX_EG_OUTSEL_PATTGEN_BASE &&
+               outsel <= OT_PINMUX_EG_OUTSEL_PATTGEN_LAST && s->pattgen) {
+        return ot_pattgen_get_pin_level(s->pattgen,
+                                        outsel -
+                                            OT_PINMUX_EG_OUTSEL_PATTGEN_BASE) ?
+                   1 :
+                   0;
+    } else if (outsel >= OT_PINMUX_EG_OUTSEL_PWM_BASE &&
+               outsel < OT_PINMUX_EG_OUTSEL_PWM_END && s->pwm) {
         int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        bool pwm_lvl = ot_pwm_get_channel_level(s->pwm, outsel - 65u, now_ns);
+        bool pwm_lvl =
+            ot_pwm_get_channel_level(s->pwm,
+                                     outsel - OT_PINMUX_EG_OUTSEL_PWM_BASE,
+                                     now_ns);
         return pwm_lvl ? 1 : 0;
     }
     return -1;
@@ -417,24 +427,27 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     if (s->pinmux) {
         bool all_muxed = true;
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
-            if (ot_pinmux_eg_get_periph_insel(s->pinmux, g) < 2u) {
+            if (ot_pinmux_eg_get_periph_insel(s->pinmux, g) <
+                OT_PINMUX_EG_INSEL_MIO_BASE) {
                 all_muxed = false;
                 break;
             }
         }
         uint32_t eff_data_ib = s->data_ib;
-        if (all_muxed && (s->data_ib & ~0x0000c000u) == 0u) {
+        if (all_muxed && (s->data_ib & ~GPIO_DIO_OPEN_DRAIN_MASK) == 0u) {
             eff_data_ib = 0u;
         }
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
-            if (insel == 0u) {
+            if (insel == OT_PINMUX_EG_INSEL_CONSTANT_ZERO) {
                 routed_bi &= ~(1u << g);
-            } else if (insel == 1u) {
+            } else if (insel == OT_PINMUX_EG_INSEL_CONSTANT_ONE) {
                 routed_ib |= (1u << g);
                 routed_bi &= ~(1u << g);
-            } else if (insel >= 2u && (insel - 2u) < 47u) {
-                unsigned mio_pad = insel - 2u;
+            } else if (insel >= OT_PINMUX_EG_INSEL_MIO_BASE &&
+                       (insel - OT_PINMUX_EG_INSEL_MIO_BASE) <
+                           OT_PINMUX_EG_MIO_PAD_COUNT) {
+                unsigned mio_pad = insel - OT_PINMUX_EG_INSEL_MIO_BASE;
                 int hp = (int)g;
                 if (!all_muxed) {
                     hp = ot_pinmux_eg_mio_to_host_pin(mio_pad);
@@ -453,7 +466,8 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 }
                 uint32_t mio_outsel =
                     ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
-                if (((s->data_oe >> g) & 1u) && mio_outsel == (3u + g)) {
+                if (((s->data_oe >> g) & 1u) &&
+                    mio_outsel == (OT_PINMUX_EG_OUTSEL_GPIO_BASE + g)) {
                     eff_oe |= (1u << g);
                 }
             }
@@ -481,10 +495,12 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
             bool in_o = false;
-            if (insel == 1u) {
+            if (insel == OT_PINMUX_EG_INSEL_CONSTANT_ONE) {
                 in_o = true;
-            } else if (insel >= 2u && (insel - 2u) < 47u) {
-                unsigned mio_pad = insel - 2u;
+            } else if (insel >= OT_PINMUX_EG_INSEL_MIO_BASE &&
+                       (insel - OT_PINMUX_EG_INSEL_MIO_BASE) <
+                           OT_PINMUX_EG_MIO_PAD_COUNT) {
+                unsigned mio_pad = insel - OT_PINMUX_EG_INSEL_MIO_BASE;
                 int mio_in = ot_gpio_eg_get_mio_pad_in(mio_pad);
                 if (mio_in >= 0) {
                     in_o = (bool)mio_in;
@@ -652,13 +668,14 @@ static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
     OtGpioEgState *s = opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    unsigned regs_count = GPIO_EG_CONFIG[s->version].regs_count;
-    uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit = 0xfu;
+    unsigned regs_count = s->strap_en ? REGS_COUNT : REGS_COUNT_BASE;
+    uint8_t reg_be =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
+    uint8_t permit = GPIO_PERMIT_4B;
     if (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) {
-        permit = 0x1u;
+        permit = GPIO_PERMIT_1B;
     }
-    bool aligned = (addr & 3u) + size <= 4u;
+    bool aligned = (addr & (sizeof(uint32_t) - 1u)) + size <= sizeof(uint32_t);
     bool be_ok = !is_write || (permit & ~reg_be) == 0u;
     return reg < regs_count && aligned && be_ok;
 }
@@ -677,10 +694,11 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
         val32 = s->regs[reg];
         if (val32 == s->last_read_data_in) {
             s->poll_count++;
-            if (s->poll_count > 16u && qemu_chr_fe_backend_connected(&s->chr)) {
+            if (s->poll_count > GPIO_POLL_SLEEP_THRESHOLD &&
+                qemu_chr_fe_backend_connected(&s->chr)) {
                 bql_unlock();
                 replay_mutex_unlock();
-                g_usleep(50);
+                g_usleep(GPIO_POLL_SLEEP_US);
                 replay_mutex_lock();
                 bql_lock();
                 ot_gpio_eg_update_data_in(s);
@@ -863,9 +881,12 @@ static bool ot_gpio_eg_bitbang_uses_spi_host1(OtGpioEgState *s)
         return false;
     }
     for (unsigned bit = 0; bit < s->bb_npins; bit++) {
-        uint32_t outsel = ot_gpio_eg_normalize_outsel(
-            s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]));
-        if (outsel == 41u || outsel == 42u || outsel == 53u || outsel == 54u) {
+        uint32_t outsel =
+            ot_pinmux_eg_get_gpio_outsel(s->pinmux, s->bb_pins[bit]);
+        if (outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD0 ||
+            outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD1 ||
+            outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SCK ||
+            outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_CSB) {
             return true;
         }
     }
@@ -877,14 +898,14 @@ static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
     bool has_i2c_pad = false;
     for (unsigned i = 0; i < s->bb_npins; i++) {
         unsigned pad = s->bb_pins[i];
-        if (pad == 7u || pad == 8u) {
+        if (pad == GPIO_I2C_SDA_PIN || pad == GPIO_I2C_SCL_PIN) {
             has_i2c_pad = true;
             break;
         }
         if (s->pinmux) {
-            uint32_t outsel = ot_gpio_eg_normalize_outsel(
-                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad));
-            if (outsel >= 35u && outsel <= 40u) {
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+            if (outsel >= OT_PINMUX_EG_OUTSEL_I2C_FIRST &&
+                outsel <= OT_PINMUX_EG_OUTSEL_I2C_LAST) {
                 has_i2c_pad = true;
                 break;
             }
@@ -893,12 +914,12 @@ static OtI2CState *ot_gpio_eg_get_active_override_i2c(OtGpioEgState *s)
     if (!has_i2c_pad) {
         return NULL;
     }
-    for (unsigned i = 0; i < 3u; i++) {
+    for (unsigned i = 0; i < GPIO_NUM_I2C; i++) {
         if (s->i2c[i] && ot_i2c_is_override_waveform_ready(s->i2c[i])) {
             return s->i2c[i];
         }
     }
-    for (unsigned i = 0; i < 3u; i++) {
+    for (unsigned i = 0; i < GPIO_NUM_I2C; i++) {
         if (s->i2c[i] && ot_i2c_is_override_enabled(s->i2c[i])) {
             return s->i2c[i];
         }
@@ -911,7 +932,7 @@ static OtI2CState *ot_gpio_eg_get_active_target_i2c(OtGpioEgState *s)
     bool has_i2c_pad = false;
     for (unsigned i = 0; i < s->bb_npins; i++) {
         unsigned pad = s->bb_pins[i];
-        if (pad == 7u || pad == 8u) {
+        if (pad == GPIO_I2C_SDA_PIN || pad == GPIO_I2C_SCL_PIN) {
             has_i2c_pad = true;
             break;
         }
@@ -919,7 +940,7 @@ static OtI2CState *ot_gpio_eg_get_active_target_i2c(OtGpioEgState *s)
     if (!has_i2c_pad) {
         return NULL;
     }
-    for (unsigned i = 0; i < 3u; i++) {
+    for (unsigned i = 0; i < GPIO_NUM_I2C; i++) {
         if (s->i2c[i] && ot_i2c_is_target_enabled(s->i2c[i]) &&
             !ot_i2c_is_override_enabled(s->i2c[i])) {
             return s->i2c[i];
@@ -931,26 +952,33 @@ static OtI2CState *ot_gpio_eg_get_active_target_i2c(OtGpioEgState *s)
 static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
                                   int64_t sample_ns)
 {
-    if (pad == 7u || pad == 8u) {
+    if (pad == GPIO_I2C_SDA_PIN || pad == GPIO_I2C_SCL_PIN) {
         OtI2CState *active_i2c = ot_gpio_eg_get_active_override_i2c(s);
         if (active_i2c) {
-            return ot_i2c_get_override_pin_level(active_i2c, pad == 7u,
+            return ot_i2c_get_override_pin_level(active_i2c,
+                                                 pad == GPIO_I2C_SDA_PIN,
                                                  sample_ns);
         }
     }
     if (s->pinmux) {
-        uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
-        uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
-        if (outsel == 0u) {
+        uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+        if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ZERO) {
             return false;
         }
-        if (outsel == 1u) {
+        if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ONE) {
             return true;
         }
-        if (outsel >= 65u && outsel < 71u && s->pwm) {
-            return ot_pwm_get_channel_level(s->pwm, outsel - 65u, sample_ns);
+        if (outsel >= OT_PINMUX_EG_OUTSEL_PWM_BASE &&
+            outsel < OT_PINMUX_EG_OUTSEL_PWM_END && s->pwm) {
+            return ot_pwm_get_channel_level(s->pwm,
+                                            outsel -
+                                                OT_PINMUX_EG_OUTSEL_PWM_BASE,
+                                            sample_ns);
         }
-        if ((outsel == 41u || outsel == 53u || outsel == 54u) && s->spi_host1) {
+        if ((outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD0 ||
+             outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_SCK ||
+             outsel == OT_PINMUX_EG_OUTSEL_SPI_HOST1_CSB) &&
+            s->spi_host1) {
             return ot_spi_host_get_pin_level(s->spi_host1, outsel, sample_ns);
         }
     }
@@ -987,7 +1015,8 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             !ot_i2c_is_target_polling_acq(target_i2c) &&
             s->bb_wait_pwm_ticks > 0) {
             s->bb_wait_pwm_ticks--;
-            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 500000LL;
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              GPIO_BB_TARGET_WAIT_STEP_NS;
             s->bb_start_ns = next_ns;
             timer_mod_ns(s->bb_timer, next_ns);
             return;
@@ -1017,9 +1046,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             for (unsigned bit = 0; bit < s->bb_npins; bit++) {
                 unsigned pad = s->bb_pins[bit];
                 bool level = ((wval >> bit) & 1u) != 0;
-                if (pad == 7u) {
+                if (pad == GPIO_I2C_SDA_PIN) {
                     sda_in = level;
-                } else if (pad == 8u) {
+                } else if (pad == GPIO_I2C_SCL_PIN) {
                     scl_in = level;
                 }
             }
@@ -1028,7 +1057,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             uint8_t sample_byte = 0;
             for (unsigned bit = 0; bit < s->bb_npins; bit++) {
                 unsigned pad = s->bb_pins[bit];
-                bool level = (pad == 7u) ? sda_out : scl_in;
+                bool level = (pad == GPIO_I2C_SDA_PIN) ? sda_out : scl_in;
                 if (level) {
                     sample_byte |= (uint8_t)(1u << bit);
                 }
@@ -1036,8 +1065,8 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             s->bb_rbuf[s->bb_idx] = sample_byte;
             s->bb_idx++;
             if (s->bb_idx >= s->bb_num_samples) {
-                s->bb_wait_pwm_ticks = 50000u;
-                s->bb_tail_ticks = 20u;
+                s->bb_wait_pwm_ticks = GPIO_BB_WAIT_PWM_TICKS;
+                s->bb_tail_ticks = GPIO_BB_TAIL_TICKS;
             }
             int64_t next_ns =
                 s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -1056,10 +1085,11 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             uses_spi_host1 && !ot_spi_host_is_waveform_ready(s->spi_host1);
         bool wait_i2c =
             active_i2c && !ot_i2c_is_override_waveform_ready(active_i2c);
-        if (s->bb_idx == 5u && s->bb_wait_pwm_ticks > 0 &&
-            (wait_pwm || wait_spi || wait_i2c)) {
+        if (s->bb_idx == GPIO_BB_DEBOUNCE_SAMPLE_IDX &&
+            s->bb_wait_pwm_ticks > 0 && (wait_pwm || wait_spi || wait_i2c)) {
             s->bb_wait_pwm_ticks--;
-            int64_t step_ns = active_i2c ? 1000000LL : 100000LL;
+            int64_t step_ns =
+                active_i2c ? GPIO_BB_I2C_WAIT_STEP_NS : GPIO_BB_DEFAULT_STEP_NS;
             int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + step_ns;
             s->bb_start_ns =
                 next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -1067,23 +1097,25 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
             return;
         }
 
-        if (s->bb_idx == 5u) {
+        if (s->bb_idx == GPIO_BB_DEBOUNCE_SAMPLE_IDX) {
             int64_t period_ns = (int64_t)s->bb_period_ns;
             s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                              (int64_t)s->bb_idx * period_ns;
             if (uses_spi_host1) {
-                int64_t spi_start_ns = s->bb_start_ns + 10LL * period_ns;
+                int64_t spi_start_ns =
+                    s->bb_start_ns + GPIO_BB_SPI_START_PERIODS * period_ns;
                 ot_spi_host_set_waveform_start_ns(s->spi_host1, spi_start_ns,
                                                   false);
             }
             if (active_i2c) {
-                int64_t i2c_start_ns = s->bb_start_ns + 100LL * period_ns;
+                int64_t i2c_start_ns =
+                    s->bb_start_ns + GPIO_BB_I2C_START_PERIODS * period_ns;
                 ot_i2c_set_waveform_start_ns(active_i2c, i2c_start_ns, false);
             }
         }
 
         uint32_t chunk = 1u;
-        if (s->bb_idx >= 5u) {
+        if (s->bb_idx >= GPIO_BB_DEBOUNCE_SAMPLE_IDX) {
             while ((s->bb_idx + chunk) < s->bb_num_samples &&
                    s->bb_wbuf[s->bb_idx + chunk] == wval) {
                 chunk++;
@@ -1121,8 +1153,9 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
 
         s->bb_idx += chunk;
         if (s->bb_idx >= s->bb_num_samples) {
-            s->bb_wait_pwm_ticks = 50000u;
-            s->bb_tail_ticks = (uses_spi_host1 || active_i2c) ? 0u : 20u;
+            s->bb_wait_pwm_ticks = GPIO_BB_WAIT_PWM_TICKS;
+            s->bb_tail_ticks =
+                (uses_spi_host1 || active_i2c) ? 0u : GPIO_BB_TAIL_TICKS;
         }
         int64_t next_ns =
             s->bb_start_ns + (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
@@ -1132,13 +1165,14 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
 
     if (s->bb_tail_ticks > 0) {
         s->bb_tail_ticks--;
-        int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL;
+        int64_t next_ns =
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + GPIO_BB_DEFAULT_STEP_NS;
         timer_mod_ns(s->bb_timer, next_ns);
         return;
     }
 
     /* Encode s->bb_rbuf as RLE and send "B:<rle>\r\n" */
-    GString *resp = g_string_sized_new(4096);
+    GString *resp = g_string_sized_new(GPIO_BB_RESP_INIT_SIZE);
     g_string_append(resp, "B:");
     if (s->bb_num_samples > 0) {
         uint8_t cur = s->bb_rbuf[0];
@@ -1176,7 +1210,7 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
 
 static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
 {
-    gchar **parts = g_strsplit(args, ":", 4);
+    gchar **parts = g_strsplit(args, ":", GPIO_BB_CMD_PARTS);
     g_assert(parts && parts[0] && parts[1] && parts[2] && parts[3]);
 
     uint64_t period_ns = g_ascii_strtoull(parts[0], NULL, 10);
@@ -1184,11 +1218,12 @@ static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
     const char *pins_str = parts[2];
     const char *rle_str = parts[3];
 
-    g_assert(period_ns > 0 && num_samples > 0 && num_samples <= 10000000u);
+    g_assert(period_ns > 0 && num_samples > 0 &&
+             num_samples <= GPIO_BB_MAX_SAMPLES);
 
-    gchar **pin_tokens = g_strsplit(pins_str, ".", 32);
+    gchar **pin_tokens = g_strsplit(pins_str, ".", PARAM_NUM_IO);
     s->bb_npins = 0;
-    for (unsigned i = 0; pin_tokens && pin_tokens[i] && i < 32u; i++) {
+    for (unsigned i = 0; pin_tokens && pin_tokens[i] && i < PARAM_NUM_IO; i++) {
         unsigned pad = (unsigned)g_ascii_strtoull(pin_tokens[i], NULL, 10);
         s->bb_pins[s->bb_npins++] = pad;
         if (pad < PARAM_NUM_IO) {
@@ -1205,7 +1240,7 @@ static void ot_gpio_eg_handle_bitbang_cmd(OtGpioEgState *s, const char *args)
     s->bb_num_samples = num_samples;
     s->bb_idx = 0;
     s->bb_settle_ticks = 0;
-    s->bb_wait_pwm_ticks = 50000u;
+    s->bb_wait_pwm_ticks = GPIO_BB_WAIT_PWM_TICKS;
     s->bb_tail_ticks = 0;
 
     gchar **runs = g_strsplit(rle_str, ",", -1);
@@ -1248,7 +1283,7 @@ uint64_t ot_gpio_eg_get_total_us(OtGpioEgState *s)
         return s->last_total_us;
     }
     uint64_t rt_us =
-        (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+        (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / SCALE_US);
     s->last_total_us = MAX(s->last_total_us, rt_us + s->time_offset_us);
     return s->last_total_us;
 }
@@ -1264,7 +1299,7 @@ void ot_gpio_eg_set_pattgen_batch(OtGpioEgState *s, bool active)
             const uint8_t *ptr = (const uint8_t *)s->batch_buf->str;
             size_t remaining = s->batch_buf->len;
             while (remaining > 0) {
-                int chunk = (int)MIN(remaining, 4096u);
+                int chunk = (int)MIN(remaining, GPIO_BATCH_WRITE_CHUNK);
                 qemu_chr_fe_write(&s->chr, ptr, chunk);
                 ptr += chunk;
                 remaining -= (size_t)chunk;
@@ -1272,7 +1307,7 @@ void ot_gpio_eg_set_pattgen_batch(OtGpioEgState *s, bool active)
             g_string_set_size(s->batch_buf, 0);
         }
         uint64_t rt_us =
-            (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000LL);
+            (uint64_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / SCALE_US);
         s->time_offset_us = s->last_total_us - rt_us;
         s->explicit_time = false;
     }
@@ -1361,8 +1396,8 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 ot_gpio_eg_update_backend(s, false);
             } else if (cmd == 'R') {
                 s->sync_seq = data_in;
-                timer_mod(s->sync_timer,
-                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL);
+                timer_mod(s->sync_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                             GPIO_BB_DEFAULT_STEP_NS);
             } else {
                 qemu_log_mask(LOG_UNIMP, "%s: unsupported command %c\n",
                               __func__, cmd);
@@ -1420,25 +1455,26 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
     uint32_t periph_pull_v = s->pull_sel;
     if (s->pinmux) {
         for (unsigned p = 0; p < PARAM_NUM_IO; p++) {
-            if ((p == 14u || p == 15u) && s->sysrst_ctrl) {
+            if ((p == GPIO_DIO_EC_RST_L_PIN || p == GPIO_DIO_FLASH_WP_L_PIN) &&
+                s->sysrst_ctrl) {
                 bool host_low =
                     !((s->data_bi >> p) & 1u) && !((s->data_ib >> p) & 1u);
-                int drv =
-                    ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, 86u + p);
+                int drv = ot_sysrst_ctrl_get_outsel_level(
+                    s->sysrst_ctrl, OT_PINMUX_EG_OUTSEL_SYSRST_DIO_BASE + p);
                 out_en |= (1u << p);
                 if (drv != 0 && !host_low) {
                     out_v |= (1u << p);
                 }
                 continue;
             }
-            uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
-            uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
+            uint32_t outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
             unsigned gp = p;
             if (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) {
                 gp = (unsigned)g_pull;
             }
-            if (g_pull >= 0 || (outsel >= 3u && outsel < 35u)) {
+            if (g_pull >= 0 || (outsel >= OT_PINMUX_EG_OUTSEL_GPIO_BASE &&
+                                outsel < OT_PINMUX_EG_OUTSEL_GPIO_END)) {
                 if ((periph_pull_en >> gp) & 1u) {
                     pull_en |= (1u << p);
                 }
@@ -1453,25 +1489,32 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
                 if ((s->force_out >> gp) & 1u) {
                     out_v |= (1u << p);
                 }
-            } else if (outsel == 0u) {
+            } else if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ZERO) {
                 out_en |= (1u << p);
-            } else if (outsel == 1u) {
+            } else if (outsel == OT_PINMUX_EG_OUTSEL_CONSTANT_ONE) {
                 out_en |= (1u << p);
                 out_v |= (1u << p);
-            } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_PATTGEN_BASE &&
+                       outsel <= OT_PINMUX_EG_OUTSEL_PATTGEN_LAST &&
+                       s->pattgen) {
                 out_en |= (1u << p);
-                if (ot_pattgen_get_pin_level(s->pattgen, outsel - 49u)) {
+                if (ot_pattgen_get_pin_level(
+                        s->pattgen,
+                        outsel - OT_PINMUX_EG_OUTSEL_PATTGEN_BASE)) {
                     out_v |= (1u << p);
                 }
-            } else if (outsel >= 72u && outsel <= 77u && s->sysrst_ctrl) {
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_SYSRST_FIRST &&
+                       outsel <= OT_PINMUX_EG_OUTSEL_SYSRST_LAST &&
+                       s->sysrst_ctrl) {
                 int drv =
                     ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
                 out_en |= (1u << p);
                 if (drv != 0) {
                     out_v |= (1u << p);
                 }
-            } else if (outsel >= 3u && outsel < 35u) {
-                unsigned g = outsel - 3u;
+            } else if (outsel >= OT_PINMUX_EG_OUTSEL_GPIO_BASE &&
+                       outsel < OT_PINMUX_EG_OUTSEL_GPIO_END) {
+                unsigned g = outsel - OT_PINMUX_EG_OUTSEL_GPIO_BASE;
                 if ((periph_out_en >> g) & 1u) {
                     out_en |= (1u << p);
                 }
@@ -1645,7 +1688,7 @@ static const MemoryRegionOps ot_gpio_eg_regs_ops = {
 
 static const Property ot_gpio_eg_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtGpioEgState, ot_id),
-    DEFINE_PROP_UINT8("version", OtGpioEgState, version, OT_VER_EG_1_0_0),
+    DEFINE_PROP_BOOL("strap_en", OtGpioEgState, strap_en, false),
     DEFINE_PROP_UINT32("in", OtGpioEgState, reset_in, 0u),
     DEFINE_PROP_UINT32("out", OtGpioEgState, reset_out, 0u),
     DEFINE_PROP_UINT32("oe", OtGpioEgState, reset_oe, 0u),
@@ -1752,7 +1795,6 @@ static void ot_gpio_eg_realize(DeviceState *dev, Error **errp)
     (void)errp;
 
     g_assert(s->ot_id);
-    g_assert(s->version < OT_VER_COUNT);
 
     qemu_chr_fe_set_handlers(&s->chr, &ot_gpio_eg_chr_can_receive,
                              &ot_gpio_eg_chr_receive,
@@ -1765,7 +1807,7 @@ static void ot_gpio_eg_init(Object *obj)
     OtGpioEgState *s = OT_GPIO_EG(obj);
 
     memory_region_init_io(&s->mmio, obj, &ot_gpio_eg_regs_ops, s,
-                          TYPE_OT_GPIO_EG, 0x100u);
+                          TYPE_OT_GPIO_EG, GPIO_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
 
     s->irqs = g_new(IbexIRQ, PARAM_NUM_IO);
@@ -1789,7 +1831,7 @@ static void ot_gpio_eg_init(Object *obj)
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
     s->data_bi = UINT32_MAX;
-    s->host_pull = (1u << 7);
+    s->host_pull = (1u << GPIO_I2C_SDA_PIN);
     ot_gpio_eg_instance = s;
 }
 

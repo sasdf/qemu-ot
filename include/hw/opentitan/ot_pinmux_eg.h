@@ -33,6 +33,29 @@
 #define TYPE_OT_PINMUX_EG TYPE_OT_PINMUX "-eg"
 OBJECT_DECLARE_TYPE(OtPinmuxEgState, OtPinmuxEgClass, OT_PINMUX_EG)
 
+#define OT_PINMUX_EG_MIO_PAD_COUNT          47u
+#define OT_PINMUX_EG_INSEL_CONSTANT_ZERO    0u
+#define OT_PINMUX_EG_INSEL_CONSTANT_ONE     1u
+#define OT_PINMUX_EG_INSEL_MIO_BASE         2u
+#define OT_PINMUX_EG_OUTSEL_CONSTANT_ZERO   0u
+#define OT_PINMUX_EG_OUTSEL_CONSTANT_ONE    1u
+#define OT_PINMUX_EG_OUTSEL_CONSTANT_HIGH_Z 2u
+#define OT_PINMUX_EG_OUTSEL_GPIO_BASE       3u
+#define OT_PINMUX_EG_OUTSEL_GPIO_END        35u
+#define OT_PINMUX_EG_OUTSEL_I2C_FIRST       35u
+#define OT_PINMUX_EG_OUTSEL_I2C_LAST        40u
+#define OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD0   41u
+#define OT_PINMUX_EG_OUTSEL_SPI_HOST1_SD1   42u
+#define OT_PINMUX_EG_OUTSEL_PATTGEN_BASE    49u
+#define OT_PINMUX_EG_OUTSEL_PATTGEN_LAST    52u
+#define OT_PINMUX_EG_OUTSEL_SPI_HOST1_SCK   53u
+#define OT_PINMUX_EG_OUTSEL_SPI_HOST1_CSB   54u
+#define OT_PINMUX_EG_OUTSEL_PWM_BASE        65u
+#define OT_PINMUX_EG_OUTSEL_PWM_END         71u
+#define OT_PINMUX_EG_OUTSEL_SYSRST_FIRST    72u
+#define OT_PINMUX_EG_OUTSEL_SYSRST_LAST     77u
+#define OT_PINMUX_EG_OUTSEL_SYSRST_DIO_BASE 86u
+
 int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad);
 void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level);
 int ot_pinmux_eg_mio_to_host_pin(unsigned pad);

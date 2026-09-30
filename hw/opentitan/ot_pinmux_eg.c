@@ -171,10 +171,18 @@ static_assert((OT_PINMUX_PAD_ATTR_MASK | OT_PINMUX_PAD_ATTR_FORCE_MODE_MASK) <
                   (1u << 31u),
               "Cannot encode PAD attr as IRQ");
 
+#define MIO_OUTSEL_V2_SPI_HOST1_SCK   49u
+#define MIO_OUTSEL_V2_SPI_HOST1_CSB   50u
+#define MIO_OUTSEL_V2_SPI_HOST1_SHIFT 4u
+#define MIO_OUTSEL_V2_SYSRST_FIRST    61u
+#define MIO_OUTSEL_V2_SYSRST_LAST     66u
+#define MIO_OUTSEL_V2_SYSRST_SHIFT    11u
+
 typedef struct {
     uint32_t mio_pad_attr_mask;
     uint32_t dio_pad_attr_mask;
     uint32_t dio_usb_pad_attr_mask;
+    bool v2_outsel;
 } OtPinmuxEgConfig;
 
 static const OtPinmuxEgConfig PINMUX_EG_CONFIG[OT_VER_COUNT] = {
@@ -182,16 +190,19 @@ static const OtPinmuxEgConfig PINMUX_EG_CONFIG[OT_VER_COUNT] = {
         .mio_pad_attr_mask = 0x0010008fu,
         .dio_pad_attr_mask = 0x0010008fu,
         .dio_usb_pad_attr_mask = 0x0000008du,
+        .v2_outsel = false,
     },
     [OT_VER_DJ] = {
         .mio_pad_attr_mask = 0x0010008fu,
         .dio_pad_attr_mask = 0x0010008fu,
         .dio_usb_pad_attr_mask = 0x0000008du,
+        .v2_outsel = false,
     },
     [OT_VER_EG_2_0_0] = {
         .mio_pad_attr_mask = 0x00000083u,
         .dio_pad_attr_mask = 0x00000083u,
         .dio_usb_pad_attr_mask = 0x00000081u,
+        .v2_outsel = true,
     },
 };
 
@@ -435,12 +446,28 @@ static void ot_pinmux_eg_sleep_en(void *opaque, int irq, int level)
     }
 }
 
+static uint32_t
+ot_pinmux_eg_normalize_outsel(const OtPinmuxEgState *s, uint32_t outsel)
+{
+    if (PINMUX_EG_CONFIG[s->version].v2_outsel) {
+        if (outsel == MIO_OUTSEL_V2_SPI_HOST1_SCK ||
+            outsel == MIO_OUTSEL_V2_SPI_HOST1_CSB) {
+            return outsel + MIO_OUTSEL_V2_SPI_HOST1_SHIFT;
+        }
+        if (outsel >= MIO_OUTSEL_V2_SYSRST_FIRST &&
+            outsel <= MIO_OUTSEL_V2_SYSRST_LAST) {
+            return outsel + MIO_OUTSEL_V2_SYSRST_SHIFT;
+        }
+    }
+    return outsel;
+}
+
 uint32_t ot_pinmux_eg_get_mio_outsel(OtPinmuxEgState *s, unsigned mio_pad)
 {
     if (!s || !s->regs || mio_pad >= PARAM_N_MIO_PADS) {
         return 0;
     }
-    return s->regs->mio_outsel[mio_pad];
+    return ot_pinmux_eg_normalize_outsel(s, s->regs->mio_outsel[mio_pad]);
 }
 
 uint32_t ot_pinmux_eg_get_mio_pad_attr(OtPinmuxEgState *s, unsigned mio_pad)
@@ -477,7 +504,7 @@ uint32_t ot_pinmux_eg_get_gpio_outsel(OtPinmuxEgState *s, unsigned gpio_pin)
             }
         }
     }
-    return outsel;
+    return ot_pinmux_eg_normalize_outsel(s, outsel);
 }
 
 uint32_t ot_pinmux_eg_get_periph_insel(OtPinmuxEgState *s, unsigned periph_in)

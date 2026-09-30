@@ -690,8 +690,7 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
             OT_EG_SOC_DEVLINK("i2c2", I2C2)
         ),
         .prop = IBEXDEVICEPROPDEFS(
-            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio"),
-            IBEX_DEV_UINT_PROP("version", OT_VER_EG_1_0_0)
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio")
         ),
     },
     [OT_EG_SOC_DEV_SPI_DEVICE] = {
@@ -2113,7 +2112,7 @@ static const IbexDeviceDef ot_eg_v2_soc_overrides[OT_EG_SOC_DEV_COUNT] = {
         ),
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "gpio"),
-            IBEX_DEV_UINT_PROP("version", OT_VER_EG_2_0_0)
+            IBEX_DEV_BOOL_PROP("strap_en", true)
         ),
     },
     [OT_EG_SOC_DEV_PINMUX] = {
