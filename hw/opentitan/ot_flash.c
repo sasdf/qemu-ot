@@ -763,6 +763,15 @@ enum {
 
 #define WORD_ALIGN_ADDR(_addr_) ((_addr_) & ~3u)
 
+#define FLASH_WORD_BYTES      8u
+#define FLASH_WORD_ALIGN_MASK (~(hwaddr)(FLASH_WORD_BYTES - 1u))
+
+#define PERMIT_NONE 0x0u
+#define PERMIT_1B   0x1u
+#define PERMIT_2B   0x3u
+#define PERMIT_3B   0x7u
+#define PERMIT_4B   0xfu
+
 typedef struct {
     unsigned offset; /* storage offset in bank, relative to first info page */
     unsigned size; /* size in bytes of the partition */
@@ -777,6 +786,21 @@ typedef enum {
     FLASH_QUAL_INFO_PAGE_OWNER = 2,
     FLASH_QUAL_INFO_PAGE_ISOLATED = 3,
 } OtFlashQualifiedInfoPage;
+
+typedef enum {
+    INFO_PAGE_IDX_B0_CREATOR_SECRET = 1,
+    INFO_PAGE_IDX_B0_OWNER_SECRET = 2,
+    INFO_PAGE_IDX_B0_WAFER_AUTH_SECRET = 3,
+    INFO_PAGE_IDX_B0_ATTEST_KEY_SEEDS = 4,
+    INFO_PAGE_IDX_B0_OWNER_RESERVED0 = 5,
+    INFO_PAGE_IDX_B0_OWNER_RESERVED1 = 6,
+    INFO_PAGE_IDX_B0_OWNER_RESERVED2 = 7,
+    INFO_PAGE_IDX_B0_OWNER_RESERVED3 = 8,
+    INFO_PAGE_IDX_B0_FACTORY_CERTS = 9,
+    INFO_PAGE_IDX_B1_OWNER_SLOT0 = 15,
+    INFO_PAGE_IDX_B1_OWNER_SLOT1 = 16,
+    INFO_PAGE_IDX_B1_DICE_CERTS = 22,
+} OtFlashInfoPageIdx;
 
 typedef union {
     unsigned bitmap;
@@ -1477,7 +1501,7 @@ ot_flash_data_scramble_enabled(const OtFlashState *s, unsigned address)
 
 static bool ot_flash_is_ecc_corrupted(const OtFlashState *s, hwaddr address)
 {
-    hwaddr aligned_offset = address & ~7ULL;
+    hwaddr aligned_offset = address & FLASH_WORD_ALIGN_MASK;
     const OtFlashEccFault *fault;
     QLIST_FOREACH(fault, &s->ecc_faults, node) {
         if (fault->offset == aligned_offset) {
@@ -1528,7 +1552,7 @@ static const MemoryRegionOps ot_flash_ecc_fault_ops = {
 
 static void ot_flash_add_ecc_fault(OtFlashState *s, hwaddr address)
 {
-    hwaddr aligned_offset = address & ~7ULL;
+    hwaddr aligned_offset = address & FLASH_WORD_ALIGN_MASK;
     OtFlashEccFault *fault;
     QLIST_FOREACH(fault, &s->ecc_faults, node) {
         if (fault->offset == aligned_offset) {
@@ -1539,7 +1563,7 @@ static void ot_flash_add_ecc_fault(OtFlashState *s, hwaddr address)
     fault->s = s;
     fault->offset = aligned_offset;
     memory_region_init_io(&fault->mr, OBJECT(s), &ot_flash_ecc_fault_ops, fault,
-                          TYPE_OT_FLASH ".ecc-fault", 8u);
+                          TYPE_OT_FLASH ".ecc-fault", FLASH_WORD_BYTES);
     memory_region_add_subregion_overlap(&s->mmio.mem, aligned_offset,
                                         &fault->mr, 1);
     QLIST_INSERT_HEAD(&s->ecc_faults, fault, node);
@@ -1677,7 +1701,7 @@ static unsigned ot_flash_next_info_address(OtFlashState *s)
     if (!s->op.hw && s->op.kind == OP_READ && cfg.scramble_en && cfg.ecc_en) {
         unsigned info_page_idx = address / BYTES_PER_PAGE;
         if (info_page_idx < 32u &&
-            !(storage->info_page_provisioned_bm & (1u << info_page_idx))) {
+            !(storage->info_page_provisioned_bm & BIT(info_page_idx))) {
             qemu_log_mask(
                 LOG_GUEST_ERROR,
                 "%s: %s: read error on unprovisioned scrambled/ECC info page "
@@ -1826,7 +1850,7 @@ static void ot_flash_op_read(OtFlashState *s)
                     ot_flash_set_error(s, R_ERR_CODE_RD_ERR_MASK,
                                        address * sizeof(uint32_t));
                     s->op.failed = true;
-                    word = 0xFFFFFFFFu;
+                    word = UINT32_MAX;
                 } else {
                     word = src[address];
                 }
@@ -1924,20 +1948,22 @@ static void ot_flash_op_prog(OtFlashState *s)
             bool both_zero =
                 (dest[aligned_word] == 0u) && (dest[aligned_word + 1u] == 0u);
             if (both_zero && !scrambled) {
-                ot_flash_clear_ecc_faults_range(s, address & ~7ULL, 8u);
+                ot_flash_clear_ecc_faults_range(s,
+                                                address & FLASH_WORD_ALIGN_MASK,
+                                                FLASH_WORD_BYTES);
             } else if (test_bit(word_address, storage->word_prog_bm) &&
                        word != prev_word && (word != 0u || scrambled) &&
                        ot_flash_data_ecc_enabled(s, address)) {
                 ot_flash_add_ecc_fault(s, address);
             }
-            if (word != 0xFFFFFFFFu || scrambled) {
+            if (word != UINT32_MAX || scrambled) {
                 set_bit(word_address, storage->word_prog_bm);
             }
         }
         if (s->op.info_part) {
             unsigned info_page_idx = address / BYTES_PER_PAGE;
             if (info_page_idx < 32u) {
-                storage->info_page_provisioned_bm |= (1u << info_page_idx);
+                storage->info_page_provisioned_bm |= BIT(info_page_idx);
             }
         } else {
             /*
@@ -2655,8 +2681,9 @@ static uint64_t ot_flash_regs_read(void *opaque, hwaddr addr, unsigned size)
 
 static inline uint32_t ot_flash_byte_mask(hwaddr addr, unsigned size)
 {
-    uint32_t mask = (size >= 4u) ? 0xfu : ((1u << size) - 1u);
-    return (mask << (addr & 3u)) & 0xfu;
+    uint32_t mask =
+        (size >= sizeof(uint32_t)) ? PERMIT_4B : ((1u << size) - 1u);
+    return (mask << (addr & (sizeof(uint32_t) - 1u))) & PERMIT_4B;
 }
 
 static uint32_t ot_flash_core_reg_permit(hwaddr reg)
@@ -2673,22 +2700,22 @@ static uint32_t ot_flash_core_reg_permit(hwaddr reg)
     case R_BANK1_INFO2_PAGE_CFG_0 ... R_BANK1_INFO2_PAGE_CFG_1:
     case R_SCRATCH:
     case R_PROG_FIFO:
-        return 0xfu;
+        return PERMIT_4B;
     case R_ADDR:
     case R_MP_REGION_0 ... R_MP_REGION_7:
     case R_DEFAULT_REGION:
     case R_ERR_ADDR:
     case R_ECC_SINGLE_ERR_ADDR_0 ... R_ECC_SINGLE_ERR_ADDR_1:
-        return 0x7u;
+        return PERMIT_3B;
     case R_DEBUG_STATE:
     case R_STD_FAULT_STATUS:
     case R_FAULT_STATUS:
     case R_ECC_SINGLE_ERR_CNT:
     case R_FIFO_LVL:
     case R_CURR_FIFO_LVL:
-        return 0x3u;
+        return PERMIT_2B;
     default:
-        return 0x1u;
+        return PERMIT_1B;
     }
 }
 
@@ -3245,22 +3272,22 @@ static uint32_t ot_flash_prim_csr_permit(hwaddr csr)
     case R_CSR0_REGWEN:
     case R_CSR2:
     case R_CSR18 ... R_CSR20:
-        return 0x1u;
+        return PERMIT_1B;
     case R_CSR1:
     case R_CSR4:
     case R_CSR12:
     case R_CSR14 ... R_CSR17:
-        return 0x3u;
+        return PERMIT_2B;
     case R_CSR5:
     case R_CSR7:
     case R_CSR13:
-        return 0x7u;
+        return PERMIT_3B;
     case R_CSR3:
     case R_CSR6:
     case R_CSR8 ... R_CSR11:
-        return 0xfu;
+        return PERMIT_4B;
     default:
-        return 0u;
+        return PERMIT_NONE;
     }
 }
 
@@ -3279,7 +3306,7 @@ static void ot_flash_rma_wipe(OtFlashState *s)
     unsigned data_bytes = storage->data_size * storage->bank_count;
 
     if (storage->data && data_bytes > 0) {
-        memset(storage->data, 0xFF, data_bytes);
+        memset(storage->data, UINT8_MAX, data_bytes);
         memory_region_set_dirty(&s->mmio.mem, 0, data_bytes);
     }
 
@@ -3295,7 +3322,7 @@ static void ot_flash_rma_wipe(OtFlashState *s)
                 storage->info_parts[0].offset + page * BYTES_PER_PAGE;
             if (byte_offset + BYTES_PER_PAGE <= storage->info_size) {
                 uint8_t *info_ptr = (uint8_t *)storage->info + byte_offset;
-                memset(info_ptr, 0xFF, BYTES_PER_PAGE);
+                memset(info_ptr, UINT8_MAX, BYTES_PER_PAGE);
             }
         }
     }
@@ -3578,7 +3605,7 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
         const uint32_t *page_words = &flash->data[p * words_per_page];
         bool page_has_data = false;
         for (unsigned w = 0; w < words_per_page; w++) {
-            if (page_words[w] != 0xFFFFFFFFu) {
+            if (page_words[w] != UINT32_MAX) {
                 page_has_data = true;
                 break;
             }
@@ -3600,9 +3627,17 @@ static void ot_flash_load(OtFlashState *s, Error **errp)
      *   Bank 1 Info 0 Page 9 (DiceCerts) -> index 22
      */
     const uint32_t unprovisioned_default_mask =
-        (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) |
-        (1u << 7) | (1u << 8) | (1u << 9) | (1u << 15) | (1u << 16) |
-        (1u << 22);
+        BIT(INFO_PAGE_IDX_B0_CREATOR_SECRET) |
+        BIT(INFO_PAGE_IDX_B0_OWNER_SECRET) |
+        BIT(INFO_PAGE_IDX_B0_WAFER_AUTH_SECRET) |
+        BIT(INFO_PAGE_IDX_B0_ATTEST_KEY_SEEDS) |
+        BIT(INFO_PAGE_IDX_B0_OWNER_RESERVED0) |
+        BIT(INFO_PAGE_IDX_B0_OWNER_RESERVED1) |
+        BIT(INFO_PAGE_IDX_B0_OWNER_RESERVED2) |
+        BIT(INFO_PAGE_IDX_B0_OWNER_RESERVED3) |
+        BIT(INFO_PAGE_IDX_B0_FACTORY_CERTS) |
+        BIT(INFO_PAGE_IDX_B1_OWNER_SLOT0) | BIT(INFO_PAGE_IDX_B1_OWNER_SLOT1) |
+        BIT(INFO_PAGE_IDX_B1_DICE_CERTS);
     flash->info_page_provisioned_bm = ~unprovisioned_default_mask;
 }
 
