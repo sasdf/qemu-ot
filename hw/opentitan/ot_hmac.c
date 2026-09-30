@@ -49,8 +49,9 @@
 #define OT_HMAC_FIFO_LENGTH 64u
 
 /* Maximum digest length is 64 bytes (512 bits) */
-#define OT_HMAC_MAX_DIGEST_LENGTH   64u
-#define OT_HMAC_MAX_DIGEST_WORDS    (OT_HMAC_MAX_DIGEST_LENGTH / sizeof(uint32_t))
+#define OT_HMAC_MAX_DIGEST_LENGTH 64u
+#define OT_HMAC_MAX_DIGEST_WORDS  (OT_HMAC_MAX_DIGEST_LENGTH / sizeof(uint32_t))
+
 #define OT_HMAC_SHA256_DIGEST_WORDS 8u
 #define OT_HMAC_SHA384_STATE_DWORDS 6u
 #define OT_HMAC_SHA512_STATE_DWORDS 8u
@@ -59,7 +60,7 @@
 #define OT_HMAC_MAX_KEY_LENGTH 128u
 
 /* Subword write byte-enable permits (hmac_reg_pkg::HMAC_PERMIT) */
-#define OT_HMAC_REG_ADDR_OFFSET_MASK 0x3u
+#define OT_HMAC_REG_ADDR_OFFSET_MASK (sizeof(uint32_t) - 1u)
 #define OT_HMAC_BE_PERMIT_1B         0x1u
 #define OT_HMAC_BE_PERMIT_2B         0x3u
 #define OT_HMAC_BE_PERMIT_4B         0xfu
