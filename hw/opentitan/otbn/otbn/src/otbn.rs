@@ -346,7 +346,7 @@ impl Executer {
                     ExceptionCause::EBadDataAddr => (false, ErrBits::BAD_DATA_ADDR.bits()),
                     ExceptionCause::EBadInsnAddr => (false, ErrBits::BAD_INSN_ADDR.bits()),
                     ExceptionCause::ECallStack => (false, ErrBits::CALL_STACK.bits()),
-                    ExceptionCause::EIllegalInsn => { println!("Illegal Insn: {:#010x}", val.unwrap_or(0)); (false, ErrBits::ILLEGAL_INSN.bits()) },
+                    ExceptionCause::EIllegalInsn => (false, ErrBits::ILLEGAL_INSN.bits()),
                     ExceptionCause::ELoop => (false, ErrBits::LOOP.bits()),
                     ExceptionCause::EKeyInvalid => (false, ErrBits::KEY_INVALID.bits()),
                     ExceptionCause::ERndRepChkFail => (false, ErrBits::RND_REP_CHK_FAIL.bits()),
@@ -355,11 +355,10 @@ impl Executer {
                         (false, ErrBits::MAI_SOFTWARE_ERROR.bits())
                     }
                     ExceptionCause::EWfi => unreachable!(),
-                    ExceptionCause::EFatal => (
-                        true,
-                        self.registers.fatal_bits.load(Ordering::Relaxed)
-                            | val.unwrap_or(0),
-                    ),
+                    ExceptionCause::EFatal => {
+                        let fatal_bits = self.registers.fatal_bits.load(Ordering::Relaxed);
+                        (true, fatal_bits | val.unwrap_or(0))
+                    }
                 };
 
                 const SW_ERR_MASK: u32 = ErrBits::BAD_DATA_ADDR.bits()
@@ -372,9 +371,9 @@ impl Executer {
 
                 // ctrl: "Controls the reaction to software errors.
                 // When set software errors produce fatal errors, rather than recoverable errors."
-                if (error & SW_ERR_MASK) != 0
-                    && (self.registers.ctrl.load(Ordering::Relaxed) & 0x1) != 0
-                {
+                let is_sw_err = (error & SW_ERR_MASK) != 0;
+                let sw_errs_fatal = (self.registers.ctrl.load(Ordering::Relaxed) & 0x1) != 0;
+                if is_sw_err && sw_errs_fatal {
                     fatal = true;
                     error |= ErrBits::FATAL_SOFTWARE.bits();
                 }
