@@ -399,6 +399,27 @@ static_assert(OTP_PART_COUNT <= 64, "Maximum part count reached");
 
 static_assert(OTP_BYTE_ADDR_WIDTH == R_DIRECT_ACCESS_ADDRESS_ADDRESS_LENGTH,
               "OTP byte address width mismatch");
+
+typedef enum {
+    OTP_REG_PERMIT_NONE = 0x0u,
+    OTP_REG_PERMIT_1B = 0x1u,
+    OTP_REG_PERMIT_2B = 0x3u,
+    OTP_REG_PERMIT_3B = 0x7u,
+    OTP_REG_PERMIT_4B = 0xfu,
+} OtOTPRegPermit;
+
+enum {
+    A_V2_PARTITION_STATUS_0 = 0x14u,
+    A_V2_ERR_CODE_0 = 0x18u,
+    A_V2_CREATOR_SW_CFG_RMA_SPIN_CYCLES = 344u,
+    OTP_CTRL_MMIO_SIZE = 0x1000u,
+    OTP_RMA_SPIN_BIAS_NS = 128,
+    OTP_STATUS_ERR_ENTRIES_MASK = (1u << NUM_ERROR_ENTRIES) - 1u,
+    OTP_STATUS_PART_ERR_MASK = (1u << NUM_PART) - 1u,
+    OTP_STATUS_V2_SHIFT = NUM_PART - 1u,
+    OTP_STATUS_V2_NON_PART_MASK = 0x3feu,
+};
+
 typedef struct {
     const OtOTPPartDesc *part_descs;
     uint64_t regs_size;
@@ -413,7 +434,7 @@ static const OtOTPEgConfig OTP_EG_CONFIG[OT_VER_COUNT] = {
         .part_descs = OT_OTP_PART_DESCS,
         .regs_size = REGS_SIZE,
         .rma_spin_cycles_offset = A_CREATOR_SW_CFG_RMA_SPIN_CYCLES,
-        .status_permit = 0x7u,
+        .status_permit = OTP_REG_PERMIT_3B,
         .has_partition_status_reg = false,
         .has_dai_zeroize_cmd = false,
     },
@@ -421,15 +442,15 @@ static const OtOTPEgConfig OTP_EG_CONFIG[OT_VER_COUNT] = {
         .part_descs = OT_OTP_PART_DESCS,
         .regs_size = REGS_SIZE,
         .rma_spin_cycles_offset = A_CREATOR_SW_CFG_RMA_SPIN_CYCLES,
-        .status_permit = 0x7u,
+        .status_permit = OTP_REG_PERMIT_3B,
         .has_partition_status_reg = false,
         .has_dai_zeroize_cmd = false,
     },
     [OT_VER_EG_2_0_0] = {
         .part_descs = OT_OTP_PART_DESCS_V2,
         .regs_size = REGS_SIZE + sizeof(uint32_t),
-        .rma_spin_cycles_offset = 344u,
-        .status_permit = 0x3u,
+        .rma_spin_cycles_offset = A_V2_CREATOR_SW_CFG_RMA_SPIN_CYCLES,
+        .status_permit = OTP_REG_PERMIT_2B,
         .has_partition_status_reg = true,
         .has_dai_zeroize_cmd = true,
     },
@@ -535,7 +556,7 @@ static const char *OTP_TOKEN_NAMES[] = {
 static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
 {
     const OtOTPEgState *eg = OT_OTP_EG(s);
-    uint32_t status = s->regs[R_STATUS] & ~0x1fffu;
+    uint32_t status = s->regs[R_STATUS] & ~OTP_STATUS_ERR_ENTRIES_MASK;
 
     for (unsigned ix = 0; ix <= (R_ERR_CODE_12 - R_ERR_CODE_0); ix++) {
         if (s->regs[R_ERR_CODE_0 + ix] != 0u) {
@@ -547,8 +568,10 @@ static uint32_t ot_otp_eg_get_status(const OtOTPEngineState *s)
         FIELD_DP32(status, STATUS, DAI_IDLE, !ot_otp_engine_dai_is_busy(s));
 
     if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
-        uint32_t part_err = (status & 0x7ffu) ? 1u : 0u;
-        status = part_err | ((status >> 10u) & 0x3feu);
+        uint32_t part_err = (status & OTP_STATUS_PART_ERR_MASK) ? 1u : 0u;
+        uint32_t non_part =
+            (status >> OTP_STATUS_V2_SHIFT) & OTP_STATUS_V2_NON_PART_MASK;
+        status = part_err | non_part;
     }
 
     return status;
@@ -564,11 +587,12 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
         return true;
     }
     if (cfg->has_partition_status_reg) {
-        if (addr == 0x14u) {
-            uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
-            return (0x3u & ~byte_mask) == 0u;
+        if (addr == A_V2_PARTITION_STATUS_0) {
+            uint32_t byte_mask =
+                ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
+            return (OTP_REG_PERMIT_2B & ~byte_mask) == 0u;
         }
-        if (addr >= 0x18u) {
+        if (addr >= A_V2_ERR_CODE_0) {
             addr -= sizeof(uint32_t);
         }
     }
@@ -584,20 +608,22 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
     case R_DIRECT_ACCESS_WDATA_0 ... R_DIRECT_ACCESS_RDATA_1:
     case R_CHECK_TIMEOUT ... R_CONSISTENCY_CHECK_PERIOD:
     case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
-        permit = 0xfu;
+        permit = OTP_REG_PERMIT_4B;
         break;
     case R_STATUS:
         permit = cfg->status_permit;
         break;
     case R_DIRECT_ACCESS_ADDRESS:
-        permit = 0x3u;
+        permit = OTP_REG_PERMIT_2B;
         break;
     default:
-        permit = (reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u;
+        permit = (reg <= R_SECRET2_DIGEST_1) ? OTP_REG_PERMIT_1B :
+                                               OTP_REG_PERMIT_NONE;
         break;
     }
-    uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
-    return (permit != 0u) && ((permit & ~byte_mask) == 0u);
+    uint32_t byte_mask =
+        ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
+    return (permit != OTP_REG_PERMIT_NONE) && ((permit & ~byte_mask) == 0u);
 }
 
 static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
@@ -609,7 +635,7 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t val32;
 
     if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
-        if (addr == 0x14u) {
+        if (addr == A_V2_PARTITION_STATUS_0) {
             val32 = 0u;
             for (unsigned ix = 0; ix <= (R_ERR_CODE_10 - R_ERR_CODE_0); ix++) {
                 if (s->regs[R_ERR_CODE_0 + ix] != 0u) {
@@ -618,7 +644,7 @@ static uint64_t ot_otp_eg_reg_read(void *opaque, hwaddr addr, unsigned size)
             }
             return (uint64_t)val32;
         }
-        if (addr >= 0x18u) {
+        if (addr >= A_V2_ERR_CODE_0) {
             addr -= sizeof(uint32_t);
         }
     }
@@ -699,13 +725,13 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     uint32_t val32 = (uint32_t)value;
 
     if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
-        if (addr == 0x14u) {
+        if (addr == A_V2_PARTITION_STATUS_0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: R/O register 0x%03x (PARTITION_STATUS_0)\n",
                           __func__, s->ot_id, (uint32_t)addr);
             return;
         }
-        if (addr >= 0x18u) {
+        if (addr >= A_V2_ERR_CODE_0) {
             addr -= sizeof(uint32_t);
         }
     }
@@ -800,7 +826,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
         } else if (FIELD_EX32(val32, OT_OTP_DIRECT_ACCESS_CMD, DIGEST)) {
             c->dai_digest(s);
         } else if (OTP_EG_CONFIG[eg->version].has_dai_zeroize_cmd &&
-                   (val32 & 0x8u)) {
+                   FIELD_EX32(val32, OT_OTP_DIRECT_ACCESS_CMD, ZEROIZE)) {
             s->regs[R_DIRECT_ACCESS_RDATA_0] = 0u;
             s->regs[R_DIRECT_ACCESS_RDATA_1] = 0u;
             c->set_error(s, OTP_ENTRY_DAI, OT_OTP_ACCESS_ERROR);
@@ -1034,7 +1060,7 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
 
     OtOTPEgState *eg = OT_OTP_EG(opaque);
     if (addr == OTP_EG_CONFIG[eg->version].rma_spin_cycles_offset) {
-        icount_advance_bias_ns(128);
+        icount_advance_bias_ns(OTP_RMA_SPIN_BIAS_NS);
     }
 
     if (trace_event_get_state_backends(TRACE_OT_OTP_IO_SWCFG_READ_OUT)) {
@@ -1351,7 +1377,8 @@ static void ot_otp_eg_init(Object *obj)
      *   - "swcfg", software config window
      *     offset SW_CFG_WINDOW_OFFSET, size SW_CFG_WINDOW_SIZE
      */
-    memory_region_init(&s->mmio.ctrl, obj, TYPE_OT_OTP_EG "-ctrl", 0x1000u);
+    memory_region_init(&s->mmio.ctrl, obj, TYPE_OT_OTP_EG "-ctrl",
+                       OTP_CTRL_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio.ctrl);
 
     memory_region_init_io(&s->mmio.sub.regs, obj, &ot_otp_eg_reg_ops, s,
