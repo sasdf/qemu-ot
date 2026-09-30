@@ -36,20 +36,25 @@
 #include "hw/opentitan/ot_cheriot.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/qdev-properties.h"
+#include "hw/registerfields.h"
 #include "hw/sysbus.h"
 
-#define REG_ALERT_TEST 0x0
-#define REGS_SIZE      0x4
+REG32(ALERT_TEST, 0x00u)
+FIELD(ALERT_TEST, FATAL_FAULT, 0u, 1u)
+
+#define REGS_SIZE                  0x4u
+#define CHERIOT_PERMIT_1B          0x1u
+#define CHERIOT_DEFAULT_REVBM_SIZE 3072u
 
 static bool ot_cheriot_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                     bool is_write, MemTxAttrs attrs)
 {
     (void)opaque;
     (void)attrs;
-    unsigned reg_be = ((1u << size) - 1u) << (addr & 3u);
+    unsigned reg_be = ((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u));
     if (addr < REGS_SIZE) {
         if (is_write) {
-            if ((0x1u & ~reg_be) != 0) {
+            if ((CHERIOT_PERMIT_1B & ~reg_be) != 0) {
                 return false; /* Faults */
             }
         }
@@ -71,7 +76,7 @@ static void ot_cheriot_regs_write(void *opaque, hwaddr addr, uint64_t val64,
 {
     (void)size;
     OtCheriotState *s = OT_CHERIOT(opaque);
-    if (addr == REG_ALERT_TEST && (val64 & 1u)) {
+    if (addr == A_ALERT_TEST && (val64 & R_ALERT_TEST_FATAL_FAULT_MASK)) {
         ibex_irq_set(&s->alert, 1);
         ibex_irq_set(&s->alert, 0);
     }
@@ -161,7 +166,8 @@ static void ot_cheriot_realize(DeviceState *dev, Error **errp)
 
 static const Property ot_cheriot_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtCheriotState, ot_id),
-    DEFINE_PROP_UINT32("revbm-size", OtCheriotState, revbm_size, 3072u),
+    DEFINE_PROP_UINT32("revbm-size", OtCheriotState, revbm_size,
+                       CHERIOT_DEFAULT_REVBM_SIZE),
 };
 
 static void ot_cheriot_class_init(ObjectClass *klass, const void *data)
