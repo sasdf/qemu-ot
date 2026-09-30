@@ -681,7 +681,8 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
         .prop = IBEXDEVICEPROPDEFS(
             IBEX_DEV_STRING_PROP("clock-name", "trans.kmac"),
             IBEX_DEV_UINT_PROP("edn-ep", 3u),
-            IBEX_DEV_UINT_PROP("num-app", 4u)
+            IBEX_DEV_UINT_PROP("num-app", 4u),
+            IBEX_DEV_UINT_PROP("version", OT_VER_DJ)
         ),
     },
     [OT_DJ_SOC_DEV_OTBN] = {

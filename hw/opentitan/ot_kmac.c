@@ -385,6 +385,30 @@ typedef struct {
     bool valid;
 } OtKMACKey;
 
+typedef struct {
+    uint32_t app_output_length;
+    uint32_t msgfifo_err_info_idle;
+    uint32_t msgfifo_err_info_app;
+} OtKMACConfig;
+
+static const OtKMACConfig KMAC_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .app_output_length = OT_KMAC_APP_DIGEST_BYTES * 8u,
+        .msgfifo_err_info_idle = 0x00be14u,
+        .msgfifo_err_info_app = 0x008b19u,
+    },
+    [OT_VER_DJ] = {
+        .app_output_length = OT_KMAC_APP_DIGEST_BYTES * 8u,
+        .msgfifo_err_info_idle = 0x00be14u,
+        .msgfifo_err_info_app = 0x008b19u,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .app_output_length = 512u,
+        .msgfifo_err_info_idle = 0x00a514u,
+        .msgfifo_err_info_app = 0x00e019u,
+    },
+};
+
 struct OtKMACState {
     SysBusDevice parent_obj;
 
@@ -823,9 +847,7 @@ static void ot_kmac_process(void *opaque)
                     if (cfg->mode == OT_KMAC_MODE_KMAC) {
                         uint8_t enc_out_len[3];
                         uint32_t output_length =
-                            (s->version == OT_VER_EG_2_0_0) ?
-                                512u :
-                                (OT_KMAC_APP_DIGEST_BYTES * 8u);
+                            KMAC_CONFIG[s->version].app_output_length;
                         enc_out_len[0] = (output_length >> 8u) & 0xffu;
                         enc_out_len[1] = output_length & 0xffu;
                         enc_out_len[2] = 2u;
@@ -855,8 +877,9 @@ static void ot_kmac_process(void *opaque)
         switch (s->state) {
         case KMAC_ST_PROCESSING:
         case KMAC_ST_SQUEEZING:
-            if (!s->current_app && (s->edn_pending || (s->entropy_configured &&
-                                                       !s->entropy_seeded))) {
+            bool wait_entropy =
+                s->edn_pending || (s->entropy_configured && !s->entropy_seeded);
+            if (!s->current_app && wait_entropy) {
                 /* Stall until EDN or SW seed delivers requested entropy */
                 break;
             }
@@ -1043,11 +1066,13 @@ static void ot_kmac_process_start(OtKMACState *s)
      * RTL (kmac_core.sv:180, 286-376):
      * StKey absorbs {encoded_key, encode_bytepad} whenever kmac_en_i is set.
      */
-    bool kmac_en =
-        s->current_app ?
-            (cfg->mode == OT_KMAC_MODE_KMAC) :
-            (FIELD_EX32(ot_shadow_reg_peek(&s->cfg), CFG_SHADOWED, KMAC_EN) !=
-             0);
+    bool kmac_en;
+    if (s->current_app) {
+        kmac_en = (cfg->mode == OT_KMAC_MODE_KMAC);
+    } else {
+        uint32_t reg_cfg = ot_shadow_reg_peek(&s->cfg);
+        kmac_en = FIELD_EX32(reg_cfg, CFG_SHADOWED, KMAC_EN) != 0;
+    }
     if (kmac_en) {
         uint8_t key[NUM_KEY_REGS * sizeof(uint32_t)];
         size_t keylen = 0;
@@ -1783,12 +1808,9 @@ static void ot_kmac_msgfifo_write(void *opaque, hwaddr addr, uint64_t value,
          *   - v2: StAppMsg = 10'b1011100000 (0x2e0 -> 8'(st) = 0xe0) ->
          * 0x00e019
          */
-        uint32_t err_info;
-        if (s->version == OT_VER_EG_2_0_0) {
-            err_info = s->current_app ? 0x00e019u : 0x00a514u;
-        } else {
-            err_info = s->current_app ? 0x008b19u : 0x00be14u;
-        }
+        const OtKMACConfig *kmac_cfg = &KMAC_CONFIG[s->version];
+        uint32_t err_info = s->current_app ? kmac_cfg->msgfifo_err_info_app :
+                                             kmac_cfg->msgfifo_err_info_idle;
         ot_kmac_report_error(s, OT_KMAC_ERR_SW_PUSHED_MSG_FIFO, err_info);
         return;
     }
@@ -1950,7 +1972,7 @@ static const Property ot_kmac_properties[] = {
     DEFINE_PROP_LINK("edn", OtKMACState, edn, TYPE_OT_EDN, OtEDNState *),
     DEFINE_PROP_UINT8("edn-ep", OtKMACState, edn_ep, UINT8_MAX),
     DEFINE_PROP_UINT8("num-app", OtKMACState, num_app, 0),
-    DEFINE_PROP_UINT8("version", OtKMACState, version, OT_VER_EG_1_0_0),
+    DEFINE_PROP_UINT8("version", OtKMACState, version, UINT8_MAX),
 };
 
 static const uint8_t KMAC_PERMIT[REGS_COUNT] = {
