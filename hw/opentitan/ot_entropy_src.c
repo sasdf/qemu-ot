@@ -249,7 +249,6 @@ REG32(MAIN_SM_STATE, 0xc0u)
     (R_CONF_FIPS_ENABLE_MASK | R_CONF_FIPS_FLAG_MASK | R_CONF_RNG_FIPS_MASK | \
      R_CONF_RNG_BIT_ENABLE_MASK | R_CONF_V2_RNG_BIT_SEL_MASK | \
      R_CONF_V2_THRESHOLD_SCOPE_MASK | R_CONF_V2_ENTROPY_DATA_REG_ENABLE_MASK)
-#define CONF_V3_WMASK UINT32_MAX
 #define ENTROPY_CONTROL_WMASK \
     (R_ENTROPY_CONTROL_ES_ROUTE_MASK | R_ENTROPY_CONTROL_ES_TYPE_MASK)
 #define FW_OV_CONTROL_WMASK \
@@ -320,11 +319,9 @@ REG32(MAIN_SM_STATE, 0xc0u)
          REG_REV_NAMES[_reg_] : \
          "?")
 
-#define R_LAST_HI_REG   (R_MAIN_SM_STATE)
-#define REGS_HI_COUNT   (R_LAST_HI_REG + 1u)
-#define REGS_HI_SIZE    (REGS_HI_COUNT * sizeof(uint32_t))
-#define REGS_HI_V2_BASE 0x20u
-#define REGS_HI_V3_BASE 0x1cu
+#define R_LAST_HI_REG (R_MAIN_SM_STATE)
+#define REGS_HI_COUNT (R_LAST_HI_REG + 1u)
+#define REGS_HI_SIZE  (REGS_HI_COUNT * sizeof(uint32_t))
 #define REG_HI_NAME(_reg_) \
     ((((_reg_) < REGS_HI_COUNT) && REG_HI_NAMES[_reg_]) ? \
          REG_HI_NAMES[_reg_] : \
@@ -517,7 +514,7 @@ typedef struct {
 /* clang-format off */
 static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
-        .regs_hi_base = REGS_HI_V2_BASE,
+        .regs_hi_base = 0x20u,
         .conf_wmask = CONF_V2_WMASK,
         .conf_reset = 0x2649999u,
         .ht_windows_reset = 0x600200u,
@@ -529,8 +526,8 @@ static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
         .has_threshold_oneway = false,
     },
     [OT_VER_DJ] = {
-        .regs_hi_base = REGS_HI_V3_BASE,
-        .conf_wmask = CONF_V3_WMASK,
+        .regs_hi_base = 0x1cu,
+        .conf_wmask = UINT32_MAX,
         .conf_reset = 0x999999u,
         .ht_windows_reset = 0x1800200u,
         .thresh_reset = 0xffffu,
@@ -541,8 +538,8 @@ static const OtEntropySrcConfig ENTROPY_SRC_CONFIG[OT_VER_COUNT] = {
         .has_threshold_oneway = true,
     },
     [OT_VER_EG_2_0_0] = {
-        .regs_hi_base = REGS_HI_V3_BASE,
-        .conf_wmask = CONF_V3_WMASK,
+        .regs_hi_base = 0x1cu,
+        .conf_wmask = UINT32_MAX,
         .conf_reset = 0x999999u,
         .ht_windows_reset = 0x1800200u,
         .thresh_reset = 0xffffu,
