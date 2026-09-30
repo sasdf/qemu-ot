@@ -596,6 +596,29 @@ void helper_ctr_clear(CPURISCVState *env)
     riscv_ctr_clear(env);
 }
 
+#define RV_INSN_SIZE_16       2u
+#define RV_INSN_SIZE_32       4u
+#define RVC_SW_MASK           0xe003u
+#define RVC_SW_OPCODE         0xc000u
+#define RVC_RS1_SHIFT         7u
+#define RVC_RS1_MASK          0x7u
+#define RVC_REG_BASE          8u
+#define RVC_SW_UIMM_5_3_SHIFT 10u
+#define RVC_SW_UIMM_5_3_MASK  0x7u
+#define RVC_SW_UIMM_5_3_POS   3u
+#define RVC_SW_UIMM_2_SHIFT   6u
+#define RVC_SW_UIMM_2_POS     2u
+#define RVC_SW_UIMM_6_SHIFT   5u
+#define RVC_SW_UIMM_6_POS     6u
+#define RVI_OPCODE_MASK       0x7fu
+#define RVI_STORE_OPCODE      0x23u
+#define RVI_S_IMM_11_5_SHIFT  25
+#define RVI_S_IMM_11_5_POS    5
+#define RVI_S_IMM_4_0_SHIFT   7
+#define RVI_S_IMM_4_0_MASK    0x1f
+#define RVI_RS1_SHIFT         15
+#define RVI_RS1_MASK          0x1f
+
 void helper_wfi(CPURISCVState *env)
 {
     CPUState *cs = env_cpu(env);
@@ -611,20 +634,33 @@ void helper_wfi(CPURISCVState *env)
         riscv_raise_exception(env, RISCV_EXCP_VIRT_INSTRUCTION_FAULT, GETPC());
     } else {
         if (!unlikely(env->debugger || env->debug_cs)) {
-            env->wfi_pc = env->pc - 4;
-            uint16_t insn16 = cpu_lduw_code(env, env->wfi_pc - 2);
-            if ((insn16 & 0xe003u) == 0xc000u) {
-                uint32_t rs1 = ((insn16 >> 7u) & 0x7u) + 8u;
-                uint32_t uimm = (((insn16 >> 10u) & 0x7u) << 3u) |
-                                (((insn16 >> 6u) & 0x1u) << 2u) |
-                                (((insn16 >> 5u) & 0x1u) << 6u);
-                env->last_data_addr = env->gpr[rs1] + uimm;
+            env->wfi_pc = env->pc - RV_INSN_SIZE_32;
+            uint16_t insn16 =
+                cpu_lduw_code(env, env->wfi_pc - RV_INSN_SIZE_16);
+            if ((insn16 & RVC_SW_MASK) == RVC_SW_OPCODE) {
+                uint32_t rs1 =
+                    ((insn16 >> RVC_RS1_SHIFT) & RVC_RS1_MASK) + RVC_REG_BASE;
+                uint32_t uimm_5_3 =
+                    ((insn16 >> RVC_SW_UIMM_5_3_SHIFT) & RVC_SW_UIMM_5_3_MASK)
+                    << RVC_SW_UIMM_5_3_POS;
+                uint32_t uimm_2 =
+                    ((insn16 >> RVC_SW_UIMM_2_SHIFT) & 0x1u)
+                    << RVC_SW_UIMM_2_POS;
+                uint32_t uimm_6 =
+                    ((insn16 >> RVC_SW_UIMM_6_SHIFT) & 0x1u)
+                    << RVC_SW_UIMM_6_POS;
+                env->last_data_addr = env->gpr[rs1] +
+                                      (uimm_5_3 | uimm_2 | uimm_6);
             } else {
-                uint32_t insn = cpu_ldl_code(env, env->wfi_pc - 4);
-                if ((insn & 0x7f) == 0x23) {
-                    int32_t imm = (((int32_t)insn >> 25) << 5) |
-                                  ((insn >> 7) & 0x1f);
-                    env->last_data_addr = env->gpr[(insn >> 15) & 0x1f] + imm;
+                uint32_t insn =
+                    cpu_ldl_code(env, env->wfi_pc - RV_INSN_SIZE_32);
+                if ((insn & RVI_OPCODE_MASK) == RVI_STORE_OPCODE) {
+                    int32_t imm =
+                        (((int32_t)insn >> RVI_S_IMM_11_5_SHIFT)
+                         << RVI_S_IMM_11_5_POS) |
+                        ((insn >> RVI_S_IMM_4_0_SHIFT) & RVI_S_IMM_4_0_MASK);
+                    uint32_t rs1 = (insn >> RVI_RS1_SHIFT) & RVI_RS1_MASK;
+                    env->last_data_addr = env->gpr[rs1] + imm;
                 }
             }
             cs->halted = 1;
