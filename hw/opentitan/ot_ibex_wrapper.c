@@ -263,6 +263,26 @@ struct OtIbexWrapperClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    bool has_cheriot_mcounteren;
+    uint8_t dv_sim_win_permit;
+} OtIbexWrapperConfig;
+
+static const OtIbexWrapperConfig IBEX_WRAPPER_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .has_cheriot_mcounteren = false,
+        .dv_sim_win_permit = 0xfu,
+    },
+    [OT_VER_DJ] = {
+        .has_cheriot_mcounteren = false,
+        .dv_sim_win_permit = 0xfu,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .has_cheriot_mcounteren = true,
+        .dv_sim_win_permit = 0u,
+    },
+};
+
 #define OT_IBEX_CPU_EN_MASK (((1u << OT_IBEX_CPU_EN_COUNT)) - 1u)
 
 static const char MISSING_LOG_STRING[] = "(?)";
@@ -1545,9 +1565,10 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
     s->access_table[R32_DYN_POS(s, mcounteren_writable)].mask = 0xfu;
     s->access_table[R32_DYN_POS(s, mcounteren_writable)].permit = 0x1u;
 
-    if (s->version == OT_VER_EG_1_0_0) {
+    const OtIbexWrapperConfig *cfg = &IBEX_WRAPPER_CONFIG[s->version];
+    if (!cfg->has_cheriot_mcounteren) {
         /*
-         * Earlgrey v1 layout:
+         * Earlgrey v1 / Darjeeling layout:
          * 0x60 (cheriot_ena slot) is FPGA_INFO (RO, permit 0xfu),
          * and 0x64..0x7F (cheriot_lock.._reserved) are unmapped (permit 0u).
          */
@@ -1561,15 +1582,10 @@ static void ot_ibex_wrapper_fill_tables(OtIbexWrapperState *s)
              rix < R32_DYN_POS(s, dv_sim_win[0]); rix++) {
             s->access_table[rix].permit = 0u;
         }
-    } else {
-        /*
-         * Earlgrey v2 layout:
-         * DV_SIM_WINDOW (0x80..0x9F) is wired to u_sim_win_rsp (tlul_err_resp),
-         * unconditionally returning d_error = 1 on read and write.
-         */
-        for (rix = R32_DYN_POS(s, dv_sim_win[0]); rix < s->reg_count; rix++) {
-            s->access_table[rix].permit = 0u;
-        }
+    }
+    for (rix = R32_DYN_POS(s, dv_sim_win[0]);
+         rix < R32_DYN_POS(s, dv_sim_win[DV_SIM_COUNT]); rix++) {
+        s->access_table[rix].permit = cfg->dv_sim_win_permit;
     }
 
     unsigned base = FIRST_REMAP_REG_POS;
