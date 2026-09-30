@@ -292,6 +292,22 @@ struct OtClkMgrClass {
     ResettablePhases parent_phases;
 };
 
+typedef struct {
+    bool jitter_enable_latch;
+} OtClkMgrConfig;
+
+static const OtClkMgrConfig CLKMGR_CONFIG[OT_VER_COUNT] = {
+    [OT_VER_EG_1_0_0] = {
+        .jitter_enable_latch = true,
+    },
+    [OT_VER_DJ] = {
+        .jitter_enable_latch = false,
+    },
+    [OT_VER_EG_2_0_0] = {
+        .jitter_enable_latch = false,
+    },
+};
+
 static const char *CFGSEP = ",";
 
 static void ot_clkmgr_update_alerts(OtClkMgrState *s)
@@ -1259,7 +1275,7 @@ static void ot_clkmgr_write(void *opaque, hwaddr addr, uint64_t val64,
         s->regs[reg] &= val32;
         break;
     case R_JITTER_ENABLE:
-        if (s->version == OT_CLKMGR_VERSION_EG_1_0_0) {
+        if (CLKMGR_CONFIG[s->version].jitter_enable_latch) {
             /*
              * In Earlgrey v1 clkmgr_reg_top.sv (u_jitter_enable), .we is
              * jitter_enable_we (not gated by jitter_regwen) and .wd is
@@ -1508,7 +1524,7 @@ static void ot_clkmgr_realize(DeviceState *dev, Error **errp)
     g_assert(s->clock_src);
     OBJECT_CHECK(IbexClockSrcIf, s->clock_src, TYPE_IBEX_CLOCK_SRC_IF);
 
-    g_assert(s->version < OT_CLKMGR_VERSION_COUNT);
+    g_assert(s->version < OT_VER_COUNT);
 
     ot_clkmgr_parse_top_clocks(s, &error_fatal);
     unsigned top_count = g_list_length(s->clocks);
