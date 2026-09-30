@@ -384,11 +384,12 @@ static void ot_aon_timer_update_irqs(OtAonTimerState *s)
 {
     bool wkup = (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK);
     bool bark = (bool)(s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK);
-    bool wkup_req =
-        (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK) &&
-        !(ot_aon_timer_is_wdog_enabled(s) && !ot_aon_timer_is_wkup_enabled(s) &&
-          (s->regs[R_WDOG_BITE_THOLD] + 1u) ==
-              2u * (s->regs[R_WDOG_BARK_THOLD] + 1u));
+    bool cause_set = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+    bool wdog_only =
+        ot_aon_timer_is_wdog_enabled(s) && !ot_aon_timer_is_wkup_enabled(s);
+    bool bite_eq_2x_bark = (s->regs[R_WDOG_BITE_THOLD] + 1u) ==
+                           2u * (s->regs[R_WDOG_BARK_THOLD] + 1u);
+    bool wkup_req = cause_set && !(wdog_only && bite_eq_2x_bark);
     trace_ot_aon_timer_irqs(s->ot_id, wkup, bark, s->wdog_bite);
 
     ibex_irq_set(&s->irq_wkup, wkup);
@@ -431,21 +432,26 @@ static void ot_aon_timer_rearm_wkup(OtAonTimerState *s, bool reset_origin)
         s->wkup_intr_level = false;
     }
 
-    bool intr_done =
-        (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK) ||
-        (s->wkup_intr_level && prescaler == 0u && count >= threshold);
+    const OtAonTimerConfig *cfg = &AON_TIMER_CONFIG[s->version];
+    bool intr_set =
+        (bool)(s->regs[R_INTR_STATE] & INTR_WKUP_TIMER_EXPIRED_MASK);
+    bool continuous_high =
+        s->wkup_intr_level && prescaler == 0u && count >= threshold;
+    bool intr_done = intr_set || continuous_high;
     bool cause_set = (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+    uint64_t max_incrs = (INT64_MAX / 5000u) / (prescaler + 1u);
+    bool within_horizon =
+        (threshold <= count) || ((threshold - count) <= max_incrs);
 
-    if ((!intr_done || !cause_set) &&
-        ((threshold <= count) ||
-         ((threshold - count) <= (INT64_MAX / 5000u) / (prescaler + 1u)))) {
+    if ((!intr_done || !cause_set) && within_horizon) {
         uint64_t rem_incrs = (count >= threshold) ? 0u : (threshold - count);
-        uint64_t needed_clks =
-            (AON_TIMER_CONFIG[s->version].wkup_cause_delayed && intr_done &&
-             s->wkup_cause_pending) ?
-                1u :
-                (ot_aon_timer_first_wkup_incr_clks(s) +
-                 rem_incrs * (prescaler + 1u));
+        uint64_t needed_clks;
+        if (cfg->wkup_cause_delayed && intr_done && s->wkup_cause_pending) {
+            needed_clks = 1u;
+        } else {
+            uint64_t first_clks = ot_aon_timer_first_wkup_incr_clks(s);
+            needed_clks = first_clks + rem_incrs * (prescaler + 1u);
+        }
         int64_t delta = ot_aon_timer_ticks_to_ns(s, 0u, needed_clks);
         int64_t next =
             ot_aon_timer_compute_next_timeout(s, s->wkup_origin_ns, delta);
@@ -492,12 +498,13 @@ static void ot_aon_timer_rearm_wdog(OtAonTimerState *s, bool reset_origin)
         s->wdog_bark_level = false;
     }
 
+    const OtAonTimerConfig *cfg = &AON_TIMER_CONFIG[s->version];
     uint64_t needed_clks = UINT64_MAX;
-    bool bark_done =
-        (s->wdog_bark_level ||
-         (s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK)) &&
-        (!AON_TIMER_CONFIG[s->version].wdog_bark_rearm_on_cause_clr ||
-         (s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK));
+    bool bark_intr = s->wdog_bark_level ||
+                     (bool)(s->regs[R_INTR_STATE] & INTR_WDOG_TIMER_BARK_MASK);
+    bool cause_done = !cfg->wdog_bark_rearm_on_cause_clr ||
+                      (bool)(s->regs[R_WKUP_CAUSE] & R_WKUP_CAUSE_CAUSE_MASK);
+    bool bark_done = bark_intr && cause_done;
     if (!bark_done) {
         uint64_t bark_clks = (count >= bark_threshold) ?
                                  1u :
@@ -625,14 +632,18 @@ static uint64_t ot_aon_timer_read(void *opaque, hwaddr addr, unsigned size)
     case R_WKUP_CAUSE:
         val32 = s->regs[reg];
         break;
-    case R_WKUP_COUNT_LO:
+    case R_WKUP_COUNT_LO: {
         val32 = s->regs[reg];
-        if (ot_aon_timer_is_wkup_enabled(s) && s->regs[R_WKUP_COUNT_HI] == 0u &&
-            FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER) == 0u &&
-            val32 >= 2u && val32 <= 4u) {
+        uint32_t prescaler =
+            FIELD_EX32(s->regs[R_WKUP_CTRL], WKUP_CTRL, PRESCALER);
+        bool unprescaled_low =
+            (s->regs[R_WKUP_COUNT_HI] == 0u) && (prescaler == 0u);
+        if (ot_aon_timer_is_wkup_enabled(s) && unprescaled_low && val32 >= 2u &&
+            val32 <= 4u) {
             val32 = 1u;
         }
         break;
+    }
     case R_WDOG_COUNT:
         val32 = s->regs[reg];
         if (ot_aon_timer_is_wdog_enabled(s) && val32 >= 2u && val32 <= 4u) {
