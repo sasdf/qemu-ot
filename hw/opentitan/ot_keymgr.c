@@ -270,6 +270,11 @@ REG32(DEBUG, 0xf8u)
      R_DEBUG_INVALID_KEY_VERSION_MASK | R_DEBUG_INVALID_KEY_MASK | \
      R_DEBUG_INVALID_DIGEST_MASK)
 
+/* Subword write byte-enable permits (keymgr_reg_pkg::KEYMGR_PERMIT) */
+#define KEYMGR_REG_PERMIT_1B 0x1u
+#define KEYMGR_REG_PERMIT_2B 0x3u
+#define KEYMGR_REG_PERMIT_4B 0xfu
+
 typedef enum {
     KEYMGR_KEY_SINK_AES,
     KEYMGR_KEY_SINK_KMAC,
@@ -1112,7 +1117,7 @@ ot_keymgr_check_flash_seed(OtKeyMgrState *s, OtFlashKeyMgrSecretType type,
      */
     bool is_all_ones = true;
     for (unsigned ix = 0u; ix < OT_FLASH_KEYMGR_SECRET_BYTES; ix++) {
-        if (seed.secret[ix] != 0xffu) {
+        if (seed.secret[ix] != UINT8_MAX) {
             is_all_ones = false;
             break;
         }
@@ -2471,18 +2476,19 @@ static bool ot_keymgr_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     case R_MAX_OWNER_INT_KEY_VER_SHADOWED:
     case R_MAX_OWNER_KEY_VER_SHADOWED:
     case R_SW_SHARE0_OUTPUT_0 ... R_SW_SHARE1_OUTPUT_7:
-        permit = 0xfu;
+        permit = KEYMGR_REG_PERMIT_4B;
         break;
     case R_CONTROL_SHADOWED:
     case R_RESEED_INTERVAL_SHADOWED:
     case R_FAULT_STATUS:
-        permit = 0x3u;
+        permit = KEYMGR_REG_PERMIT_2B;
         break;
     default:
-        permit = 0x1u;
+        permit = KEYMGR_REG_PERMIT_1B;
         break;
     }
-    uint32_t reg_be = (((1u << size) - 1u) << (addr & 3u)) & 0xfu;
+    uint32_t offset = (uint32_t)(addr & (sizeof(uint32_t) - 1u));
+    uint32_t reg_be = (((1u << size) - 1u) << offset) & KEYMGR_REG_PERMIT_4B;
     return (permit & ~reg_be) == 0u;
 }
 
