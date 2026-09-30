@@ -1342,8 +1342,8 @@ static CmdErr riscv_dm_dmcontrol_write(RISCVDMState *dm, uint32_t value)
     }
 
     RISCVDMCmdErr ret = CMD_ERR_NONE;
-    bool prev_ndmreset =
-        (bool)(dm->regs[A_DMCONTROL] & R_DMCONTROL_NDMRESET_MASK);
+    uint32_t prev_dmcontrol = dm->regs[A_DMCONTROL];
+    bool prev_ndmreset = (bool)(prev_dmcontrol & R_DMCONTROL_NDMRESET_MASK);
     bool cur_ndmreset = (bool)(value & R_DMCONTROL_NDMRESET_MASK);
 
     if (cur_ndmreset) {
@@ -1554,11 +1554,10 @@ static void riscv_dm_sync_vcpu(RISCVDMState *dm)
             RISCVDMHartState *hart = &dm->harts[hix];
             CPUState *cs = CPU(hart->cpu);
             uint64_t mask = 1ULL << hix;
-            if (!cs->disabled &&
-                (hart->resuming ||
-                 (!hart->halted &&
-                  ((cs->interrupt_request & CPU_INTERRUPT_DEBUG) ||
-                   (dm->haltreq_bm & mask))))) {
+            bool dbg_irq = (cs->interrupt_request & CPU_INTERRUPT_DEBUG) != 0;
+            bool halt_req = (dm->haltreq_bm & mask) != 0;
+            bool halt_pending = !hart->halted && (dbg_irq || halt_req);
+            if (!cs->disabled && (hart->resuming || halt_pending)) {
                 riscv_dm_ensure_running(dm);
                 qemu_cpu_kick(cs);
                 pending = true;
