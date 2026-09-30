@@ -402,6 +402,8 @@ static_assert(OTP_BYTE_ADDR_WIDTH == R_DIRECT_ACCESS_ADDRESS_ADDRESS_LENGTH,
 typedef struct {
     const OtOTPPartDesc *part_descs;
     uint64_t regs_size;
+    hwaddr rma_spin_cycles_offset;
+    uint8_t status_permit;
     bool has_partition_status_reg;
     bool has_dai_zeroize_cmd;
 } OtOTPEgConfig;
@@ -410,18 +412,24 @@ static const OtOTPEgConfig OTP_EG_CONFIG[OT_VER_COUNT] = {
     [OT_VER_EG_1_0_0] = {
         .part_descs = OT_OTP_PART_DESCS,
         .regs_size = REGS_SIZE,
+        .rma_spin_cycles_offset = A_CREATOR_SW_CFG_RMA_SPIN_CYCLES,
+        .status_permit = 0x7u,
         .has_partition_status_reg = false,
         .has_dai_zeroize_cmd = false,
     },
     [OT_VER_DJ] = {
         .part_descs = OT_OTP_PART_DESCS,
         .regs_size = REGS_SIZE,
+        .rma_spin_cycles_offset = A_CREATOR_SW_CFG_RMA_SPIN_CYCLES,
+        .status_permit = 0x7u,
         .has_partition_status_reg = false,
         .has_dai_zeroize_cmd = false,
     },
     [OT_VER_EG_2_0_0] = {
         .part_descs = OT_OTP_PART_DESCS_V2,
         .regs_size = REGS_SIZE + sizeof(uint32_t),
+        .rma_spin_cycles_offset = 344u,
+        .status_permit = 0x3u,
         .has_partition_status_reg = true,
         .has_dai_zeroize_cmd = true,
     },
@@ -550,11 +558,12 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
                                   bool is_write, MemTxAttrs attrs)
 {
     OtOTPEgState *eg = OT_OTP_EG(opaque);
+    const OtOTPEgConfig *cfg = &OTP_EG_CONFIG[eg->version];
     (void)attrs;
     if (!is_write) {
         return true;
     }
-    if (OTP_EG_CONFIG[eg->version].has_partition_status_reg) {
+    if (cfg->has_partition_status_reg) {
         if (addr == 0x14u) {
             uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
             return (0x3u & ~byte_mask) == 0u;
@@ -568,7 +577,7 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
     switch (reg) {
     /* OTP_CTRL_CORE_PERMIT (otp_ctrl_core_reg_pkg.sv): */
     /* - DIRECT_ACCESS_ADDRESS: 4'b0011 (0x3) */
-    /* - STATUS: 4'b0111 (0x7) */
+    /* - STATUS: 4'b0111 (0x7) on v1, 4'b0011 (0x3) on v2 */
     /* - 32-bit WDATA/RDATA: 4'b1111 (0xf) */
     /* - 32-bit CHECK_PERIOD: 4'b1111 (0xf) */
     /* - 32-bit DIGEST CSRs: 4'b1111 (0xf) */
@@ -578,7 +587,7 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
         permit = 0xfu;
         break;
     case R_STATUS:
-        permit = 0x7u;
+        permit = cfg->status_permit;
         break;
     case R_DIRECT_ACCESS_ADDRESS:
         permit = 0x3u;
@@ -713,10 +722,10 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
     case R_DIRECT_ACCESS_ADDRESS:
     case R_DIRECT_ACCESS_WDATA_0:
     case R_DIRECT_ACCESS_WDATA_1:
-    case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK:
-        if (!(s->regs[R_DIRECT_ACCESS_REGWEN] &
-              R_DIRECT_ACCESS_REGWEN_REGWEN_MASK) ||
-            ot_otp_engine_dai_is_busy(s)) {
+    case R_VENDOR_TEST_READ_LOCK ... R_ROT_CREATOR_AUTH_STATE_READ_LOCK: {
+        bool regwen_en = (s->regs[R_DIRECT_ACCESS_REGWEN] &
+                          R_DIRECT_ACCESS_REGWEN_REGWEN_MASK) != 0u;
+        if (!regwen_en || ot_otp_engine_dai_is_busy(s)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "%s: %s: %s is not enabled, %s is protected\n",
                           __func__, s->ot_id, REG_NAME(R_DIRECT_ACCESS_REGWEN),
@@ -724,6 +733,7 @@ static void ot_otp_eg_reg_write(void *opaque, hwaddr addr, uint64_t value,
             return;
         }
         break;
+    }
     case R_CHECK_TRIGGER:
         if (!(s->regs[R_CHECK_TRIGGER_REGWEN] &
               R_CHECK_TRIGGER_REGWEN_REGWEN_MASK)) {
@@ -1022,7 +1032,8 @@ static MemTxResult ot_otp_eg_swcfg_read_with_attrs(
     uint32_t val32 = s->otp->data[reg];
     c->set_error(s, part_ix, OT_OTP_NO_ERROR);
 
-    if (addr == A_CREATOR_SW_CFG_RMA_SPIN_CYCLES) {
+    OtOTPEgState *eg = OT_OTP_EG(opaque);
+    if (addr == OTP_EG_CONFIG[eg->version].rma_spin_cycles_offset) {
         icount_advance_bias_ns(128);
     }
 
