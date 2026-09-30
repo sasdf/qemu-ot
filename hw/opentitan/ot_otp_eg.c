@@ -577,12 +577,14 @@ static bool ot_otp_eg_reg_accepts(void *opaque, hwaddr addr, unsigned size,
     case R_VENDOR_TEST_DIGEST_0 ... R_SECRET2_DIGEST_1:
         permit = 0xfu;
         break;
+    case R_STATUS:
+        permit = 0x7u;
+        break;
+    case R_DIRECT_ACCESS_ADDRESS:
+        permit = 0x3u;
+        break;
     default:
-        permit = (reg == R_DIRECT_ACCESS_ADDRESS) ?
-                     0x3u :
-                     ((reg == R_STATUS) ?
-                          0x7u :
-                          ((reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u));
+        permit = (reg <= R_SECRET2_DIGEST_1) ? 0x1u : 0x0u;
         break;
     }
     uint32_t byte_mask = ((1u << size) - 1u) << (addr & 3u);
