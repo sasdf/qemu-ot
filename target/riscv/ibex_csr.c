@@ -46,10 +46,14 @@ static RISCVException read_cpuctrlsts(CPURISCVState *env, int csrno,
                                       target_ulong *val)
 {
     (void)csrno;
-    *val = (env->ic_scr_key_inval_cnt ? 0 : CPUCTRLSTS_IC_SCR_KEY_VALID) |
-           (env->cpuctrlsts & ~CPUCTRLSTS_SYNC_EXC_SEEN) |
-           (env->sync_exc_seen ? CPUCTRLSTS_SYNC_EXC_SEEN : 0) |
-           (env->double_fault_seen ? CPUCTRLSTS_DOUBLE_FAULT_SEEN : 0);
+    target_ulong key_valid =
+        env->ic_scr_key_inval_cnt ? 0 : CPUCTRLSTS_IC_SCR_KEY_VALID;
+    target_ulong sync_exc = env->sync_exc_seen ? CPUCTRLSTS_SYNC_EXC_SEEN : 0;
+    target_ulong double_fault =
+        env->double_fault_seen ? CPUCTRLSTS_DOUBLE_FAULT_SEEN : 0;
+    target_ulong base_sts = env->cpuctrlsts & ~CPUCTRLSTS_SYNC_EXC_SEEN;
+
+    *val = key_valid | base_sts | sync_exc | double_fault;
     env->ic_scr_key_inval_cnt = 0;
     return RISCV_EXCP_NONE;
 }
