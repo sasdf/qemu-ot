@@ -95,6 +95,21 @@ impl CSRAddr {
             Err(_) => format!("0x{:03x}", csr_addr),
         }
     }
+
+    pub fn is_v2_only(self) -> bool {
+        matches!(
+            self,
+            Self::urnd_ctrl
+                | Self::kmac_status
+                | Self::kmac_ctrl
+                | Self::kmac_cfg
+                | Self::kmac_strb
+                | Self::mai_ctrl
+                | Self::urnd_status
+                | Self::insn_cnt
+                | Self::mai_status
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -160,6 +175,21 @@ impl WSRAddr {
             Ok(wsr) => format!("{:?}", wsr),
             Err(_) => format!("0x{:03x}", wsr_addr),
         }
+    }
+
+    pub fn is_v2_only(self) -> bool {
+        matches!(
+            self,
+            Self::kmac_data_s0
+                | Self::kmac_data_s1
+                | Self::mai_res_s0
+                | Self::mai_res_s1
+                | Self::mai_in0_s0
+                | Self::mai_in0_s1
+                | Self::mai_in1_s0
+                | Self::mai_in1_s1
+                | Self::urnd_state
+        )
     }
 }
 
@@ -1049,6 +1079,7 @@ pub struct CSRSet {
     mai_state: Rc<RefCell<MaiState>>,
     kmac_state: Rc<RefCell<KmacState>>,
     ctrl: Arc<AtomicU32>,
+    pub v2_isa: bool,
 }
 
 impl CSRSet {
@@ -1058,6 +1089,7 @@ impl CSRSet {
         key: Arc<key::Key>,
         ctrl: Arc<AtomicU32>,
         insn_count: Arc<AtomicUsize>,
+        v2_isa: bool,
     ) -> Self {
         let urnd_ctrl_state = Rc::new(Cell::new(UrndCtrlState::default()));
         let mod_shared = CSRWideSharedGeneric::default();
@@ -1141,6 +1173,7 @@ impl CSRSet {
             mai_state,
             kmac_state,
             ctrl,
+            v2_isa,
         };
         csrs.fg0.plug(&csrs.shared_flags, FlagMode::Fg0);
         csrs.fg1.plug(&csrs.shared_flags, FlagMode::Fg1);
@@ -1173,6 +1206,9 @@ impl CSRSet {
 
     pub fn get_csr(&self, addr: u32) -> Option<&dyn CSR> {
         let csr_addr = CSRAddr::try_from(addr).ok()?;
+        if !self.v2_isa && csr_addr.is_v2_only() {
+            return None;
+        }
 
         // note: we do not want to use num_enum here that draws to many dependencies
         Some(match csr_addr {
@@ -1204,6 +1240,9 @@ impl CSRSet {
 
     pub fn get_csr_mut(&mut self, addr: u32) -> Option<&mut dyn CSR> {
         let csr_addr = CSRAddr::try_from(addr).ok()?;
+        if !self.v2_isa && csr_addr.is_v2_only() {
+            return None;
+        }
 
         // note: we do not want to use num_enum here that draws to many dependencies
         Some(match csr_addr {
@@ -1235,6 +1274,9 @@ impl CSRSet {
 
     pub fn get_wsr(&self, addr: u32) -> Option<&dyn WSR> {
         let wsr_addr = WSRAddr::try_from(addr).ok()?;
+        if !self.v2_isa && wsr_addr.is_v2_only() {
+            return None;
+        }
 
         Some(match wsr_addr {
             WSRAddr::r#mod => &self.r#mod,
@@ -1259,6 +1301,9 @@ impl CSRSet {
 
     pub fn get_wsr_mut(&mut self, addr: u32) -> Option<&mut dyn WSR> {
         let wsr_addr = WSRAddr::try_from(addr).ok()?;
+        if !self.v2_isa && wsr_addr.is_v2_only() {
+            return None;
+        }
 
         Some(match wsr_addr {
             WSRAddr::r#mod => &mut self.r#mod,

@@ -131,6 +131,7 @@ impl Executer {
         on_complete: Option<Box<dyn comm::Callback>>,
         log_name: Option<String>,
         log_asm: bool,
+        v2_isa: bool,
     ) -> Self {
         let log_file: Option<Box<dyn io::Write>>;
         if let Some(logname) = log_name {
@@ -149,6 +150,7 @@ impl Executer {
                 key,
                 registers.ctrl.clone(),
                 registers.insn_count.clone(),
+                v2_isa,
             ),
             imem,
             dmem,
@@ -173,6 +175,7 @@ impl Executer {
         on_complete: Option<Box<dyn comm::Callback>>,
         log_name: Option<String>,
         log_asm: bool,
+        v2_isa: bool,
     ) {
         Self::new(
             channel,
@@ -185,6 +188,7 @@ impl Executer {
             on_complete,
             log_name,
             log_asm,
+            v2_isa,
         )
         .enter();
     }

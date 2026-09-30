@@ -67,7 +67,7 @@ ot_otbn_proxy_new(ot_otbn_fetch_entropy_fn urnd_req_entropy, void *urnd_opaque,
                   ot_otbn_fetch_entropy_fn rnd_req_entropy, void *rnd_opaque,
                   ot_otbn_signal_completion_fn signal, void *on_comp_opaque,
                   uint32_t imem_size, uint32_t dmem_size,
-                  uint32_t dmem_pub_size);
+                  uint32_t dmem_pub_size, bool v2_isa);
 extern void ot_otbn_proxy_start(OTBNProxy proxy, bool test_mode,
                                 const char *logname, bool log_asm);
 extern void ot_otbn_proxy_terminate(OTBNProxy proxy);

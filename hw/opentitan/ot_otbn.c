@@ -1169,7 +1169,8 @@ static void ot_otbn_realize(DeviceState *dev, Error **errp)
         ot_otbn_proxy_new(&ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_URND],
                           &ot_otbn_trigger_entropy_req, &s->rnds[OT_OTBN_RND],
                           &ot_otbn_signal_on_completion, s, cfg->imem_size,
-                          cfg->dmem_size, cfg->dmem_pub_size);
+                          cfg->dmem_size, cfg->dmem_pub_size,
+                          cfg->has_wfi_resume);
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_otbn_clock_input,
                             OT_OTBN_CLOCK_INPUT, 1);

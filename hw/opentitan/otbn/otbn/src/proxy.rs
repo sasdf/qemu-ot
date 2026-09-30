@@ -54,11 +54,14 @@ pub struct Proxy {
 
     /// Transient optional callback to invoke on completion
     on_complete: Option<Box<dyn comm::Callback>>,
+
+    /// Enable Earlgrey v2 OTBN ISA extensions and CSRs/WSRs
+    v2_isa: bool,
 }
 
 impl Default for Proxy {
     fn default() -> Self {
-        Self::with_sizes(otbn::IMEM_SIZE, otbn::DMEM_SIZE, otbn::DMEM_PUB_SIZE)
+        Self::with_sizes(otbn::IMEM_SIZE, otbn::DMEM_SIZE, otbn::DMEM_PUB_SIZE, false)
     }
 }
 
@@ -67,7 +70,12 @@ impl Proxy {
         Default::default()
     }
 
-    pub fn with_sizes(imem_size: usize, dmem_size: usize, dmem_pub_size: usize) -> Self {
+    pub fn with_sizes(
+        imem_size: usize,
+        dmem_size: usize,
+        dmem_pub_size: usize,
+        v2_isa: bool,
+    ) -> Self {
         Self {
             imem: Arc::new(Mutex::new(memory::MemoryRegion::new(imem_size))),
             dmem: Arc::new(Mutex::new(memory::MemoryRegion::new(dmem_size))),
@@ -80,6 +88,7 @@ impl Proxy {
             rnd: Arc::new(random::Rnd::new()),
             key: Arc::new(key::Key::new()),
             on_complete: None,
+            v2_isa,
         }
     }
 
@@ -157,6 +166,7 @@ impl Proxy {
             let rnd = Arc::clone(&self.rnd);
             let key = Arc::clone(&self.key);
             let log_name: Option<String> = log_name.map(|l| l.into());
+            let v2_isa = self.v2_isa;
             self.join_handle = Some(
                 executer
                     .spawn(move || {
@@ -171,6 +181,7 @@ impl Proxy {
                             on_complete,
                             log_name,
                             log_asm,
+                            v2_isa,
                         )
                     })
                     .unwrap(),
@@ -460,11 +471,13 @@ pub extern "C" fn ot_otbn_proxy_new(
     imem_size: u32,
     dmem_size: u32,
     dmem_pub_size: u32,
+    v2_isa: bool,
 ) -> Box<Proxy> {
     let mut proxy = Box::new(Proxy::with_sizes(
         imem_size as usize,
         dmem_size as usize,
         dmem_pub_size as usize,
+        v2_isa,
     ));
     proxy.register_entropy_req_cb(
         Box::new(CCallback::new(urnd_entropy_req, urnd_opaque)),
