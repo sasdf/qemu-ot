@@ -2437,12 +2437,8 @@ static void ot_usbdev_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_COUNT_NODATA_IN:
     case R_COUNT_ERRORS:
     default: {
-        static const uint32_t count_rw_masks[4] = {
-            0x0ffff000u,
-            0x0fffe000u,
-            0x0fff0000u,
-            0x78000000u,
-        };
+        static const uint32_t count_rw_masks[4] = { 0x0ffff000u, 0x0fffe000u,
+                                                    0x0fff0000u, 0x78000000u };
         g_assert(reg >= R_COUNT_OUT && reg <= R_COUNT_ERRORS);
         uint32_t rw_mask = count_rw_masks[reg - R_COUNT_OUT];
         uint32_t count = (val32 & (1u << 31)) ? 0u : (s->regs[reg] & 0xffu);
