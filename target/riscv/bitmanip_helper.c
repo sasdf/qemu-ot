@@ -169,12 +169,19 @@ target_ulong HELPER(gorc)(target_ulong rs1, target_ulong rs2)
     return x;
 }
 
+#define BFP_LEN_SHIFT      24u
+#define BFP_LEN_MASK       0xfu
+#define BFP_LEN_DEFAULT    16u
+#define BFP_OFF_SHIFT      16u
+#define BFP_OFF_MASK       0x1fu
+#define FSL_FSR_SHAMT_MASK 0x3fu
+
 target_ulong HELPER(shfl)(target_ulong rs1, target_ulong rs2)
 {
     target_ulong x = rs1;
     int shamt = rs2 & ((TARGET_LONG_BITS >> 1) - 1);
 
-    for (int i = 3; i >= 0; i--) {
+    for (int i = (int)ARRAY_SIZE(shuf_masks) - 1; i >= 0; i--) {
         if (shamt & (1 << i)) {
             x = do_shuf_stage(x, shuf_masks[i], shuf_masks[i] >> (1 << i),
                               1 << i);
@@ -188,7 +195,7 @@ target_ulong HELPER(unshfl)(target_ulong rs1, target_ulong rs2)
     target_ulong x = rs1;
     int shamt = rs2 & ((TARGET_LONG_BITS >> 1) - 1);
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < ARRAY_SIZE(shuf_masks); i++) {
         if (shamt & (1 << i)) {
             x = do_shuf_stage(x, shuf_masks[i], shuf_masks[i] >> (1 << i),
                               1 << i);
@@ -199,8 +206,8 @@ target_ulong HELPER(unshfl)(target_ulong rs1, target_ulong rs2)
 
 target_ulong HELPER(bfp)(target_ulong rs1, target_ulong rs2)
 {
-    uint32_t len = ((rs2 >> 24) & 0xf) ?: 16;
-    uint32_t off = (rs2 >> 16) & 0x1f;
+    uint32_t len = ((rs2 >> BFP_LEN_SHIFT) & BFP_LEN_MASK) ?: BFP_LEN_DEFAULT;
+    uint32_t off = (rs2 >> BFP_OFF_SHIFT) & BFP_OFF_MASK;
     uint32_t mask = (1U << len) - 1;
     return (rs1 & ~(mask << off)) | ((rs2 & mask) << off);
 }
@@ -208,13 +215,13 @@ target_ulong HELPER(bfp)(target_ulong rs1, target_ulong rs2)
 target_ulong HELPER(fsl)(target_ulong rs1, target_ulong rs2, target_ulong rs3)
 {
     uint64_t val = ((uint64_t)(uint32_t)rs1 << 32) | (uint32_t)rs3;
-    return (uint32_t)(rol64(val, rs2 & 0x3f) >> 32);
+    return (uint32_t)(rol64(val, rs2 & FSL_FSR_SHAMT_MASK) >> 32);
 }
 
 target_ulong HELPER(fsr)(target_ulong rs1, target_ulong rs2, target_ulong rs3)
 {
     uint64_t val = ((uint64_t)(uint32_t)rs3 << 32) | (uint32_t)rs1;
-    return (uint32_t)ror64(val, rs2 & 0x3f);
+    return (uint32_t)ror64(val, rs2 & FSL_FSR_SHAMT_MASK);
 }
 
 /*
