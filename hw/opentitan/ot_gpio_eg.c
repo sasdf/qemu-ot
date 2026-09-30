@@ -299,12 +299,15 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
         int level = 0;
 
         if (s->pinmux) {
-            uint32_t outsel = ot_gpio_eg_normalize_outsel(
-                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, p));
+            uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
-            unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
-                              (unsigned)g_pull :
-                              p;
+            unsigned gp = p;
+            if (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) {
+                gp = (unsigned)g_pull;
+            }
+            bool is_sysrst_outsel = (outsel >= 35u && outsel <= 42u) ||
+                                    (outsel >= 72u && outsel <= 77u);
             if ((s->force_en >> gp) & 1u) {
                 if ((s->force_oe >> gp) & 1u) {
                     driven_by_dev = true;
@@ -322,19 +325,17 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                     driven_by_dev = true;
                     level = (int)((periph_out_v >> g) & 1u);
                 }
-            } else if (((outsel >= 35u && outsel <= 42u) ||
-                        (outsel >= 72u && outsel <= 77u)) &&
-                       s->sysrst_ctrl) {
+            } else if (is_sysrst_outsel && s->sysrst_ctrl) {
                 driven_by_dev = true;
                 level = ot_sysrst_ctrl_get_outsel_level(s->sysrst_ctrl, outsel);
             } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
                 driven_by_dev = true;
                 level = (int)ot_pattgen_get_pin_level(s->pattgen, outsel - 49u);
             } else if (outsel >= 65u && outsel < 71u && s->pwm) {
+                int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
                 driven_by_dev = true;
-                level = (int)ot_pwm_get_channel_level(s->pwm, outsel - 65u,
-                                                      qemu_clock_get_ns(
-                                                          QEMU_CLOCK_VIRTUAL));
+                level =
+                    (int)ot_pwm_get_channel_level(s->pwm, outsel - 65u, now_ns);
             }
             if (!driven_by_dev) {
                 if (p == 14u || p == 15u) {
@@ -374,9 +375,8 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
     if (pad_in_dis) {
         return pad_inv ? 1 : 0;
     }
-    uint32_t outsel =
-        ot_gpio_eg_normalize_outsel(s, ot_pinmux_eg_get_mio_outsel(s->pinmux,
-                                                                   mio_pad));
+    uint32_t raw_outsel = ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+    uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
     if (outsel == 0u) {
         return 0;
     }
@@ -387,9 +387,9 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
         unsigned g_out = outsel - 3u;
         if ((s->data_oe >> g_out) & 1u) {
             bool g_out_val = (bool)((s->data_out >> g_out) & 1u);
-            bool od =
-                (bool)(pad_attr & (OT_PINMUX_PAD_ATTR_OD_EN_MASK |
-                                   OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK));
+            uint32_t od_mask = OT_PINMUX_PAD_ATTR_OD_EN_MASK |
+                               OT_PINMUX_PAD_ATTR_VIRTUAL_OD_EN_MASK;
+            bool od = (pad_attr & od_mask) != 0u;
             if (!(od && (g_out_val ^ pad_inv))) {
                 return g_out_val ? 1 : 0;
             }
@@ -399,10 +399,9 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
     } else if (outsel >= 49u && outsel <= 52u && s->pattgen) {
         return ot_pattgen_get_pin_level(s->pattgen, outsel - 49u) ? 1 : 0;
     } else if (outsel >= 65u && outsel < 71u && s->pwm) {
-        return ot_pwm_get_channel_level(s->pwm, outsel - 65u,
-                                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) ?
-                   1 :
-                   0;
+        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        bool pwm_lvl = ot_pwm_get_channel_level(s->pwm, outsel - 65u, now_ns);
+        return pwm_lvl ? 1 : 0;
     }
     return -1;
 }
@@ -423,8 +422,10 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 break;
             }
         }
-        uint32_t eff_data_ib =
-            (all_muxed && (s->data_ib & ~0x0000c000u) == 0u) ? 0u : s->data_ib;
+        uint32_t eff_data_ib = s->data_ib;
+        if (all_muxed && (s->data_ib & ~0x0000c000u) == 0u) {
+            eff_data_ib = 0u;
+        }
         for (unsigned g = 0; g < PARAM_NUM_IO; g++) {
             uint32_t insel = ot_pinmux_eg_get_periph_insel(s->pinmux, g);
             if (insel == 0u) {
@@ -434,8 +435,10 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 routed_bi &= ~(1u << g);
             } else if (insel >= 2u && (insel - 2u) < 47u) {
                 unsigned mio_pad = insel - 2u;
-                int hp =
-                    all_muxed ? (int)g : ot_pinmux_eg_mio_to_host_pin(mio_pad);
+                int hp = (int)g;
+                if (!all_muxed) {
+                    hp = ot_pinmux_eg_mio_to_host_pin(mio_pad);
+                }
                 if (hp >= 0 && hp < (int)PARAM_NUM_IO) {
                     unsigned host_pin = (unsigned)hp;
                     if ((eff_data_ib >> host_pin) & 1u) {
@@ -448,9 +451,9 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                         routed_bi &= ~(1u << g);
                     }
                 }
-                if (((s->data_oe >> g) & 1u) &&
-                    ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad) ==
-                        (3u + g)) {
+                uint32_t mio_outsel =
+                    ot_pinmux_eg_get_mio_outsel(s->pinmux, mio_pad);
+                if (((s->data_oe >> g) & 1u) && mio_outsel == (3u + g)) {
                     eff_oe |= (1u << g);
                 }
             }
@@ -486,10 +489,10 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                 if (mio_in >= 0) {
                     in_o = (bool)mio_in;
                 } else {
+                    uint32_t pad_attr =
+                        ot_pinmux_eg_get_mio_pad_attr(s->pinmux, mio_pad);
                     bool pad_inv =
-                        (bool)(ot_pinmux_eg_get_mio_pad_attr(s->pinmux,
-                                                             mio_pad) &
-                               OT_PINMUX_PAD_ATTR_INVERT_MASK);
+                        (pad_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK) != 0u;
                     bool raw = ((ext_in >> g) & 1u) != 0;
                     in_o = raw ^ pad_inv;
                 }
@@ -651,10 +654,13 @@ static bool ot_gpio_eg_accepts(void *opaque, hwaddr addr, unsigned size,
     hwaddr reg = R32_OFF(addr);
     unsigned regs_count = GPIO_EG_CONFIG[s->version].regs_count;
     uint8_t reg_be = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
-    uint8_t permit =
-        (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) ? 0x1u : 0xfu;
-    return reg < regs_count && (addr & 3u) + size <= 4u &&
-           (!is_write || (permit & ~reg_be) == 0u);
+    uint8_t permit = 0xfu;
+    if (reg == R_ALERT_TEST || reg == R_HW_STRAPS_DATA_IN_VALID) {
+        permit = 0x1u;
+    }
+    bool aligned = (addr & 3u) + size <= 4u;
+    bool be_ok = !is_write || (permit & ~reg_be) == 0u;
+    return reg < regs_count && aligned && be_ok;
 }
 
 static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
@@ -933,10 +939,8 @@ static bool ot_gpio_eg_sample_pad(OtGpioEgState *s, unsigned pad,
         }
     }
     if (s->pinmux) {
-        uint32_t outsel =
-            ot_gpio_eg_normalize_outsel(s,
-                                        ot_pinmux_eg_get_gpio_outsel(s->pinmux,
-                                                                     pad));
+        uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, pad);
+        uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
         if (outsel == 0u) {
             return false;
         }
@@ -965,11 +969,14 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
     }
 
     bool uses_spi_host1 = ot_gpio_eg_bitbang_uses_spi_host1(s);
-    OtI2CState *active_i2c =
-        uses_spi_host1 ? NULL : ot_gpio_eg_get_active_override_i2c(s);
-    OtI2CState *target_i2c =
-        (uses_spi_host1 || active_i2c) ? NULL :
-                                         ot_gpio_eg_get_active_target_i2c(s);
+    OtI2CState *active_i2c = NULL;
+    if (!uses_spi_host1) {
+        active_i2c = ot_gpio_eg_get_active_override_i2c(s);
+    }
+    OtI2CState *target_i2c = NULL;
+    if (!uses_spi_host1 && !active_i2c) {
+        target_i2c = ot_gpio_eg_get_active_target_i2c(s);
+    }
     bool uses_pwm =
         !uses_spi_host1 && !active_i2c && !target_i2c && (s->pwm != NULL);
 
@@ -1044,13 +1051,16 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
          * advancing QEMU virtual time in 100 us steps until firmware finishes
          * its debounce and enables PWM.
          */
+        bool wait_pwm = uses_pwm && !ot_pwm_is_active(s->pwm);
+        bool wait_spi =
+            uses_spi_host1 && !ot_spi_host_is_waveform_ready(s->spi_host1);
+        bool wait_i2c =
+            active_i2c && !ot_i2c_is_override_waveform_ready(active_i2c);
         if (s->bb_idx == 5u && s->bb_wait_pwm_ticks > 0 &&
-            ((uses_pwm && !ot_pwm_is_active(s->pwm)) ||
-             (uses_spi_host1 && !ot_spi_host_is_waveform_ready(s->spi_host1)) ||
-             (active_i2c && !ot_i2c_is_override_waveform_ready(active_i2c)))) {
+            (wait_pwm || wait_spi || wait_i2c)) {
             s->bb_wait_pwm_ticks--;
-            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                              (active_i2c ? 1000000LL : 100000LL);
+            int64_t step_ns = active_i2c ? 1000000LL : 100000LL;
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + step_ns;
             s->bb_start_ns =
                 next_ns - (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
             timer_mod_ns(s->bb_timer, next_ns);
@@ -1058,21 +1068,17 @@ static void ot_gpio_eg_bitbang_step(void *opaque)
         }
 
         if (s->bb_idx == 5u) {
+            int64_t period_ns = (int64_t)s->bb_period_ns;
             s->bb_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
-                             (int64_t)s->bb_idx * (int64_t)s->bb_period_ns;
+                             (int64_t)s->bb_idx * period_ns;
             if (uses_spi_host1) {
-                ot_spi_host_set_waveform_start_ns(s->spi_host1,
-                                                  s->bb_start_ns +
-                                                      10LL * (int64_t)s
-                                                                 ->bb_period_ns,
+                int64_t spi_start_ns = s->bb_start_ns + 10LL * period_ns;
+                ot_spi_host_set_waveform_start_ns(s->spi_host1, spi_start_ns,
                                                   false);
             }
             if (active_i2c) {
-                ot_i2c_set_waveform_start_ns(active_i2c,
-                                             s->bb_start_ns +
-                                                 100LL *
-                                                     (int64_t)s->bb_period_ns,
-                                             false);
+                int64_t i2c_start_ns = s->bb_start_ns + 100LL * period_ns;
+                ot_i2c_set_waveform_start_ns(active_i2c, i2c_start_ns, false);
             }
         }
 
@@ -1425,12 +1431,13 @@ static void ot_gpio_eg_update_backend(OtGpioEgState *s, bool force)
                 }
                 continue;
             }
-            uint32_t outsel = ot_gpio_eg_normalize_outsel(
-                s, ot_pinmux_eg_get_gpio_outsel(s->pinmux, p));
+            uint32_t raw_outsel = ot_pinmux_eg_get_gpio_outsel(s->pinmux, p);
+            uint32_t outsel = ot_gpio_eg_normalize_outsel(s, raw_outsel);
             int g_pull = ot_pinmux_eg_host_pin_to_gpio(s->pinmux, p);
-            unsigned gp = (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) ?
-                              (unsigned)g_pull :
-                              p;
+            unsigned gp = p;
+            if (g_pull >= 0 && g_pull < (int)PARAM_NUM_IO) {
+                gp = (unsigned)g_pull;
+            }
             if (g_pull >= 0 || (outsel >= 3u && outsel < 35u)) {
                 if ((periph_pull_en >> gp) & 1u) {
                     pull_en |= (1u << p);
