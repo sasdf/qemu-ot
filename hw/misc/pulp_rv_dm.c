@@ -117,13 +117,26 @@ REG32(FLAGS, RISCV_DM_FLAGS_OFFSET)
 #define R32_OFF(_r_) ((_r_) / sizeof(uint32_t))
 #define MEM_OFF(_r_) ((_r_) - R_WHERETO)
 
-#define PULP_RV_DM_DMACT_BASE         (A_HALTED)
-#define PULP_RV_DM_DMACT_SIZE         (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
-#define PULP_RV_DM_PROG_BASE          (A_WHERETO)
-#define PULP_RV_DM_PROG_SIZE          0x100u
-#define PULP_RV_DM_DMFLAG_BASE        (A_FLAGS)
-#define PULP_RV_DM_DMFLAG_SIZE        (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
-#define PULP_RV_DM_DMFLAG_REGION_SIZE 0x400u
+#define PULP_RV_DM_DMACT_BASE  (A_HALTED)
+#define PULP_RV_DM_DMACT_SIZE  (A_EXCEPTION - A_HALTED + sizeof(uint32_t))
+#define PULP_RV_DM_PROG_BASE   (A_WHERETO)
+#define PULP_RV_DM_PROG_SIZE   0x100u
+#define PULP_RV_DM_DMFLAG_BASE (A_FLAGS)
+#define PULP_RV_DM_DMFLAG_SIZE (PULP_RV_DM_FLAGS_COUNT * sizeof(uint32_t))
+#define PULP_RV_DM_DMFLAG_REGION_SIZE \
+    (PULP_RV_DM_ROM_BASE - PULP_RV_DM_DMFLAG_BASE)
+
+#define PULP_RV_DM_UNMAPPED_PROG0_BASE (A_WHERETO + sizeof(uint32_t))
+#define PULP_RV_DM_UNMAPPED_PROG0_SIZE \
+    (A_ABSTRACTCMD_0 - PULP_RV_DM_UNMAPPED_PROG0_BASE)
+#define PULP_RV_DM_UNMAPPED_PROG1_BASE \
+    (A_DATAADDR_0 + PULP_RV_DM_DATA_COUNT * sizeof(uint32_t))
+#define PULP_RV_DM_UNMAPPED_PROG1_SIZE \
+    (PULP_RV_DM_PROG_BASE + PULP_RV_DM_PROG_SIZE - \
+     PULP_RV_DM_UNMAPPED_PROG1_BASE)
+
+#define PULP_RV_DM_PERMIT_1B 0x1u
+#define PULP_RV_DM_PERMIT_4B 0xfu
 
 /*
  * Type definitions
@@ -354,7 +367,7 @@ static void pulp_rv_dm_regs_write(void *opaque, hwaddr addr, uint64_t val64,
     }
 };
 
-#define RV_DM_REGS_COUNT 3u
+#define RV_DM_REGS_COUNT (R_LATE_DEBUG_ENABLE + 1u)
 
 static bool pulp_rv_dm_regs_accepts(void *opaque, hwaddr addr, unsigned size,
                                     bool is_write, MemTxAttrs attrs)
@@ -362,8 +375,10 @@ static bool pulp_rv_dm_regs_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)attrs;
     hwaddr reg = R32_OFF(addr);
-    uint8_t permit = (reg == R_LATE_DEBUG_ENABLE) ? 0xfu : 0x1u;
-    uint8_t byte_mask = (uint8_t)(((1u << size) - 1u) << (addr & 3u));
+    uint8_t permit = (reg == R_LATE_DEBUG_ENABLE) ? PULP_RV_DM_PERMIT_4B :
+                                                    PULP_RV_DM_PERMIT_1B;
+    uint8_t byte_mask =
+        (uint8_t)(((1u << size) - 1u) << (addr & (sizeof(uint32_t) - 1u)));
     return reg < RV_DM_REGS_COUNT && (!is_write || (permit & ~byte_mask) == 0u);
 }
 
@@ -493,7 +508,9 @@ static bool pulp_rv_dm_prog_accepts(void *opaque, hwaddr addr, unsigned size,
                                     bool is_write, MemTxAttrs attrs)
 {
     (void)attrs;
-    return opaque != NULL && (!is_write || ((addr & 3u) == 0u && size == 4u));
+    return opaque != NULL &&
+           (!is_write || ((addr & (sizeof(uint32_t) - 1u)) == 0u &&
+                          size == sizeof(uint32_t)));
 }
 
 static MemTxResult pulp_rv_dm_prog_write_with_attrs(
@@ -613,7 +630,7 @@ static bool pulp_rv_dm_dmact_accepts(void *opaque, hwaddr addr, unsigned size,
     (void)opaque;
     (void)size;
     (void)attrs;
-    return !is_write || (addr & 3u) == 0u;
+    return !is_write || (addr & (sizeof(uint32_t) - 1u)) == 0u;
 }
 
 static const MemoryRegionOps pulp_rv_dm_dmact_ops = {
@@ -669,7 +686,7 @@ static void pulp_rv_dm_reset(DeviceState *dev)
     memcpy(prog_ptr + (A_ABSTRACTCMD_0 - PULP_RV_DM_PROG_BASE),
            DEFAULT_ABSTRACT_CMD, sizeof(DEFAULT_ABSTRACT_CMD));
     memset(s->dmflag_regs, 0, sizeof(s->dmflag_regs));
-    s->late_debug_enable_regwen = 1u;
+    s->late_debug_enable_regwen = R_LATE_DEBUG_ENABLE_REGWEN_REGWEN_MASK;
     s->late_debug_enable = OT_MULTIBITBOOL32_FALSE;
     pulp_rv_dm_update_debug_en(s);
 
@@ -707,12 +724,16 @@ static void pulp_rv_dm_init(Object *obj)
     memory_region_add_subregion(&s->mem, PULP_RV_DM_PROG_BASE, &s->prog);
 
     memory_region_init_io(&s->unmapped_prog0, obj, &pulp_rv_dm_prog_ops, NULL,
-                          TYPE_PULP_RV_DM ".unmapped_prog0", 0x34);
-    memory_region_add_subregion_overlap(&s->mem, 0x304, &s->unmapped_prog0, 1);
+                          TYPE_PULP_RV_DM ".unmapped_prog0",
+                          PULP_RV_DM_UNMAPPED_PROG0_SIZE);
+    memory_region_add_subregion_overlap(&s->mem, PULP_RV_DM_UNMAPPED_PROG0_BASE,
+                                        &s->unmapped_prog0, 1);
 
     memory_region_init_io(&s->unmapped_prog1, obj, &pulp_rv_dm_prog_ops, NULL,
-                          TYPE_PULP_RV_DM ".unmapped_prog1", 0x78);
-    memory_region_add_subregion_overlap(&s->mem, 0x388, &s->unmapped_prog1, 1);
+                          TYPE_PULP_RV_DM ".unmapped_prog1",
+                          PULP_RV_DM_UNMAPPED_PROG1_SIZE);
+    memory_region_add_subregion_overlap(&s->mem, PULP_RV_DM_UNMAPPED_PROG1_BASE,
+                                        &s->unmapped_prog1, 1);
 
     memory_region_init_io(&s->dmflag, obj, &pulp_rv_dm_dmflag_ops, s,
                           TYPE_PULP_RV_DM ".flag",
