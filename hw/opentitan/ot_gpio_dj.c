@@ -141,6 +141,8 @@ struct OtGpioDjState {
     uint32_t opendrain; /* open drain (1 -> hi-z) */
     uint32_t pull_en; /* pull up/down enable */
     uint32_t pull_sel; /* pull up or pull down */
+    uint32_t host_hi_z; /* host Hi-Z mask (1 = float, 0 = pull active) */
+    uint32_t host_pull_v; /* host pull value (1 = pull-up, 0 = pull-down) */
     uint32_t connected; /* connected to an external device or preset */
 
     char ibuf[PARAM_NUM_IO]; /* backed input buffer */
@@ -148,6 +150,8 @@ struct OtGpioDjState {
     OtGpioDjIOState io_state;
     OtGpioDjBackendState backend_state; /* cache */
     bool log_en; /* trace enable */
+    QEMUTimer *float_noise_timer;
+    uint32_t float_val;
 
     char *ot_id;
     char *log_id;
@@ -214,8 +218,14 @@ static void ot_gpio_dj_update_data_in(OtGpioDjState *s)
 
     uint32_t data_ii = s->data_ii & ii_mask;
     uint32_t data_ib = s->data_ib & bi_mask;
-    uint32_t pull_in = s->pull_en & s->pull_sel & pi_mask;
-    uint32_t data_in = data_ii | data_ib | pull_in;
+    uint32_t host_pulled = ~s->host_hi_z;
+    uint32_t host_pull_v = s->host_pull_v;
+    uint32_t pull_in =
+        ((s->pull_en & s->pull_sel) |
+         (~s->pull_en & host_pulled & host_pull_v)) & pi_mask;
+    uint32_t floating_mask = pi_mask & ~s->pull_en & ~host_pulled;
+    uint32_t float_in = s->float_val & floating_mask;
+    uint32_t data_in = data_ii | data_ib | pull_in | float_in;
 
     if (s->log_en) {
         trace_ot_gpio_in_ignore(s->ot_id, s->connected, s->data_gi, s->data_bi,
@@ -242,6 +252,27 @@ static void ot_gpio_dj_update_data_in(OtGpioDjState *s)
     ot_gpio_dj_update_intr_level(s);
     ot_gpio_dj_update_intr_edge(s, prev);
     ot_gpio_dj_update_irqs(s);
+
+    uint32_t float_intr_en = floating_mask & s->regs[R_INTR_ENABLE] &
+        (s->regs[R_INTR_CTRL_EN_RISING] | s->regs[R_INTR_CTRL_EN_FALLING] |
+         s->regs[R_INTR_CTRL_EN_LVLHIGH] | s->regs[R_INTR_CTRL_EN_LVLLOW]);
+
+    if (float_intr_en != 0) {
+        if (!timer_pending(s->float_noise_timer)) {
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              (50000LL + (int64_t)(g_random_int() % 50000u));
+            timer_mod_ns(s->float_noise_timer, next_ns);
+        }
+    } else {
+        timer_del(s->float_noise_timer);
+    }
+}
+
+static void ot_gpio_dj_float_noise_timer_cb(void *opaque)
+{
+    OtGpioDjState *s = opaque;
+    s->float_val = (uint32_t)g_random_int();
+    ot_gpio_dj_update_data_in(s);
 }
 
 static void ot_gpio_dj_update_data_out(OtGpioDjState *s)
@@ -432,7 +463,6 @@ static uint64_t ot_gpio_dj_read(void *opaque, hwaddr addr, unsigned size)
     switch (reg) {
     case R_INTR_STATE:
     case R_INTR_ENABLE:
-    case R_DATA_IN:
     case R_DIRECT_OUT:
     case R_DIRECT_OE:
     case R_INTR_CTRL_EN_RISING:
@@ -442,6 +472,11 @@ static uint64_t ot_gpio_dj_read(void *opaque, hwaddr addr, unsigned size)
     case R_CTRL_EN_INPUT_FILTER:
     case R_HW_STRAPS_DATA_IN:
     case R_HW_STRAPS_DATA_IN_VALID:
+        val32 = s->regs[reg];
+        break;
+    case R_DATA_IN:
+        s->float_val = (uint32_t)g_random_int();
+        ot_gpio_dj_update_data_in(s);
         val32 = s->regs[reg];
         break;
     case R_MASKED_OUT_LOWER:
@@ -639,9 +674,30 @@ static void ot_gpio_dj_chr_receive(void *opaque, const uint8_t *buf, int size)
             if (cmd == 'M') {
                 s->data_bi = data_in;
                 ot_gpio_dj_update_data_in(s);
-            } else if (cmd == 'I') {
+            } else if (cmd == 'd') {
+                s->data_bi = ~data_in;
+                ot_gpio_dj_update_data_in(s);
+            } else if (cmd == 'I' || cmd == 'o') {
                 s->data_ib = data_in;
                 ot_gpio_dj_update_data_in(s);
+            } else if (cmd == 'z') {
+                s->host_hi_z = data_in;
+                ot_gpio_dj_update_data_in(s);
+            } else if (cmd == 'p') {
+                s->host_pull_v = data_in;
+                ot_gpio_dj_update_data_in(s);
+            } else if (cmd == 'P') {
+                /* Legacy: data_in is host pull-up mask */
+                s->host_pull_v = data_in;
+                s->host_hi_z = ~data_in;
+                ot_gpio_dj_update_data_in(s);
+            } else if (cmd == 'Q') {
+                char qbuf[64u];
+                int qlen = snprintf(qbuf, sizeof(qbuf),
+                                    "d:%08x\r\no:%08x\r\nz:%08x\r\np:%08x\r\n",
+                                    ~s->data_bi, s->data_ib,
+                                    s->host_hi_z, s->host_pull_v);
+                qemu_chr_fe_write(&s->chr, (const uint8_t *)qbuf, qlen);
             } else if (cmd == 'R') {
                 ot_gpio_dj_update_backend(s, true);
             } else {
@@ -742,13 +798,6 @@ static void ot_gpio_dj_chr_event_hander(void *opaque, QEMUChrEvent event)
         }
 
         ot_gpio_dj_update_backend(s, true);
-
-        /* query backend for current input status */
-        char buf[16u];
-        int len = snprintf(buf, sizeof(buf), "Q:%08x\r\n", s->data_oe);
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
-        buf[MIN((unsigned)len - 1, sizeof(buf) - 1u)] = '\0';
-        trace_ot_gpio_backend_send(s->ot_id, buf);
     }
 }
 
@@ -821,6 +870,8 @@ static void ot_gpio_dj_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
+    timer_del(s->float_noise_timer);
+
     s->io_state = IO_RESET;
 
     memset(s->regs, 0, sizeof(s->regs));
@@ -837,6 +888,7 @@ static void ot_gpio_dj_reset_enter(Object *obj, ResetType type)
     s->pull_en = 0;
     s->pull_sel = 0;
     s->invert = 0;
+    s->float_val = 0;
 
     s->regs[R_DATA_IN] = s->reset_in;
     s->regs[R_DIRECT_OUT] = s->reset_out;
@@ -917,6 +969,11 @@ static void ot_gpio_dj_init(Object *obj)
                             PARAM_NUM_IO);
     qdev_init_gpio_in_named(DEVICE(obj), &ot_gpio_dj_pad_attr_change,
                             OT_PINMUX_PAD, PARAM_NUM_IO);
+
+    s->float_noise_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_dj_float_noise_timer_cb, s);
+    s->host_hi_z = UINT32_MAX;
+    s->host_pull_v = 0;
 
     s->io_state = IO_IDLE;
 }

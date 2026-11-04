@@ -132,7 +132,8 @@ struct OtGpioEgState {
     uint32_t data_ii; /* input data from IRQ lines */
     uint32_t data_ib; /* input data from backend */
     uint32_t data_bi; /* ignore backend input */
-    uint32_t host_pull; /* host pull up/down from backend */
+    uint32_t host_hi_z; /* host Hi-Z mask (1 = float, 0 = pull active) */
+    uint32_t host_pull_v; /* host pull value (1 = pull-up, 0 = pull-down) */
     uint32_t data_gi; /* ignore GPIO input */
     uint32_t invert; /* invert signal */
     uint32_t opendrain; /* open drain (1 -> hi-z) */
@@ -162,6 +163,10 @@ struct OtGpioEgState {
     GString *batch_buf;
     QEMUTimer *bb_timer;
     QEMUTimer *sync_timer;
+    QEMUTimer *float_noise_timer;
+    uint32_t float_val;
+    uint32_t floating_mask;
+    bool updating_data_in;
     uint32_t sync_seq;
     uint8_t *bb_wbuf;
     uint8_t *bb_rbuf;
@@ -300,10 +305,10 @@ static void ot_gpio_eg_update_pad_in_lines(OtGpioEgState *s)
                     level = (int)((s->data_ib >> p) & 1u);
                 } else if ((periph_pull_en >> gp) & 1u) {
                     level = (int)((periph_pull_v >> gp) & 1u);
-                } else if ((s->host_pull >> p) & 1u) {
-                    level = (int)((s->host_pull >> p) & 1u);
+                } else if (!((s->host_hi_z >> p) & 1u)) {
+                    level = (int)((s->host_pull_v >> p) & 1u);
                 } else {
-                    level = (int)((s->regs[R_DATA_IN] >> p) & 1u);
+                    level = (int)((s->regs[R_DATA_IN] >> gp) & 1u);
                 }
             }
         }
@@ -360,10 +365,16 @@ int ot_gpio_eg_get_mio_pad_in(unsigned mio_pad)
 
 static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
 {
+    if (s->updating_data_in) {
+        return;
+    }
+    s->updating_data_in = true;
+
     uint32_t prev = s->regs[R_DATA_IN];
 
     uint32_t routed_ib = 0;
-    uint32_t routed_hp = 0;
+    uint32_t routed_hp_en = 0;
+    uint32_t routed_hp_v = 0;
     uint32_t routed_bi = UINT32_MAX;
     uint32_t eff_oe = 0;
     if (s->pinmux) {
@@ -392,8 +403,11 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
                     if ((eff_data_ib >> host_pin) & 1u) {
                         routed_ib |= (1u << g);
                     }
-                    if (!all_muxed && ((s->host_pull >> host_pin) & 1u)) {
-                        routed_hp |= (1u << g);
+                    if (!all_muxed && !((s->host_hi_z >> host_pin) & 1u)) {
+                        routed_hp_en |= (1u << g);
+                        if ((s->host_pull_v >> host_pin) & 1u) {
+                            routed_hp_v |= (1u << g);
+                        }
                     }
                     if (!((s->data_bi >> host_pin) & 1u)) {
                         routed_bi &= ~(1u << g);
@@ -415,8 +429,14 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     uint32_t data_ii = s->data_ii & ii_mask;
     uint32_t data_ib = routed_ib & bi_mask;
     uint32_t pull_in =
-        ((s->pull_en & s->pull_sel) | (~s->pull_en & routed_hp)) & pi_mask;
-    uint32_t ext_in = data_ii | data_ib | pull_in;
+        ((s->pull_en & s->pull_sel) |
+         (~s->pull_en & routed_hp_en & routed_hp_v)) & pi_mask;
+
+    uint32_t floating_mask = pi_mask & ~s->pull_en & ~routed_hp_en;
+    s->floating_mask = floating_mask;
+    uint32_t float_in = s->float_val & floating_mask;
+
+    uint32_t ext_in = data_ii | data_ib | pull_in | float_in;
 
     trace_ot_gpio_in_ignore(s->ot_id, s->connected, s->data_gi, s->data_bi,
                             s->data_oe);
@@ -460,6 +480,22 @@ static void ot_gpio_eg_update_data_in(OtGpioEgState *s)
     ot_gpio_eg_update_irqs(s);
 
     ot_gpio_eg_update_pad_in_lines(s);
+
+    uint32_t float_intr_en = floating_mask & s->regs[R_INTR_ENABLE] &
+        (s->regs[R_INTR_CTRL_EN_RISING] | s->regs[R_INTR_CTRL_EN_FALLING] |
+         s->regs[R_INTR_CTRL_EN_LVLHIGH] | s->regs[R_INTR_CTRL_EN_LVLLOW]);
+
+    if (float_intr_en != 0) {
+        if (!timer_pending(s->float_noise_timer)) {
+            int64_t next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              (50000LL + (int64_t)(g_random_int() % 50000u));
+            timer_mod_ns(s->float_noise_timer, next_ns);
+        }
+    } else {
+        timer_del(s->float_noise_timer);
+    }
+
+    s->updating_data_in = false;
 }
 
 static void ot_gpio_eg_update_data_out(OtGpioEgState *s)
@@ -616,9 +652,11 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (reg) {
     case R_DATA_IN:
+        s->float_val = (uint32_t)g_random_int();
         ot_gpio_eg_update_data_in(s);
         val32 = s->regs[reg];
-        if (val32 == s->last_read_data_in) {
+        if ((val32 & ~s->floating_mask) ==
+            (s->last_read_data_in & ~s->floating_mask)) {
             s->poll_count++;
             if (s->poll_count > 16u && qemu_chr_fe_backend_connected(&s->chr)) {
                 bql_unlock();
@@ -626,6 +664,7 @@ static uint64_t ot_gpio_eg_read(void *opaque, hwaddr addr, unsigned size)
                 g_usleep(50);
                 replay_mutex_lock();
                 bql_lock();
+                s->float_val = (uint32_t)g_random_int();
                 ot_gpio_eg_update_data_in(s);
                 val32 = s->regs[reg];
             }
@@ -1233,6 +1272,13 @@ static void ot_gpio_eg_sync_timer_cb(void *opaque)
     qemu_chr_fe_write(&s->chr, (const uint8_t *)ack, len);
 }
 
+static void ot_gpio_eg_float_noise_timer_cb(void *opaque)
+{
+    OtGpioEgState *s = opaque;
+    s->float_val = (uint32_t)g_random_int();
+    ot_gpio_eg_update_data_in(s);
+}
+
 static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
 {
     OtGpioEgState *s = opaque;
@@ -1284,16 +1330,40 @@ static void ot_gpio_eg_chr_receive(void *opaque, const uint8_t *buf, int size)
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
                 ot_gpio_eg_update_backend(s, false);
-            } else if (cmd == 'I') {
+            } else if (cmd == 'd') {
+                s->data_bi = ~data_in;
+                ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
+            } else if (cmd == 'I' || cmd == 'o') {
                 s->data_ib = data_in;
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
                 ot_gpio_eg_update_backend(s, false);
-            } else if (cmd == 'P') {
-                s->host_pull = data_in;
+            } else if (cmd == 'z') {
+                s->host_hi_z = data_in;
                 ot_gpio_eg_update_data_in(s);
                 ot_gpio_eg_send_input_ack(s);
                 ot_gpio_eg_update_backend(s, false);
+            } else if (cmd == 'p') {
+                s->host_pull_v = data_in;
+                ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
+            } else if (cmd == 'P') {
+                /* Legacy: data_in is host pull-up mask */
+                s->host_pull_v = data_in;
+                s->host_hi_z = ~data_in;
+                ot_gpio_eg_update_data_in(s);
+                ot_gpio_eg_send_input_ack(s);
+                ot_gpio_eg_update_backend(s, false);
+            } else if (cmd == 'Q') {
+                char qbuf[64u];
+                int qlen = snprintf(qbuf, sizeof(qbuf),
+                                    "d:%08x\r\no:%08x\r\nz:%08x\r\np:%08x\r\n",
+                                    ~s->data_bi, s->data_ib,
+                                    s->host_hi_z, s->host_pull_v);
+                qemu_chr_fe_write(&s->chr, (const uint8_t *)qbuf, qlen);
             } else if (cmd == 'R') {
                 s->sync_seq = data_in;
                 timer_mod(s->sync_timer,
@@ -1521,13 +1591,6 @@ static void ot_gpio_eg_chr_event_hander(void *opaque, QEMUChrEvent event)
         }
 
         ot_gpio_eg_update_backend(s, true);
-
-        /* query backend for current input status */
-        char buf[16u];
-        int len = snprintf(buf, sizeof(buf), "Q:%08x\r\n", s->data_oe);
-        qemu_chr_fe_write(&s->chr, (const uint8_t *)buf, len);
-        buf[MIN((unsigned)len - 1, sizeof(buf) - 1u)] = '\0';
-        trace_ot_gpio_backend_send(s->ot_id, buf);
     }
 }
 
@@ -1608,6 +1671,7 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
     }
 
     timer_del(s->bb_timer);
+    timer_del(s->float_noise_timer);
     g_free(s->bb_wbuf);
     g_free(s->bb_rbuf);
     s->bb_wbuf = NULL;
@@ -1633,6 +1697,9 @@ static void ot_gpio_eg_reset_enter(Object *obj, ResetType type)
     s->force_en = 0;
     s->force_oe = 0;
     s->force_out = 0;
+    s->float_val = 0;
+    s->floating_mask = 0;
+    s->updating_data_in = false;
 
     s->regs[R_DATA_IN] = s->reset_in;
     s->regs[R_DIRECT_OUT] = s->reset_out;
@@ -1715,12 +1782,15 @@ static void ot_gpio_eg_init(Object *obj)
     s->bb_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_bitbang_step, s);
     s->sync_timer =
         timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_sync_timer_cb, s);
+    s->float_noise_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_gpio_eg_float_noise_timer_cb, s);
     s->batch_buf = g_string_new(NULL);
 
     /* Backend state persists across reset so initialise it once now */
     s->data_ib = 0u;
     s->data_bi = UINT32_MAX;
-    s->host_pull = (1u << 7);
+    s->host_hi_z = ~(1u << 7);
+    s->host_pull_v = (1u << 7);
     ot_gpio_eg_instance = s;
 }
 
