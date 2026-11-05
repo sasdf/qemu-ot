@@ -181,9 +181,13 @@ ot_edn_schedule(unsigned appid, const char *cause) "a#%u %s"
 ot_edn_update_genbits_ready(unsigned appid, unsigned rem, unsigned fslot, bool accept) "a#%u rem packet %u, free slot %u, accept? %u"
 ot_edn_xinfo(unsigned appid, const char *func, int line, const char *msg, uint32_t value) "a#%u %s:%d %s 0x%08x"
 
-# ot_eg_pad_ring.c
-ot_eg_pad_ring_reset(const char *id, const char *stage) "%s: %s"
-ot_eg_pad_ring_reset_value(const char *id, const char *pad, char lvl) "%s: pad %s {%c}"
+# ot_pad_ring.c
+ot_pad_ring_reset(const char *id, const char *stage) "%s: %s"
+ot_pad_ring_core_attr(const char *id, const char *pad, uint32_t attr) "%s: pad %s attr=0x%08x"
+ot_pad_ring_core_out(const char *id, const char *pad, bool level) "%s: pad %s out level=%d"
+ot_pad_ring_wire_change(const char *id, const char *pad, bool level) "%s: pad %s wire=%d"
+ot_pad_ring_mon_event(const char *id, const char *pad, uint32_t sig_idx, bool rising, int64_t ts) "%s: pad %s mon sig=%u edge=%d ts=%" PRId64
+ot_pad_ring_cmd(const char *id, const char *cmd) "%s: cmd=%s"
 
 # ot_entropy_src.c
 

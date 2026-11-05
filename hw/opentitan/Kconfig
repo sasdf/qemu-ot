@@ -56,7 +56,7 @@ config OT_DMA
 config OT_EDN
     bool
 
-config OT_EG_PAD_RING
+config OT_PAD_RING
     bool
 
 config OT_ENTROPY_SRC

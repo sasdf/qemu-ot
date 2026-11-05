@@ -49,7 +49,7 @@
 #include "hw/opentitan/ot_csrng.h"
 #include "hw/opentitan/ot_dm_tl.h"
 #include "hw/opentitan/ot_edn.h"
-#include "hw/opentitan/ot_eg_pad_ring.h"
+#include "hw/opentitan/ot_pad_ring.h"
 #include "hw/opentitan/ot_entropy_src.h"
 #include "hw/opentitan/ot_flash.h"
 #include "hw/opentitan/ot_gpio_eg.h"
@@ -775,10 +775,10 @@ static const IbexDeviceDef ot_eg_soc_devices[] = {
         )
     },
     [OT_EG_SOC_DEV_PAD_RING] = {
-        .type = TYPE_OT_EG_PAD_RING,
-        .gpio = IBEXGPIOCONNDEFS(
-            OT_EG_SOC_SIGNAL(OT_EG_PAD_RING_POR_REQ, 0, RSTMGR,
-                             OT_RSTMGR_RST_REQ, 0)
+        .type = TYPE_OT_PAD_RING,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "pad_ring"),
+            IBEX_DEV_UINT_PROP("version", OT_PAD_RING_VERSION_EG)
         ),
     },
     [OT_EG_SOC_DEV_PATTGEN] = {
