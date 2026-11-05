@@ -324,12 +324,6 @@ typedef struct {
     unsigned size;
 } OtSPIHostCmd;
 
-typedef struct {
-    uint8_t csb;
-    uint8_t sck;
-    uint8_t sd0;
-} OtSPIHostHalfClk;
-
 struct OtSPIHostState {
     SysBusDevice parent_obj;
 
@@ -370,18 +364,6 @@ struct OtSPIHostState {
 
     unsigned pclk; /* Current input clock */
     const char *clock_src_name; /* IRQ name once connected */
-
-    /* Bitbang waveform recording for GPIO sampling */
-    OtSPIHostHalfClk bb_half_clks[2048];
-    unsigned bb_len;
-    int64_t bb_start_ns;
-    uint64_t bb_half_clk_ns;
-    bool bb_cpol;
-    bool bb_cpha;
-    uint8_t bb_cur_tx_bytes[256];
-    unsigned bb_cur_tx_len;
-    uint8_t bb_last_tx_bit;
-    unsigned bb_completed_txns;
 
     /* properties */
     char *ot_id;
@@ -807,127 +789,6 @@ static void ot_spi_host_update_alert(OtSPIHostState *s)
 /* State machine and I/O */
 /* ------------------------------------------------------------------------ */
 
-void ot_spi_host_clear_waveform(OtSPIHostState *s)
-{
-    if (s) {
-        s->bb_len = 0;
-        s->bb_start_ns = 0;
-        s->bb_cur_tx_len = 0;
-        s->bb_last_tx_bit = 0;
-        s->bb_completed_txns = 0;
-    }
-}
-
-static void ot_spi_host_update_bb_config(OtSPIHostState *s, uint32_t opts)
-{
-    s->bb_cpol = (bool)FIELD_EX32(opts, CONFIGOPTS, CPOL);
-    s->bb_cpha = (bool)FIELD_EX32(opts, CONFIGOPTS, CPHA);
-    unsigned clkdiv = FIELD_EX32(opts, CONFIGOPTS, CLKDIV);
-    unsigned pclk = s->pclk ? s->pclk : 12000000u;
-    s->bb_half_clk_ns =
-        ((uint64_t)(clkdiv + 1u) * NANOSECONDS_PER_SECOND) / pclk;
-    ot_spi_host_clear_waveform(s);
-}
-
-static void ot_spi_host_commit_bb_transaction(OtSPIHostState *s)
-{
-    if (s->bb_cur_tx_len == 0) {
-        return;
-    }
-    if (s->bb_len >= ARRAY_SIZE(s->bb_half_clks)) {
-        s->bb_cur_tx_len = 0;
-        s->bb_completed_txns++;
-        return;
-    }
-    uint8_t cpol = s->bb_cpol ? 1u : 0u;
-    uint8_t cpha = s->bb_cpha ? 1u : 0u;
-    uint8_t last_sd0 = 0u;
-    if (cpha == 1u && s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
-        s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-            .csb = 0u,
-            .sck = cpol,
-            .sd0 = (s->bb_cur_tx_bytes[0] >> 7) & 1u,
-        };
-    }
-    for (unsigned bi = 0; bi < s->bb_cur_tx_len; bi++) {
-        uint8_t b = s->bb_cur_tx_bytes[bi];
-        for (int bit = 7; bit >= 0; bit--) {
-            uint8_t d0 = (b >> bit) & 1u;
-            last_sd0 = d0;
-            if (s->bb_len + 2u <= ARRAY_SIZE(s->bb_half_clks)) {
-                if (cpha == 0u) {
-                    s->bb_half_clks[s->bb_len++] =
-                        (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = d0 };
-                    s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-                        .csb = 0u, .sck = !cpol, .sd0 = d0
-                    };
-                } else {
-                    s->bb_half_clks[s->bb_len++] = (OtSPIHostHalfClk){
-                        .csb = 0u, .sck = !cpol, .sd0 = d0
-                    };
-                    s->bb_half_clks[s->bb_len++] =
-                        (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = d0 };
-                }
-            }
-        }
-    }
-    if (s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
-        s->bb_half_clks[s->bb_len++] =
-            (OtSPIHostHalfClk){ .csb = 0u, .sck = cpol, .sd0 = last_sd0 };
-    }
-    for (unsigned idle = 0; idle < 4u; idle++) {
-        if (s->bb_len < ARRAY_SIZE(s->bb_half_clks)) {
-            s->bb_half_clks[s->bb_len++] =
-                (OtSPIHostHalfClk){ .csb = 1u, .sck = cpol, .sd0 = 1u };
-        }
-    }
-    s->bb_cur_tx_len = 0;
-    s->bb_completed_txns++;
-}
-
-bool ot_spi_host_is_waveform_ready(OtSPIHostState *s)
-{
-    return s && s->bb_completed_txns >= 3u;
-}
-
-void ot_spi_host_set_waveform_start_ns(OtSPIHostState *s, int64_t val_ns,
-                                       bool relative)
-{
-    if (s) {
-        s->bb_start_ns = relative ? (s->bb_start_ns + val_ns) : val_ns;
-    }
-}
-
-bool ot_spi_host_get_pin_level(OtSPIHostState *s, unsigned outsel,
-                               int64_t now_ns)
-{
-    if (!s) {
-        return false;
-    }
-    bool idle_val = true;
-    if (outsel == 53u) {
-        idle_val = s->bb_cpol;
-    }
-    if (s->bb_len == 0 || s->bb_half_clk_ns == 0 || now_ns < s->bb_start_ns) {
-        return idle_val;
-    }
-    uint64_t idx = (uint64_t)(now_ns - s->bb_start_ns) / s->bb_half_clk_ns;
-    if (idx >= s->bb_len) {
-        return idle_val;
-    }
-    const OtSPIHostHalfClk *hc = &s->bb_half_clks[idx];
-    switch (outsel) {
-    case 54u: /* CSB */
-        return (bool)hc->csb;
-    case 53u: /* SCK */
-        return (bool)hc->sck;
-    case 41u: /* SD0 */
-        return (bool)hc->sd0;
-    default:
-        return idle_val;
-    }
-}
-
 static void ot_spi_host_internal_reset(OtSPIHostState *s)
 {
     trace_ot_spi_host_internal_reset(s->ot_id, s->start_delay_ns,
@@ -942,7 +803,6 @@ static void ot_spi_host_internal_reset(OtSPIHostState *s)
 
     memset(&s->fsm, 0, sizeof(s->fsm));
     memset(&s->active, 0, sizeof(s->active));
-    ot_spi_host_clear_waveform(s);
 
     for (unsigned csid = 0u; csid < s->num_cs; csid++) {
         ot_spi_host_chip_select(s, csid, false);
@@ -1037,19 +897,6 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
         uint8_t tx = write ? (uint8_t)txfifo_pop(s->tx_fifo, length == 1u) :
                              SPI_DEFAULT_TX_RX_VALUE;
 
-        if (write) {
-            if (s->bb_cur_tx_len < ARRAY_SIZE(s->bb_cur_tx_bytes)) {
-                s->bb_cur_tx_bytes[s->bb_cur_tx_len++] = tx;
-            }
-            s->bb_last_tx_bit = tx & 1u;
-        } else if (read) {
-            uint8_t rx_sd0 = s->bb_last_tx_bit ? 0x80u : 0x00u;
-            s->bb_last_tx_bit = 0u;
-            if (s->bb_cur_tx_len < ARRAY_SIZE(s->bb_cur_tx_bytes)) {
-                s->bb_cur_tx_bytes[s->bb_cur_tx_len++] = rx_sd0;
-            }
-        }
-
         uint8_t rx = SPI_DEFAULT_TX_RX_VALUE;
 
         if (s->fsm.output_en) {
@@ -1091,9 +938,6 @@ static void ot_spi_host_step_fsm(OtSPIHostState *s, const char *cause)
     } else {
         s->active.cmd.command = FIELD_DP32(command, COMMAND, LEN, 0);
         s->active.state = CMD_EXECUTED;
-        if (!FIELD_EX32(command, COMMAND, CSAAT)) {
-            ot_spi_host_commit_bb_transaction(s);
-        }
     }
 
 post:
@@ -1403,7 +1247,6 @@ static void ot_spi_host_io_write(void *opaque, hwaddr addr, uint64_t val64,
     case R_CONFIGOPTS:
         val32 &= R_CONFIGOPTS_MASK;
         s->regs[reg] = val32;
-        ot_spi_host_update_bb_config(s, val32);
         break;
     case R_CSID:
         s->regs[reg] = val32;

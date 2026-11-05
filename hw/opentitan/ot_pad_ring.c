@@ -47,6 +47,7 @@
 #include "trace.h"
 
 #define OT_PAD_RING_MON_MAX_EVENTS 16384u
+#define OT_PAD_RING_BB_MAX_PINS    8u
 
 typedef enum OtPadMode {
     OT_PAD_MODE_INPUT,
@@ -71,22 +72,30 @@ typedef struct OtPadEndpoint {
     bool level;
 } OtPadEndpoint;
 
+typedef struct OtPadMonSlot {
+    bool active;        /* True if actively monitored */
+    uint8_t sig_idx;    /* Signal index in active monitoring session */
+} OtPadMonSlot;
+
+typedef struct OtPadBbSlot {
+    bool active;        /* True if monitored in current bitbang entry */
+    GArray *edges;      /* Owned array of OtPadMonEvent recorded for this pad */
+} OtPadBbSlot;
+
 typedef struct OtPadSlot {
     OtPadEndpoint chip; /* Derived from OT_PAD_RING_OUT + ATTR (mode, pull, level) */
     OtPadEndpoint host; /* Updated by Proxy JSON; preserved across reset */
     bool invert;        /* OT_PAD_ATTR_INVERT */
     bool input_disable; /* OT_PAD_ATTR_INPUT_DISABLE */
     bool last_eval;     /* Last evaluated wire state for edge detection */
-    struct {
-        bool active;    /* True if actively monitored */
-        uint8_t sig_idx;/* Signal index in active monitoring session */
-    } mon;
+    OtPadMonSlot mon;   /* Passive GPIO monitoring hook */
+    OtPadBbSlot bb;     /* Bitbang sampling hook with owned edge buffer */
 } OtPadSlot;
 
 typedef struct OtPadMonEvent {
     uint8_t signal_index;
-    bool edge;          /* true = Rising, false = Falling */
-    uint64_t timestamp; /* Virtual timestamp in nanoseconds */
+    bool edge;          /* true = Rising/High, false = Falling/Low */
+    uint64_t timestamp; /* Virtual timestamp in ns (mon) or tick index (bb) */
 } OtPadMonEvent;
 
 typedef enum OtWireStrength {
@@ -104,10 +113,9 @@ typedef enum {
     BB_ENTRY_AWAIT,
 } OtPadRingBbType;
 
-typedef struct {
+typedef struct OtPadRingBbEntry {
     OtPadRingBbType type;
     uint8_t *data;
-    uint8_t *rbuf;
     size_t data_len;
     uint32_t clock_ticks;
     uint8_t mask;
@@ -141,17 +149,17 @@ struct OtPadRingState {
     GArray *mon_events;
     bool mon_overflow;
 
-    /* Bitbanging */
+    /* Analytical Bitbang Engine State */
     QEMUTimer *bb_timer;
     uint64_t bb_clock_ns;
-    int64_t bb_next_ns;
-    unsigned bb_pins[32];
+    int64_t bb_entry_start_ns;
+    unsigned bb_pins[OT_PAD_RING_BB_MAX_PINS];
     unsigned bb_npins;
     GArray *bb_entries;
     unsigned bb_entry_idx;
-    unsigned bb_sub_idx;
+    uint32_t bb_tick;
     bool bb_running;
-    bool bb_done;
+    bool bb_query_pending;
 };
 
 struct OtPadRingClass {
@@ -307,6 +315,25 @@ static void ot_pad_ring_mon_stop(OtPadRingState *s)
     g_array_set_size(s->mon_events, 0);
 }
 
+static void ot_pad_ring_mon_update(OtPadRingState *s, unsigned pad, bool wire)
+{
+    OtPadSlot *slot = &s->slots[pad];
+    if (s->mon_events->len >= OT_PAD_RING_MON_MAX_EVENTS) {
+        s->mon_overflow = true;
+        /* Stop edge detection immediately on buffer overrun per trait specification */
+        ot_pad_ring_mon_stop(s);
+    } else {
+        OtPadMonEvent ev = {
+            .signal_index = slot->mon.sig_idx,
+            .edge = wire, /* true = Rising, false = Falling */
+            .timestamp = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        };
+        g_array_append_val(s->mon_events, ev);
+    }
+}
+
+static void ot_pad_ring_bb_update(OtPadRingState *s, unsigned pad, bool wire);
+
 static void ot_pad_update(OtPadRingState *s, unsigned pad)
 {
     OtPadSlot *slot = &s->slots[pad];
@@ -317,18 +344,10 @@ static void ot_pad_update(OtPadRingState *s, unsigned pad)
         slot->last_eval = wire;
         trace_ot_pad_ring_wire_change(s->ot_id, s->pad_defs[pad].name, wire);
         if (slot->mon.active) {
-            if (s->mon_events->len >= OT_PAD_RING_MON_MAX_EVENTS) {
-                s->mon_overflow = true;
-                /* Stop edge detection immediately on buffer overrun per trait specification */
-                ot_pad_ring_mon_stop(s);
-            } else {
-                OtPadMonEvent ev = {
-                    .signal_index = slot->mon.sig_idx,
-                    .edge = wire, /* true = Rising, false = Falling */
-                    .timestamp = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                };
-                g_array_append_val(s->mon_events, ev);
-            }
+            ot_pad_ring_mon_update(s, pad, wire);
+        }
+        if (slot->bb.active && s->bb_running) {
+            ot_pad_ring_bb_update(s, pad, wire);
         }
     }
 
@@ -424,9 +443,200 @@ static void ot_pad_ring_bb_clean_entries(OtPadRingState *s)
     for (unsigned i = 0; i < s->bb_entries->len; i++) {
         OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, i);
         g_free(e->data);
-        g_free(e->rbuf);
     }
     g_array_set_size(s->bb_entries, 0);
+}
+
+static inline uint64_t ot_pad_ring_bb_get_cur_tick(const OtPadRingState *s)
+{
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed_ns = now_ns - s->bb_entry_start_ns;
+    return elapsed_ns > 0 ? (uint64_t)elapsed_ns / s->bb_clock_ns : 0;
+}
+
+static inline int64_t ot_pad_ring_bb_tick_to_ns(const OtPadRingState *s, uint64_t tick)
+{
+    return s->bb_entry_start_ns + (int64_t)(tick * s->bb_clock_ns);
+}
+
+static inline void ot_pad_ring_bb_record_pad_edge(OtPadBbSlot *bb, bool wire, uint64_t tick)
+{
+    GArray *edges = bb->edges;
+
+    if (edges->len > 0) {
+        OtPadMonEvent *last_ev = &g_array_index(edges, OtPadMonEvent, edges->len - 1);
+        if (last_ev->timestamp == tick) {
+            last_ev->edge = wire;
+            return;
+        }
+    }
+
+    OtPadMonEvent ev = {
+        .signal_index = 0,
+        .edge = wire,
+        .timestamp = tick,
+    };
+    g_array_append_val(edges, ev);
+}
+
+static void ot_pad_ring_bb_set_monitoring(OtPadRingState *s, bool enable)
+{
+    for (unsigned b = 0; b < s->bb_npins; b++) {
+        unsigned pad = s->bb_pins[b];
+        OtPadSlot *slot = &s->slots[pad];
+        slot->bb.active = enable;
+        if (enable) {
+            bool wire = ot_pad_eval_wire(slot);
+            slot->last_eval = wire;
+            g_array_set_size(slot->bb.edges, 0);
+            ot_pad_ring_bb_record_pad_edge(&slot->bb, wire, 0);
+        }
+    }
+}
+
+static void ot_pad_ring_bb_send_query_done(OtPadRingState *s)
+{
+    GString *resp = g_string_new("{\"Res\":{\"Ok\":{\"GpioBitbanging\":{\"QueryDone\":{\"entries\":[");
+    for (unsigned i = 0; i < s->bb_entries->len; i++) {
+        OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, i);
+        if (i > 0) {
+            g_string_append_c(resp, ',');
+        }
+        switch (e->type) {
+        case BB_ENTRY_WRITE:
+            g_string_append(resp, "\"Write\"");
+            break;
+        case BB_ENTRY_BOTH:
+            g_string_append(resp, "{\"Both\":{\"data\":[");
+            for (size_t k = 0; k < e->data_len; k++) {
+                if (k > 0) {
+                    g_string_append_c(resp, ',');
+                }
+                g_string_append_printf(resp, "%u", (unsigned)e->data[k]);
+            }
+            g_string_append(resp, "]}}");
+            break;
+        case BB_ENTRY_DELAY:
+            g_string_append(resp, "\"Delay\"");
+            break;
+        case BB_ENTRY_AWAIT:
+            g_string_append(resp, "\"Await\"");
+            break;
+        }
+    }
+    g_string_append(resp, "]}}}}}");
+    ot_pad_ring_send_response(s, resp->str);
+    g_string_free(resp, TRUE);
+}
+
+static void ot_pad_ring_bb_stop(OtPadRingState *s)
+{
+    timer_del(s->bb_timer);
+    s->bb_running = false;
+    ot_pad_ring_bb_set_monitoring(s, false);
+    if (s->bb_query_pending) {
+        s->bb_query_pending = false;
+        ot_pad_ring_bb_send_query_done(s);
+    }
+}
+
+static uint32_t ot_pad_ring_bb_find_next_drive_tick(const OtPadRingBbEntry *e, uint32_t cur_tick)
+{
+    uint32_t next_tick = cur_tick + 1;
+    while (next_tick < e->data_len && e->data[next_tick] == e->data[cur_tick]) {
+        next_tick++;
+    }
+    return next_tick;
+}
+
+static void ot_pad_ring_bb_drive_sample(OtPadRingState *s, uint8_t byte)
+{
+    for (unsigned b = 0; b < s->bb_npins; b++) {
+        unsigned pad = s->bb_pins[b];
+        bool bit = (byte >> b) & 1;
+        bool mode_change = false;
+        if (s->slots[pad].host.mode == OT_PAD_MODE_INPUT) {
+            s->slots[pad].host.mode = OT_PAD_MODE_PUSH_PULL;
+            mode_change = true;
+        }
+        if (s->slots[pad].host.level != bit || mode_change) {
+            s->slots[pad].host.level = bit;
+            ot_pad_update(s, pad);
+        }
+    }
+}
+
+static uint8_t ot_pad_ring_bb_sample(const OtPadRingState *s)
+{
+    uint8_t sample = 0;
+    for (unsigned b = 0; b < s->bb_npins; b++) {
+        unsigned pad = s->bb_pins[b];
+        if (ot_pad_eval_wire(&s->slots[pad])) {
+            sample |= (1u << b);
+        }
+    }
+    return sample;
+}
+
+static void ot_pad_ring_bb_reconstruct_both(OtPadRingState *s, OtPadRingBbEntry *e)
+{
+    /* Seeded at t = 0 from edges[0] (recorded at tick 0 when monitoring starts) */
+    bool cur_level[OT_PAD_RING_BB_MAX_PINS] = { false };
+    size_t ev_idx[OT_PAD_RING_BB_MAX_PINS] = { 0 };
+
+    for (uint32_t t = 0; t < e->data_len; t++) {
+        uint8_t sample = 0;
+        for (unsigned b = 0; b < s->bb_npins; b++) {
+            unsigned pad = s->bb_pins[b];
+            GArray *edges = s->slots[pad].bb.edges;
+            if (ev_idx[b] < edges->len) {
+                OtPadMonEvent *ev = &g_array_index(edges, OtPadMonEvent, ev_idx[b]);
+                if (ev->timestamp == t) {
+                    cur_level[b] = ev->edge;
+                    ev_idx[b]++;
+                }
+            }
+            if (cur_level[b]) {
+                sample |= (1u << b);
+            }
+        }
+        e->data[t] = sample;
+    }
+}
+
+static void ot_pad_ring_bb_start_entry(OtPadRingState *s);
+
+static void ot_pad_ring_bb_advance_entry(OtPadRingState *s)
+{
+    OtPadRingBbEntry *cur_e = &g_array_index(s->bb_entries, OtPadRingBbEntry, s->bb_entry_idx);
+    if (cur_e->type == BB_ENTRY_BOTH) {
+        ot_pad_ring_bb_reconstruct_both(s, cur_e);
+    }
+
+    s->bb_entry_idx++;
+
+    if (s->bb_entry_idx >= s->bb_entries->len) {
+        ot_pad_ring_bb_stop(s);
+    } else {
+        ot_pad_ring_bb_start_entry(s);
+    }
+}
+
+static void ot_pad_ring_bb_update(OtPadRingState *s, unsigned pad, bool wire)
+{
+    OtPadSlot *slot = &s->slots[pad];
+    OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, s->bb_entry_idx);
+
+    if (e->type == BB_ENTRY_BOTH) {
+        uint64_t tick = ot_pad_ring_bb_get_cur_tick(s);
+        if (tick < e->data_len) {
+            ot_pad_ring_bb_record_pad_edge(&slot->bb, wire, tick);
+        }
+    } else if (e->type == BB_ENTRY_AWAIT) {
+        if ((ot_pad_ring_bb_sample(s) & e->mask) == e->pattern) {
+            ot_pad_ring_bb_advance_entry(s);
+        }
+    }
 }
 
 static void ot_pad_ring_bb_step(OtPadRingState *s)
@@ -435,101 +645,46 @@ static void ot_pad_ring_bb_step(OtPadRingState *s)
         return;
     }
 
-    if (s->bb_entry_idx >= s->bb_entries->len) {
-        s->bb_running = false;
-        s->bb_done = true;
-        return;
-    }
-
     OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, s->bb_entry_idx);
+    s->bb_entry_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                           (int64_t)(s->bb_tick * s->bb_clock_ns);
+
     switch (e->type) {
     case BB_ENTRY_WRITE:
-        if (s->bb_sub_idx < e->data_len) {
-            uint8_t byte = e->data[s->bb_sub_idx];
-            for (unsigned b = 0; b < s->bb_npins; b++) {
-                unsigned pad = s->bb_pins[b];
-                bool bit = (byte >> b) & 1;
-                bool mode_change = (s->slots[pad].host.mode == OT_PAD_MODE_INPUT);
-                if (mode_change) {
-                    s->slots[pad].host.mode = OT_PAD_MODE_PUSH_PULL;
-                }
-                if (s->slots[pad].host.level != bit || mode_change) {
-                    s->slots[pad].host.level = bit;
-                    ot_pad_update(s, pad);
-                }
-            }
-            s->bb_sub_idx++;
-        }
-        if (s->bb_sub_idx >= e->data_len) {
-            s->bb_entry_idx++;
-            s->bb_sub_idx = 0;
-        }
-        break;
-
     case BB_ENTRY_BOTH:
-        if (s->bb_sub_idx < e->data_len) {
-            uint8_t byte = e->data[s->bb_sub_idx];
-            for (unsigned b = 0; b < s->bb_npins; b++) {
-                unsigned pad = s->bb_pins[b];
-                bool bit = (byte >> b) & 1;
-                bool mode_change = (s->slots[pad].host.mode == OT_PAD_MODE_INPUT);
-                if (mode_change) {
-                    s->slots[pad].host.mode = OT_PAD_MODE_PUSH_PULL;
-                }
-                if (s->slots[pad].host.level != bit || mode_change) {
-                    s->slots[pad].host.level = bit;
-                    ot_pad_update(s, pad);
-                }
-            }
-            uint8_t sample = 0;
-            for (unsigned b = 0; b < s->bb_npins; b++) {
-                unsigned pad = s->bb_pins[b];
-                if (ot_pad_eval_wire(&s->slots[pad])) {
-                    sample |= (1u << b);
-                }
-            }
-            e->rbuf[s->bb_sub_idx] = sample;
-            s->bb_sub_idx++;
-        }
-        if (s->bb_sub_idx >= e->data_len) {
-            s->bb_entry_idx++;
-            s->bb_sub_idx = 0;
+        if (s->bb_tick < e->data_len) {
+            ot_pad_ring_bb_drive_sample(s, e->data[s->bb_tick]);
+            s->bb_tick = ot_pad_ring_bb_find_next_drive_tick(e, s->bb_tick);
+            timer_mod_ns(s->bb_timer, ot_pad_ring_bb_tick_to_ns(s, s->bb_tick));
+        } else {
+            ot_pad_ring_bb_advance_entry(s);
         }
         break;
 
     case BB_ENTRY_DELAY:
-        s->bb_sub_idx++;
-        if (s->bb_sub_idx >= e->clock_ticks) {
-            s->bb_entry_idx++;
-            s->bb_sub_idx = 0;
-        }
-        break;
-
-    case BB_ENTRY_AWAIT: {
-        uint8_t sample = 0;
-        for (unsigned b = 0; b < s->bb_npins; b++) {
-            unsigned pad = s->bb_pins[b];
-            if (ot_pad_eval_wire(&s->slots[pad])) {
-                sample |= (1u << b);
-            }
-        }
-        if ((sample & e->mask) == e->pattern || s->bb_sub_idx >= 100000u) {
-            s->bb_entry_idx++;
-            s->bb_sub_idx = 0;
+        if (s->bb_tick < e->clock_ticks) {
+            s->bb_tick = e->clock_ticks;
+            timer_mod_ns(s->bb_timer, ot_pad_ring_bb_tick_to_ns(s, s->bb_tick));
         } else {
-            s->bb_sub_idx++;
+            ot_pad_ring_bb_advance_entry(s);
+        }
+        break;
+
+    case BB_ENTRY_AWAIT:
+        timer_del(s->bb_timer);
+        if ((ot_pad_ring_bb_sample(s) & e->mask) == e->pattern) {
+            ot_pad_ring_bb_advance_entry(s);
         }
         break;
     }
-    }
+}
 
-    if (s->bb_entry_idx >= s->bb_entries->len) {
-        s->bb_running = false;
-        s->bb_done = true;
-    } else {
-        s->bb_next_ns += (int64_t)s->bb_clock_ns;
-        timer_mod_ns(s->bb_timer, s->bb_next_ns);
-    }
+static void ot_pad_ring_bb_start_entry(OtPadRingState *s)
+{
+    OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, s->bb_entry_idx);
+    s->bb_tick = 0;
+    ot_pad_ring_bb_set_monitoring(s, e->type == BB_ENTRY_BOTH || e->type == BB_ENTRY_AWAIT);
+    ot_pad_ring_bb_step(s);
 }
 
 static void ot_pad_ring_bb_timer_cb(void *opaque)
@@ -744,6 +899,16 @@ static void ot_pad_ring_handle_gpio_monitoring(OtPadRingState *s, QDict *mon_dic
     ot_pad_ring_send_error(s, "Unknown GpioMonitoring command");
 }
 
+static void ot_pad_ring_bb_query(OtPadRingState *s)
+{
+    if (s->bb_running) {
+        s->bb_query_pending = true;
+        return;
+    }
+
+    ot_pad_ring_bb_send_query_done(s);
+}
+
 static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict)
 {
     if (!bb_dict) {
@@ -758,47 +923,7 @@ static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict
     if (qobject_type(cmd_obj) == QTYPE_QSTRING) {
         const char *cmd_str = qstring_get_str(qobject_to(QString, cmd_obj));
         if (strcmp(cmd_str, "Query") == 0) {
-            if (s->bb_running) {
-                ot_pad_ring_send_response(s, "{\"Res\":{\"Ok\":{\"GpioBitbanging\":\"QueryNotDone\"}}}");
-                return;
-            }
-            GString *entries_str = g_string_new("");
-            for (unsigned i = 0; i < s->bb_entries->len; i++) {
-                OtPadRingBbEntry *e = &g_array_index(s->bb_entries, OtPadRingBbEntry, i);
-                if (entries_str->len > 0) {
-                    g_string_append_c(entries_str, ',');
-                }
-                switch (e->type) {
-                case BB_ENTRY_WRITE:
-                    g_string_append(entries_str, "\"Write\"");
-                    break;
-                case BB_ENTRY_BOTH: {
-                    GString *data_str = g_string_new("");
-                    for (size_t k = 0; k < e->data_len; k++) {
-                        if (data_str->len > 0) {
-                            g_string_append_c(data_str, ',');
-                        }
-                        g_string_append_printf(data_str, "%u", (unsigned)e->rbuf[k]);
-                    }
-                    g_string_append_printf(entries_str, "{\"Both\":{\"data\":[%s]}}", data_str->str);
-                    g_string_free(data_str, TRUE);
-                    break;
-                }
-                case BB_ENTRY_DELAY:
-                    g_string_append(entries_str, "\"Delay\"");
-                    break;
-                case BB_ENTRY_AWAIT:
-                    g_string_append(entries_str, "\"Await\"");
-                    break;
-                }
-            }
-            gchar *resp = g_strdup_printf(
-                "{\"Res\":{\"Ok\":{\"GpioBitbanging\":{\"QueryDone\":{\"entries\":[%s]}}}}}",
-                entries_str->str);
-            ot_pad_ring_send_response(s, resp);
-            g_free(resp);
-            g_string_free(entries_str, TRUE);
-            s->bb_done = false;
+            ot_pad_ring_bb_query(s);
             return;
         }
     }
@@ -813,14 +938,23 @@ static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict
                 ot_pad_ring_send_error(s, "Missing pins or entries in Bitbang Start");
                 return;
             }
+            if (clock_ns == 0) {
+                ot_pad_ring_send_error(s, "Invalid bitbang clock_ns 0");
+                return;
+            }
 
-            timer_del(s->bb_timer);
+            ot_pad_ring_bb_stop(s);
             ot_pad_ring_bb_clean_entries(s);
 
             s->bb_clock_ns = clock_ns;
             s->bb_npins = 0;
             const QListEntry *pentry;
             QLIST_FOREACH_ENTRY(pins, pentry) {
+                if (s->bb_npins >= OT_PAD_RING_BB_MAX_PINS) {
+                    ot_pad_ring_send_error(s, "Too many bitbang pins (max %u)",
+                                           OT_PAD_RING_BB_MAX_PINS);
+                    return;
+                }
                 const char *pname = qstring_get_str(qobject_to(QString, qlist_entry_obj(pentry)));
                 int pidx = ot_pad_ring_find_pin(s, pname);
                 if (pidx < 0) {
@@ -828,7 +962,6 @@ static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict
                     return;
                 }
                 s->bb_pins[s->bb_npins++] = (unsigned)pidx;
-                if (s->bb_npins >= 32) break;
             }
 
             const QListEntry *eentry;
@@ -852,7 +985,6 @@ static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict
                     item.type = BB_ENTRY_BOTH;
                     item.data_len = qlist_empty(dl) ? 0 : qlist_size(dl);
                     item.data = g_new0(uint8_t, item.data_len);
-                    item.rbuf = g_new0(uint8_t, item.data_len);
                     const QListEntry *de;
                     size_t di = 0;
                     QLIST_FOREACH_ENTRY(dl, de) {
@@ -871,13 +1003,11 @@ static void ot_pad_ring_handle_gpio_bitbanging(OtPadRingState *s, QDict *bb_dict
                 g_array_append_val(s->bb_entries, item);
             }
 
-            s->bb_entry_idx = 0;
-            s->bb_sub_idx = 0;
-            s->bb_running = true;
-            s->bb_done = false;
-
-            s->bb_next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-            timer_mod_ns(s->bb_timer, s->bb_next_ns);
+            if (s->bb_entries->len > 0) {
+                s->bb_entry_idx = 0;
+                s->bb_running = true;
+                ot_pad_ring_bb_start_entry(s);
+            }
             ot_pad_ring_send_response(s, "{\"Res\":{\"Ok\":{\"GpioBitbanging\":\"Start\"}}}");
             return;
         }
@@ -978,10 +1108,9 @@ static void ot_pad_ring_chr_event(void *opaque, QEMUChrEvent event)
     case CHR_EVENT_CLOSED:
         json_message_parser_destroy(&s->parser);
         json_message_parser_init(&s->parser, ot_pad_ring_json_emit, s, NULL);
-        timer_del(s->bb_timer);
+        s->bb_query_pending = false;
+        ot_pad_ring_bb_stop(s);
         ot_pad_ring_bb_clean_entries(s);
-        s->bb_running = false;
-        s->bb_done = false;
         ot_pad_ring_mon_stop(s);
         s->mon_overflow = false;
         break;
@@ -1057,6 +1186,7 @@ static void ot_pad_ring_realize(DeviceState *dev, Error **errp)
         s->slots[i].host.mode = OT_PAD_MODE_INPUT;
         s->slots[i].host.pull = OT_PAD_PULL_NONE;
         s->slots[i].last_eval = ot_pad_eval_wire(&s->slots[i]);
+        s->slots[i].bb.edges = g_array_new(FALSE, FALSE, sizeof(OtPadMonEvent));
     }
 
     qdev_init_gpio_in_named(dev, &ot_pad_ring_core_out_handler,
@@ -1098,6 +1228,9 @@ static void ot_pad_ring_unrealize(DeviceState *dev)
     ot_pad_ring_bb_clean_entries(s);
     g_array_free(s->bb_entries, TRUE);
     g_array_free(s->mon_events, TRUE);
+    for (unsigned i = 0; i < s->pad_count; i++) {
+        g_array_free(s->slots[i].bb.edges, TRUE);
+    }
     g_hash_table_destroy(s->pad_map);
     g_free(s->slots);
     g_free(s->pad_in);
