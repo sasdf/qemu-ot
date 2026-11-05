@@ -12,7 +12,6 @@
 #include "qemu/timer.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
-#include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pwm.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/qdev-properties.h"
@@ -48,6 +47,8 @@ struct OtPwmState {
 
     MemoryRegion mmio;
     IbexIRQ alert;
+    IbexIRQ outputs[PARAM_NUM_OUTPUTS];
+    QEMUTimer *pulse_timer;
 
     uint32_t regs[REGS_COUNT];
     int64_t cntr_start_ns;
@@ -83,14 +84,7 @@ static uint64_t ot_pwm_calc_phase(const OtPwmState *s, int64_t now_ns,
     return total_phase;
 }
 
-void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns)
-{
-    if (s) {
-        s->cntr_start_ns += delta_ns;
-    }
-}
-
-bool ot_pwm_is_active(OtPwmState *s)
+static bool ot_pwm_is_active(OtPwmState *s)
 {
     if (!s) {
         return false;
@@ -100,7 +94,7 @@ bool ot_pwm_is_active(OtPwmState *s)
     return cntr_en && chan_en;
 }
 
-bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
+static bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
 {
     if (!s || ch >= PARAM_NUM_OUTPUTS) {
         return false;
@@ -183,6 +177,37 @@ bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns)
                                (on_phase_exceeded && !off_phase_exceeded);
 
     return invert ? !active : active;
+}
+
+static void ot_pwm_update_all_channels(OtPwmState *s)
+{
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    for (unsigned ch = 0; ch < PARAM_NUM_OUTPUTS; ch++) {
+        bool level = ot_pwm_get_channel_level(s, ch, now_ns);
+        ibex_irq_set(&s->outputs[ch], (int)level);
+    }
+    if (ot_pwm_is_active(s)) {
+        uint32_t beat = 0;
+        ot_pwm_calc_phase(s, now_ns, &beat);
+        uint32_t clk_div = FIELD_EX32(s->regs[R_CFG], CFG, CLK_DIV);
+        uint64_t period = (uint64_t)clk_div + 1ULL;
+        uint64_t rem_ticks = (beat < period) ? (period - beat) : 1ULL;
+        uint64_t elapsed_in_tick = (now_ns > s->cntr_start_ns) ?
+            ((uint64_t)(now_ns - s->cntr_start_ns) % 4000ULL) : 0ULL;
+        int64_t next_beat_ns = (int64_t)(rem_ticks * 4000ULL - elapsed_in_tick);
+        if (next_beat_ns < 2000LL) {
+            next_beat_ns = 2000LL;
+        }
+        timer_mod_ns(s->pulse_timer, now_ns + next_beat_ns);
+    } else {
+        timer_del(s->pulse_timer);
+    }
+}
+
+static void ot_pwm_pulse_timer_cb(void *opaque)
+{
+    OtPwmState *s = opaque;
+    ot_pwm_update_all_channels(s);
 }
 
 static bool ot_pwm_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -291,7 +316,7 @@ static void ot_pwm_write(void *opaque, hwaddr addr, uint64_t val64,
         }
     }
 
-    ot_gpio_eg_notify_sysrst_change();
+    ot_pwm_update_all_channels(s);
 }
 
 static const MemoryRegionOps ot_pwm_regs_ops = {
@@ -329,6 +354,11 @@ static void ot_pwm_reset_enter(Object *obj, ResetType type)
     s->beat_ctr_q = 0u;
     s->phase_ctr_q = 0u;
     ibex_irq_set(&s->alert, 0);
+
+    timer_del(s->pulse_timer);
+    for (unsigned i = 0; i < PARAM_NUM_OUTPUTS; i++) {
+        ibex_irq_set(&s->outputs[i], 0);
+    }
 }
 
 static void ot_pwm_init(Object *obj)
@@ -339,6 +369,8 @@ static void ot_pwm_init(Object *obj)
                           0x80u);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
+    ibex_qdev_init_irqs(obj, s->outputs, OT_PWM_OUTPUT, PARAM_NUM_OUTPUTS);
+    s->pulse_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_pwm_pulse_timer_cb, s);
 }
 
 static void ot_pwm_class_init(ObjectClass *klass, const void *data)

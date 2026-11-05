@@ -16,6 +16,6 @@
 #define TYPE_OT_PATTGEN "ot-pattgen"
 OBJECT_DECLARE_SIMPLE_TYPE(OtPattgenState, OT_PATTGEN)
 
-bool ot_pattgen_get_pin_level(OtPattgenState *s, unsigned pin_idx);
+#define OT_PATTGEN_OUTPUT TYPE_OT_PATTGEN "-output"
 
 #endif /* HW_OPENTITAN_OT_PATTGEN_H */

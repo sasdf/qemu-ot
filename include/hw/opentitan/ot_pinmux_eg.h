@@ -33,6 +33,13 @@
 #define TYPE_OT_PINMUX_EG TYPE_OT_PINMUX "-eg"
 OBJECT_DECLARE_TYPE(OtPinmuxEgState, OtPinmuxEgClass, OT_PINMUX_EG)
 
+#define OT_PINMUX_PAD_OUT        TYPE_OT_PINMUX_EG "-pad-out"
+#define OT_PINMUX_PAD_ATTR       TYPE_OT_PINMUX_EG "-pad-attr"
+#define OT_PINMUX_PERIPH_GPIO    TYPE_OT_PINMUX_EG "-periph-gpio"
+#define OT_PINMUX_PERIPH_PWM     TYPE_OT_PINMUX_EG "-periph-pwm"
+#define OT_PINMUX_PERIPH_PATTGEN TYPE_OT_PINMUX_EG "-periph-pattgen"
+#define OT_PINMUX_PERIPH_SYSRST  TYPE_OT_PINMUX_EG "-periph-sysrst"
+
 int ot_pinmux_eg_get_dio_sleep_val(unsigned dio_pad);
 void ot_pinmux_eg_dio_pad_in(unsigned dio_pad, int level);
 int ot_pinmux_eg_mio_to_host_pin(unsigned pad);

@@ -14,7 +14,6 @@
 #include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
-#include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sysrst_ctrl.h"
@@ -77,6 +76,7 @@ struct OtSysrstCtrlState {
     IbexIRQ alert;
     IbexIRQ rst_req;
     IbexIRQ wkup_req;
+    IbexIRQ outputs[8];
 
     uint32_t regs[REGS_COUNT];
     uint32_t pin_in_raw;
@@ -263,7 +263,10 @@ static void ot_sysrst_ctrl_update_outputs(OtSysrstCtrlState *s)
         (s->regs[R_WKUP_STATUS] & R_WKUP_STATUS_WAKEUP_STS_MASK) != 0;
     ibex_irq_set(&s->wkup_req, (int)wkup_level);
 
-    ot_gpio_eg_notify_sysrst_change();
+    uint32_t out = ot_sysrst_ctrl_get_pin_outputs(s);
+    for (unsigned b = 0; b < 8u; b++) {
+        ibex_irq_set(&s->outputs[b], (int)((out >> b) & 1u));
+    }
 }
 
 static void ot_sysrst_ctrl_ec_rst_timer_cb(void *opaque)
@@ -679,6 +682,7 @@ static void ot_sysrst_ctrl_init(Object *obj)
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
     ibex_qdev_init_irq(obj, &s->rst_req, OT_SYSRST_CTRL_RST_REQ);
     ibex_qdev_init_irq(obj, &s->wkup_req, OT_SYSRST_CTRL_WKUP_REQ);
+    ibex_qdev_init_irqs(obj, s->outputs, OT_SYSRST_CTRL_OUTPUT, 8u);
 
     s->pin_in_raw = (1u << OT_SYSRST_CTRL_IN_EC_RST_L) |
                     (1u << OT_SYSRST_CTRL_IN_FLASH_WP_L);

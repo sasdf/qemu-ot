@@ -12,7 +12,6 @@
 #include "qemu/timer.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
-#include "hw/opentitan/ot_gpio_eg.h"
 #include "hw/opentitan/ot_pattgen.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
@@ -57,9 +56,8 @@ struct OtPattgenState {
     MemoryRegion mmio;
     IbexIRQ irqs[PARAM_NUM_IRQS];
     IbexIRQ alert;
+    IbexIRQ outputs[4];
     QEMUTimer *timer;
-
-    OtGpioEgState *gpio;
 
     uint32_t regs[REGS_COUNT];
     OtPattgenChan chan[PARAM_NUM_CHANNELS];
@@ -93,12 +91,19 @@ static void ot_pattgen_latch_channel(OtPattgenState *s, unsigned c)
     ch->reps = (size >> (c == 0u ? 6u : 22u)) & 0x3ffu;
 }
 
-bool ot_pattgen_get_pin_level(OtPattgenState *s, unsigned pin_idx)
+static bool ot_pattgen_get_pin_level(OtPattgenState *s, unsigned pin_idx)
 {
     if (!s || pin_idx >= 4u) {
         return false;
     }
     return (pin_idx & 1u) ? s->pcl[pin_idx >> 1u] : s->pda[pin_idx >> 1u];
+}
+
+static void ot_pattgen_update_outputs(OtPattgenState *s)
+{
+    for (unsigned i = 0; i < 4u; i++) {
+        ibex_irq_set(&s->outputs[i], (int)ot_pattgen_get_pin_level(s, i));
+    }
 }
 
 static void ot_pattgen_timer_cb(void *opaque)
@@ -125,13 +130,7 @@ static void ot_pattgen_timer_cb(void *opaque)
         return;
     }
 
-    uint64_t base_us =
-        (s->gpio ? ot_gpio_eg_get_total_us(s->gpio) : 0ULL) + 10000ULL;
     uint32_t done_mask = 0;
-
-    if (s->gpio) {
-        ot_gpio_eg_set_pattgen_batch(s->gpio, true);
-    }
 
     while ((run_ch[0] && k[0] <= total_steps[0]) ||
            (run_ch[1] && k[1] <= total_steps[1])) {
@@ -142,7 +141,7 @@ static void ot_pattgen_timer_cb(void *opaque)
                     ((uint64_t)k[c] * ((uint64_t)s->chan[c].prediv + 1ULL) *
                      1000000000ULL) /
                     6000000ULL;
-                step_us[c] = base_us + (t_ns / 1000ULL);
+                step_us[c] = (t_ns / 1000ULL);
             }
         }
 
@@ -165,15 +164,9 @@ static void ot_pattgen_timer_cb(void *opaque)
                 k[c]++;
             }
         }
-
-        if (s->gpio) {
-            ot_gpio_eg_notify_pattgen_change(s->gpio, next_us);
-        }
     }
 
-    if (s->gpio) {
-        ot_gpio_eg_set_pattgen_batch(s->gpio, false);
-    }
+    ot_pattgen_update_outputs(s);
 
     if (done_mask) {
         s->regs[R_INTR_STATE] |= done_mask;
@@ -271,10 +264,6 @@ static void ot_pattgen_write(void *opaque, hwaddr addr, uint64_t val64,
             }
         }
 
-        if (s->gpio) {
-            ot_gpio_eg_notify_pattgen_change(s->gpio, 0);
-        }
-
         if (schedule_timer) {
             timer_mod_ns(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                        (int64_t)max_duration_ns);
@@ -301,8 +290,6 @@ static const MemoryRegionOps ot_pattgen_regs_ops = {
 
 static const Property ot_pattgen_properties[] = {
     DEFINE_PROP_STRING(OT_COMMON_DEV_ID, OtPattgenState, ot_id),
-    DEFINE_PROP_LINK("gpio", OtPattgenState, gpio, TYPE_OT_GPIO_EG,
-                     OtGpioEgState *),
 };
 
 static void ot_pattgen_reset(DeviceState *dev)
@@ -317,6 +304,7 @@ static void ot_pattgen_reset(DeviceState *dev)
         s->pcl[c] = false;
     }
     ot_pattgen_update_irqs(s);
+    ot_pattgen_update_outputs(s);
     ibex_irq_set(&s->alert, 0);
 }
 
@@ -332,6 +320,7 @@ static void ot_pattgen_init(Object *obj)
         ibex_sysbus_init_irq(obj, &s->irqs[i]);
     }
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
+    ibex_qdev_init_irqs(obj, s->outputs, OT_PATTGEN_OUTPUT, 4u);
 
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &ot_pattgen_timer_cb, s);
 }

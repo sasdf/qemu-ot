@@ -16,8 +16,6 @@
 #define TYPE_OT_PWM "ot-pwm"
 OBJECT_DECLARE_SIMPLE_TYPE(OtPwmState, OT_PWM)
 
-bool ot_pwm_get_channel_level(OtPwmState *s, unsigned ch, int64_t now_ns);
-void ot_pwm_shift_start_ns(OtPwmState *s, int64_t delta_ns);
-bool ot_pwm_is_active(OtPwmState *s);
+#define OT_PWM_OUTPUT TYPE_OT_PWM "-output"
 
 #endif /* HW_OPENTITAN_OT_PWM_H */
