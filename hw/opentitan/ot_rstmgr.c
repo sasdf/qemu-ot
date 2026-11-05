@@ -180,6 +180,7 @@ struct OtRstMgrState {
     uint32_t cpu_info_dump[8];
     uint32_t alert_info_dump[9];
     bool por; /* Power-On Reset property */
+    bool por_n_held;
 
     char *ot_id;
     uint32_t fatal_reset;
@@ -517,6 +518,47 @@ static void ot_rstmgr_reset_req(void *opaque, int irq, int level)
         ot_rstmgr_reset_bus(s);
     } else {
         qemu_bh_schedule(s->bus_reset_bh);
+    }
+}
+
+static void ot_rstmgr_por_ni(void *opaque, int irq, int level)
+{
+    OtRstMgrState *s = opaque;
+    DeviceState *dev = DEVICE(s);
+    Object *soc = OBJECT(dev)->parent ? OBJECT(dev)->parent : OBJECT(dev);
+
+    g_assert(irq == 0);
+
+    bool asserted = (level == 0);
+    trace_ot_rstmgr_por_ni(s->ot_id, level, asserted);
+
+    if (s->por_n_held == asserted) {
+        if (!asserted && !runstate_is_running() &&
+            runstate_check(RUN_STATE_PAUSED)) {
+            vm_start();
+        }
+        return;
+    }
+    s->por_n_held = asserted;
+
+    if (!s->cpu) {
+        s->cpu = ot_common_get_local_cpu(dev);
+    }
+
+    if (asserted) {
+        s->por = true;
+        s->regs[R_RESET_INFO] |= R_RESET_INFO_POR_MASK;
+        if (s->cpu) {
+            s->cpu->disabled = true;
+            cpu_pause(s->cpu);
+        }
+        resettable_assert_reset(soc, RESET_TYPE_COLD);
+    } else {
+        resettable_release_reset(soc, RESET_TYPE_COLD);
+        if (s->cpu) {
+            s->cpu->disabled = false;
+        }
+        vm_start();
     }
 }
 
@@ -885,6 +927,8 @@ static void ot_rstmgr_init(Object *obj)
 
     qdev_init_gpio_in_named(DEVICE(obj), &ot_rstmgr_reset_req,
                             OT_RSTMGR_RST_REQ, 1);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_rstmgr_por_ni,
+                            OT_RSTMGR_POR_NI, 1);
 
     s->bus_reset_bh = qemu_bh_new(&ot_rstmgr_reset_bus, s);
     s->sw_reset_timer =

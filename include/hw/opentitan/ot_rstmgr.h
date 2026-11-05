@@ -65,6 +65,7 @@ typedef enum {
 
 /* input lines */
 #define OT_RSTMGR_RST_REQ TYPE_OT_RSTMGR "-reset-req"
+#define OT_RSTMGR_POR_NI  TYPE_OT_RSTMGR "-por-ni"
 
 bool ot_rstmgr_is_low_power_exit(void);
 bool ot_rstmgr_is_por_reset(void);
