@@ -57,6 +57,7 @@
 #include "hw/opentitan/ot_otp_dj.h"
 #include "hw/opentitan/ot_otp_if.h"
 #include "hw/opentitan/ot_otp_ot_be.h"
+#include "hw/opentitan/ot_pad_ring.h"
 #include "hw/opentitan/ot_pinmux_dj.h"
 #include "hw/opentitan/ot_plic_ext.h"
 #include "hw/opentitan/ot_pwrmgr.h"
@@ -94,6 +95,8 @@ static void ot_dj_soc_dm_configure(DeviceState *dev, const IbexDeviceDef *def,
 static void ot_dj_soc_hart_configure(DeviceState *dev, const IbexDeviceDef *def,
                                      DeviceState *parent);
 static void ot_dj_soc_otp_ctrl_configure(
+    DeviceState *dev, const IbexDeviceDef *def, DeviceState *parent);
+static void ot_dj_soc_pad_ring_configure(
     DeviceState *dev, const IbexDeviceDef *def, DeviceState *parent);
 static void ot_dj_soc_tap_ctrl_configure(
     DeviceState *dev, const IbexDeviceDef *def, DeviceState *parent);
@@ -149,6 +152,7 @@ enum OtDjSocDevice {
     OT_DJ_SOC_DEV_OTBN,
     OT_DJ_SOC_DEV_OTP_BACKEND,
     OT_DJ_SOC_DEV_OTP_CTRL,
+    OT_DJ_SOC_DEV_PAD_RING,
     OT_DJ_SOC_DEV_PINMUX,
     OT_DJ_SOC_DEV_PLIC,
     OT_DJ_SOC_DEV_PLIC_EXT,
@@ -446,9 +450,17 @@ static const uint32_t ot_dj_pmp_addrs[] = {
                                                     stringify(_ix_)), \
                                IBEX_DEV_STRING_PROP("ram_as_name", _asname_))
 
-#define OT_DJ_PINMUX_LINK(_type_, _name_, _tgt_, _num_) \
-    OT_DJ_SOC_SIGNAL(OT_PINMUX_##_type_, _type_##_##_name_, _tgt_, \
-                     OT_PINMUX_PAD, (_num_))
+#define OT_DJ_PINMUX_PADRING_ATTR(_name_, _num_) \
+    OT_DJ_SOC_SIGNAL(OT_PINMUX_DIO, DIO_##_name_, PAD_RING, \
+                     OT_PAD_RING_ATTR, (_num_))
+
+#define OT_DJ_GPIO_PADRING_OUT(_num_) \
+    OT_DJ_SOC_SIGNAL(OT_GPIO_OUT, (_num_), PAD_RING, \
+                     OT_PAD_RING_OUT, (_num_))
+
+#define OT_DJ_PADRING_IN_GPIO(_num_) \
+    OT_DJ_SOC_SIGNAL(OT_PAD_RING_IN, (_num_), GPIO, \
+                     OT_GPIO_IN, (_num_))
 
 #define OT_DJ_SOC_CLOCK_CONN(_src_, _src_type_, _src_name_, _in_name_, \
                              _in_num_) \
@@ -1107,7 +1119,39 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
             OT_DJ_SOC_GPIO_SYSBUS_IRQ(29, PLIC, 39),
             OT_DJ_SOC_GPIO_SYSBUS_IRQ(30, PLIC, 40),
             OT_DJ_SOC_GPIO_SYSBUS_IRQ(31, PLIC, 41),
-            OT_DJ_SOC_GPIO_ALERT(0, 1)
+            OT_DJ_SOC_GPIO_ALERT(0, 1),
+            OT_DJ_GPIO_PADRING_OUT(0),
+            OT_DJ_GPIO_PADRING_OUT(1),
+            OT_DJ_GPIO_PADRING_OUT(2),
+            OT_DJ_GPIO_PADRING_OUT(3),
+            OT_DJ_GPIO_PADRING_OUT(4),
+            OT_DJ_GPIO_PADRING_OUT(5),
+            OT_DJ_GPIO_PADRING_OUT(6),
+            OT_DJ_GPIO_PADRING_OUT(7),
+            OT_DJ_GPIO_PADRING_OUT(8),
+            OT_DJ_GPIO_PADRING_OUT(9),
+            OT_DJ_GPIO_PADRING_OUT(10),
+            OT_DJ_GPIO_PADRING_OUT(11),
+            OT_DJ_GPIO_PADRING_OUT(12),
+            OT_DJ_GPIO_PADRING_OUT(13),
+            OT_DJ_GPIO_PADRING_OUT(14),
+            OT_DJ_GPIO_PADRING_OUT(15),
+            OT_DJ_GPIO_PADRING_OUT(16),
+            OT_DJ_GPIO_PADRING_OUT(17),
+            OT_DJ_GPIO_PADRING_OUT(18),
+            OT_DJ_GPIO_PADRING_OUT(19),
+            OT_DJ_GPIO_PADRING_OUT(20),
+            OT_DJ_GPIO_PADRING_OUT(21),
+            OT_DJ_GPIO_PADRING_OUT(22),
+            OT_DJ_GPIO_PADRING_OUT(23),
+            OT_DJ_GPIO_PADRING_OUT(24),
+            OT_DJ_GPIO_PADRING_OUT(25),
+            OT_DJ_GPIO_PADRING_OUT(26),
+            OT_DJ_GPIO_PADRING_OUT(27),
+            OT_DJ_GPIO_PADRING_OUT(28),
+            OT_DJ_GPIO_PADRING_OUT(29),
+            OT_DJ_GPIO_PADRING_OUT(30),
+            OT_DJ_GPIO_PADRING_OUT(31)
         ),
     },
     [OT_DJ_SOC_DEV_UART0] = {
@@ -1401,44 +1445,88 @@ static const IbexDeviceDef ot_dj_soc_devices[] = {
             IBEX_DEV_UINT_PROP("version", OT_CLKMGR_VERSION_DJ)
         ),
     },
+    [OT_DJ_SOC_DEV_PAD_RING] = {
+        .type = TYPE_OT_PAD_RING,
+        .cfg = &ot_dj_soc_pad_ring_configure,
+        .prop = IBEXDEVICEPROPDEFS(
+            IBEX_DEV_STRING_PROP(OT_COMMON_DEV_ID, "pad_ring"),
+            IBEX_DEV_UINT_PROP("version", OT_PAD_RING_VERSION_DJ)
+        ),
+        .gpio = IBEXGPIOCONNDEFS(
+            OT_DJ_PADRING_IN_GPIO(0),
+            OT_DJ_PADRING_IN_GPIO(1),
+            OT_DJ_PADRING_IN_GPIO(2),
+            OT_DJ_PADRING_IN_GPIO(3),
+            OT_DJ_PADRING_IN_GPIO(4),
+            OT_DJ_PADRING_IN_GPIO(5),
+            OT_DJ_PADRING_IN_GPIO(6),
+            OT_DJ_PADRING_IN_GPIO(7),
+            OT_DJ_PADRING_IN_GPIO(8),
+            OT_DJ_PADRING_IN_GPIO(9),
+            OT_DJ_PADRING_IN_GPIO(10),
+            OT_DJ_PADRING_IN_GPIO(11),
+            OT_DJ_PADRING_IN_GPIO(12),
+            OT_DJ_PADRING_IN_GPIO(13),
+            OT_DJ_PADRING_IN_GPIO(14),
+            OT_DJ_PADRING_IN_GPIO(15),
+            OT_DJ_PADRING_IN_GPIO(16),
+            OT_DJ_PADRING_IN_GPIO(17),
+            OT_DJ_PADRING_IN_GPIO(18),
+            OT_DJ_PADRING_IN_GPIO(19),
+            OT_DJ_PADRING_IN_GPIO(20),
+            OT_DJ_PADRING_IN_GPIO(21),
+            OT_DJ_PADRING_IN_GPIO(22),
+            OT_DJ_PADRING_IN_GPIO(23),
+            OT_DJ_PADRING_IN_GPIO(24),
+            OT_DJ_PADRING_IN_GPIO(25),
+            OT_DJ_PADRING_IN_GPIO(26),
+            OT_DJ_PADRING_IN_GPIO(27),
+            OT_DJ_PADRING_IN_GPIO(28),
+            OT_DJ_PADRING_IN_GPIO(29),
+            OT_DJ_PADRING_IN_GPIO(30),
+            OT_DJ_PADRING_IN_GPIO(31),
+            OT_DJ_SOC_SIGNAL(OT_PAD_RING_IN, OT_DJ_PAD_POR_N, RSTMGR,
+                             OT_RSTMGR_POR_NI, 0)
+        ),
+    },
     [OT_DJ_SOC_DEV_PINMUX] = {
         .type = TYPE_OT_PINMUX_DJ,
         .memmap = MEMMAPENTRIES(
             { .base = 0x30460000u }
         ),
         .gpio = IBEXGPIOCONNDEFS(
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO0, GPIO, 0),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO1, GPIO, 1),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO2, GPIO, 2),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO3, GPIO, 3),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO4, GPIO, 4),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO5, GPIO, 5),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO6, GPIO, 6),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO7, GPIO, 7),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO8, GPIO, 8),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO9, GPIO, 9),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO10, GPIO, 10),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO11, GPIO, 11),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO12, GPIO, 12),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO13, GPIO, 13),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO14, GPIO, 14),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO15, GPIO, 15),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO16, GPIO, 16),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO17, GPIO, 17),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO18, GPIO, 18),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO19, GPIO, 19),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO20, GPIO, 20),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO21, GPIO, 21),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO22, GPIO, 22),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO23, GPIO, 23),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO24, GPIO, 24),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO25, GPIO, 25),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO26, GPIO, 26),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO27, GPIO, 27),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO28, GPIO, 28),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO29, GPIO, 29),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO30, GPIO, 30),
-            OT_DJ_PINMUX_LINK(DIO, GPIO_GPIO31, GPIO, 31),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO0, 0),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO1, 1),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO2, 2),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO3, 3),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO4, 4),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO5, 5),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO6, 6),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO7, 7),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO8, 8),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO9, 9),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO10, 10),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO11, 11),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO12, 12),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO13, 13),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO14, 14),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO15, 15),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO16, 16),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO17, 17),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO18, 18),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO19, 19),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO20, 20),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO21, 21),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO22, 22),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO23, 23),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO24, 24),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO25, 25),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO26, 26),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO27, 27),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO28, 28),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO29, 29),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO30, 30),
+            OT_DJ_PINMUX_PADRING_ATTR(GPIO_GPIO31, 31),
             OT_DJ_SOC_GPIO_ALERT(0, 19)
         ),
     },
@@ -1655,6 +1743,22 @@ static void ot_dj_soc_tap_ctrl_configure(
     Chardev *chr;
 
     chr = ibex_get_chardev_by_id("taprbb");
+    if (chr) {
+        qdev_prop_set_chr(dev, "chardev", chr);
+    }
+}
+
+static void ot_dj_soc_pad_ring_configure(
+    DeviceState *dev, const IbexDeviceDef *def, DeviceState *parent)
+{
+    (void)parent;
+    (void)def;
+
+    if (qdev_find_global_prop(OBJECT(dev), "chardev")) {
+        return;
+    }
+
+    Chardev *chr = ibex_get_chardev_by_id("gpio");
     if (chr) {
         qdev_prop_set_chr(dev, "chardev", chr);
     }
