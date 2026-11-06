@@ -661,7 +661,6 @@ ot_uart_irqs(const char *id, uint32_t active, uint32_t mask, uint32_t eff) "%s: 
 # ot_usbdev.c
 
 ot_usbdev_address_changed(const char *id, uint8_t address) "%s: %d"
-ot_usbdev_chr_process_cmd(const char *id, const char *cmd) "%s: %s"
 ot_usbdev_chr_usb_event_handler(const char *id, int event) "%s: server event=%d"
 ot_usbdev_cancel(const char *id, uint32_t xfer_id, const char *msg) "%s: xfer_id=%u: %s"
 ot_usbdev_complete_transfer(const char *id, uint32_t cmdid, uint32_t xfered_len, const char *status, const char *msg) "%s: cmdid=%u, len=%u, status=%s: %s"

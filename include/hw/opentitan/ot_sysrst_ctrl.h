@@ -33,7 +33,4 @@ enum OtSysrstCtrlInput {
     OT_SYSRST_CTRL_IN_COUNT = 8,
 };
 
-int ot_sysrst_ctrl_get_outsel_level(const OtSysrstCtrlState *s,
-                                    uint32_t outsel);
-
 #endif /* HW_OPENTITAN_OT_SYSRST_CTRL_H */

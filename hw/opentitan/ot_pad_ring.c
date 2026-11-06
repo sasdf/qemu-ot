@@ -39,6 +39,7 @@
 #include "qobject/qnum.h"
 #include "qobject/qbool.h"
 #include "chardev/char-fe.h"
+#include "exec/icount.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_pad_ring.h"
 #include "hw/qdev-properties.h"
@@ -214,8 +215,8 @@ static const OtPadDef OT_EG_PAD_DEFS[OT_EG_PAD_COUNT] = {
     [OT_EG_PAD_IOR5]  = { "IOR5",  OT_PAD_PULL_NONE },
     [OT_EG_PAD_IOR6]  = { "IOR6",  OT_PAD_PULL_NONE },
     [OT_EG_PAD_IOR7]  = { "IOR7",  OT_PAD_PULL_NONE },
-    [OT_EG_PAD_IOR8]  = { "IOR8",  OT_PAD_PULL_NONE },
-    [OT_EG_PAD_IOR9]  = { "IOR9",  OT_PAD_PULL_NONE },
+    [OT_EG_PAD_IOR8]  = { "IOR8",  OT_PAD_PULL_UP },
+    [OT_EG_PAD_IOR9]  = { "IOR9",  OT_PAD_PULL_UP },
     [OT_EG_PAD_IOR10] = { "IOR10", OT_PAD_PULL_NONE },
     [OT_EG_PAD_IOR11] = { "IOR11", OT_PAD_PULL_NONE },
     [OT_EG_PAD_IOR12] = { "IOR12", OT_PAD_PULL_NONE },
@@ -364,7 +365,7 @@ static void ot_pad_ring_float_noise_timer_cb(void *opaque)
         ot_pad_update(s, i);
     }
     timer_mod_ns(s->float_noise_timer,
-                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL);
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 20000000LL);
 }
 
 static void ot_pad_ring_core_out_handler(void *opaque, int irq, int level)
@@ -853,9 +854,10 @@ static void ot_pad_ring_handle_gpio_monitoring(OtPadRingState *s, QDict *mon_dic
                 }
                 g_string_append(init_lvls, wire ? "true" : "false");
             }
+            int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
             gchar *resp = g_strdup_printf(
-                "{\"Res\":{\"Ok\":{\"GpioMonitoring\":{\"Start\":{\"resp\":{\"initial_levels\":[%s]}}}}}}",
-                init_lvls->str);
+                "{\"Res\":{\"Ok\":{\"GpioMonitoring\":{\"Start\":{\"resp\":{\"timestamp\":%" PRId64 ",\"initial_levels\":[%s]}}}}}}",
+                now_ns, init_lvls->str);
             ot_pad_ring_send_response(s, resp);
             g_free(resp);
             g_string_free(init_lvls, TRUE);
@@ -1052,6 +1054,10 @@ static void ot_pad_ring_json_emit(void *opaque, QObject *obj, Error *err)
         return;
     }
 
+    if (icount_enabled()) {
+        icount_account_warp_timer();
+    }
+
     if (qobject_type(req_obj) == QTYPE_QSTRING) {
         const char *cmd = qstring_get_str(qobject_to(QString, req_obj));
         trace_ot_pad_ring_cmd(s->ot_id, cmd);
@@ -1062,6 +1068,9 @@ static void ot_pad_ring_json_emit(void *opaque, QObject *obj, Error *err)
             ot_pad_ring_send_response(s, "{\"Res\":{\"Ok\":\"ApplyDefaultConfiguration\"}}");
         } else {
             ot_pad_ring_send_error(s, "Unsupported scalar command %s", cmd);
+        }
+        if (icount_enabled()) {
+            icount_start_warp_timer();
         }
         qobject_unref(obj);
         return;
@@ -1080,8 +1089,15 @@ static void ot_pad_ring_json_emit(void *opaque, QObject *obj, Error *err)
         } else {
             ot_pad_ring_send_error(s, "Unsupported request category");
         }
+        if (icount_enabled()) {
+            icount_start_warp_timer();
+        }
         qobject_unref(obj);
         return;
+    }
+
+    if (icount_enabled()) {
+        icount_start_warp_timer();
     }
 
     ot_pad_ring_send_error(s, "Invalid Req type");
@@ -1130,14 +1146,8 @@ static void ot_pad_ring_reset_enter(Object *obj, ResetType type)
         c->parent_phases.enter(obj, type);
     }
 
-    /* Reset chip-side endpoint state; preserve host-side configurations and monitoring */
+    /* Force re-emission of pad_in IRQs in reset_hold; chip state follows pinmux IRQs */
     for (unsigned i = 0; i < s->pad_count; i++) {
-        s->slots[i].chip.mode = OT_PAD_MODE_INPUT;
-        s->slots[i].chip.pull = s->pad_defs[i].default_chip_pull;
-        s->slots[i].chip.level = false;
-        s->slots[i].invert = false;
-        s->slots[i].input_disable = false;
-        s->slots[i].last_eval = false;
         s->pad_in[i].level = -1;
     }
 }
@@ -1215,7 +1225,7 @@ static void ot_pad_ring_realize(DeviceState *dev, Error **errp)
     }
 
     timer_mod_ns(s->float_noise_timer,
-                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000LL);
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 20000000LL);
 }
 
 static void ot_pad_ring_unrealize(DeviceState *dev)

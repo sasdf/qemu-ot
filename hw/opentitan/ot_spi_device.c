@@ -37,7 +37,7 @@
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
 #include "hw/opentitan/ot_fifo32.h"
-#include "hw/opentitan/ot_pinmux_eg.h"
+#include "hw/opentitan/ot_pinmux.h"
 #include "hw/opentitan/ot_spi_device.h"
 #include "hw/opentitan/ot_spi_host.h"
 #include "hw/qdev-properties-system.h"
@@ -498,6 +498,9 @@ struct OtSPIDeviceState {
     /* CS signal for downstream flash in passthrough mode, active low */
     IbexIRQ passthrough_cs;
     IbexIRQ passthrough_en;
+    IbexIRQ csb_out;
+    int sdo_sleep_val;
+    bool tpm_csb;
 
     uint32_t *spi_regs; /* Registers */
     uint32_t *tpm_regs; /* Registers */
@@ -945,8 +948,9 @@ static void ot_spi_device_release(OtSPIDeviceState *s)
     bus->byte_count = 0u;
     bus->failed_transaction = false;
 
-    s->spi_regs[R_STATUS] = R_STATUS_CSB_MASK | R_STATUS_TPM_CSB_MASK;
-    ot_pinmux_eg_dio_pad_in(13u, 1);
+    s->spi_regs[R_STATUS] =
+        R_STATUS_CSB_MASK | (s->tpm_csb ? R_STATUS_TPM_CSB_MASK : 0u);
+    ibex_irq_set(&s->csb_out, 1);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_ACTIVE_LOW_UNSEEN) {
             s->csb_sync = CSB_RELEASED_LOW_UNSEEN;
@@ -1570,7 +1574,7 @@ static void ot_spi_device_flash_exec_sw_command(OtSPIDeviceState *s, uint8_t rx)
 
 static uint8_t ot_spi_device_get_discard_val(const OtSPIDeviceState *s)
 {
-    int sleep_val = ot_pinmux_eg_get_dio_sleep_val(6u);
+    int sleep_val = s->sdo_sleep_val;
     if (sleep_val == 0) {
         return 0x00u;
     }
@@ -2130,7 +2134,7 @@ ot_spi_device_spi_regs_read(void *opaque, hwaddr addr, unsigned size)
             s->csb_poll_enabled = true;
             s->csb_poll_count = 0u;
         }
-        if (ot_pinmux_eg_is_periph_in_zero(46u)) {
+        if (!s->tpm_csb) {
             s->spi_regs[R_STATUS] &= ~R_STATUS_TPM_CSB_MASK;
         } else {
             s->spi_regs[R_STATUS] |= R_STATUS_TPM_CSB_MASK;
@@ -2698,14 +2702,14 @@ static void ot_spi_device_chr_handle_header(OtSPIDeviceState *s)
 
     /* @todo: also update the TPM CSB value when used in the protocol */
     s->spi_regs[R_STATUS] &= ~R_STATUS_CSB_MASK;
-    ot_pinmux_eg_dio_pad_in(13u, 0);
+    ibex_irq_set(&s->csb_out, 0);
     if (s->csb_poll_enabled) {
         if (s->csb_sync == CSB_IDLE_HIGH_SEEN) {
             s->csb_sync = CSB_ACTIVE_LOW_UNSEEN;
         }
     }
 
-    if (ot_pinmux_eg_get_dio_sleep_val(6u) >= 0) {
+    if (s->sdo_sleep_val >= 0) {
         BUS_CHANGE_STATE(s, DISCARD);
         return;
     }
@@ -3235,6 +3239,33 @@ static void ot_spi_device_realize(DeviceState *dev, Error **errp)
                              &ot_spi_device_chr_be_change, s, NULL, true);
 }
 
+static void ot_spi_device_sdo_attr_in(void *opaque, int irq, int level)
+{
+    OtSPIDeviceState *s = opaque;
+    g_assert(irq == 0);
+    uint32_t force_mode =
+        SHARED_FIELD_EX32((uint32_t)level, OT_PINMUX_PAD_ATTR_FORCE_MODE);
+    if (force_mode == OT_PINMUX_PAD_FORCE_LOW) {
+        s->sdo_sleep_val = 0;
+    } else if (force_mode == OT_PINMUX_PAD_FORCE_HIGH) {
+        s->sdo_sleep_val = 1;
+    } else {
+        s->sdo_sleep_val = -1;
+    }
+}
+
+static void ot_spi_device_tpm_csb_in(void *opaque, int irq, int level)
+{
+    OtSPIDeviceState *s = opaque;
+    g_assert(irq == 0);
+    s->tpm_csb = (bool)level;
+    if (s->tpm_csb) {
+        s->spi_regs[R_STATUS] |= R_STATUS_TPM_CSB_MASK;
+    } else {
+        s->spi_regs[R_STATUS] &= ~R_STATUS_TPM_CSB_MASK;
+    }
+}
+
 static void ot_spi_device_init(Object *obj)
 {
     OtSPIDeviceState *s = OT_SPI_DEVICE(obj);
@@ -3260,6 +3291,7 @@ static void ot_spi_device_init(Object *obj)
     s->spi_regs = g_new0(uint32_t, SPI_REGS_COUNT);
     s->tpm_regs = g_new0(uint32_t, TPM_REGS_COUNT);
     s->sram = g_new(uint32_t, SRAM_SIZE / sizeof(uint32_t));
+    s->sdo_sleep_val = -1;
 
     fifo8_create(&bus->chr_fifo, SPI_BUS_HEADER_SIZE);
     ot_fifo32_create(&f->cmd_fifo, SPI_SRAM_CMD_SIZE / sizeof(uint32_t));
@@ -3280,6 +3312,13 @@ static void ot_spi_device_init(Object *obj)
                                OT_SPI_DEVICE_PASSTHROUGH_EN, 0);
     ibex_qdev_init_irq_default(OBJECT(s), &s->passthrough_cs,
                                OT_SPI_DEVICE_PASSTHROUGH_CS, 1);
+    ibex_qdev_init_irq_default(OBJECT(s), &s->csb_out,
+                               OT_SPI_DEVICE_CSB_OUT, 1);
+
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_spi_device_sdo_attr_in,
+                            OT_SPI_DEVICE_SDO_ATTR, 1);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_spi_device_tpm_csb_in,
+                            OT_SPI_DEVICE_TPM_CSB_IN, 1);
 
     /*
      * This timer is used to hand over to the vCPU whenever a READBUF_* irq is

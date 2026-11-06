@@ -39,4 +39,9 @@ OBJECT_DECLARE_TYPE(OtSPIDeviceState, OtSPIDeviceClass, OT_SPI_DEVICE)
 #define OT_SPI_DEVICE_PASSTHROUGH_EN (TYPE_OT_SPI_DEVICE "-passthrough-en")
 #define OT_SPI_DEVICE_PASSTHROUGH_CS (TYPE_OT_SPI_DEVICE "-passthrough-cs")
 
+/* IRQ/GPIO lines to/from OT Pinmux */
+#define OT_SPI_DEVICE_CSB_OUT    (TYPE_OT_SPI_DEVICE "-csb-out")
+#define OT_SPI_DEVICE_SDO_ATTR   (TYPE_OT_SPI_DEVICE "-sdo-attr")
+#define OT_SPI_DEVICE_TPM_CSB_IN (TYPE_OT_SPI_DEVICE "-tpm-csb-in")
+
 #endif /* HW_OPENTITAN_OT_SPI_DEVICE_H */

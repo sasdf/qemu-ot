@@ -14,7 +14,6 @@
 #include "hw/core/cpu.h"
 #include "hw/opentitan/ot_alert.h"
 #include "hw/opentitan/ot_common.h"
-#include "hw/opentitan/ot_pinmux_eg.h"
 #include "hw/opentitan/ot_rstmgr.h"
 #include "hw/opentitan/ot_sysrst_ctrl.h"
 #include "hw/qdev-properties.h"
@@ -154,38 +153,9 @@ static uint32_t ot_sysrst_ctrl_get_pin_outputs(const OtSysrstCtrlState *s)
     return out;
 }
 
-int ot_sysrst_ctrl_get_outsel_level(const OtSysrstCtrlState *s, uint32_t outsel)
-{
-    if (!s) {
-        return 0;
-    }
-    uint32_t out = ot_sysrst_ctrl_get_pin_outputs(s);
-    switch (outsel) {
-    case 72u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonBatDisable */
-        return (int)((out >> 0u) & 1u);
-    case 73u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey0Out */
-        return (int)((out >> 3u) & 1u);
-    case 74u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey1Out */
-        return (int)((out >> 4u) & 1u);
-    case 75u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonKey2Out */
-        return (int)((out >> 5u) & 1u);
-    case 76u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonPwrbOut */
-        return (int)((out >> 2u) & 1u);
-    case 77u: /* kTopEarlgreyPinmuxOutselSysrstCtrlAonZ3Wakeup */
-        return (int)((out >> 6u) & 1u);
-    case 100u: /* DIO ec_rst_l */
-        return (int)((out >> 1u) & 1u);
-    case 101u: /* DIO flash_wp_l */
-        return (int)((out >> 7u) & 1u);
-    default:
-        return 0;
-    }
-}
-
 static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
 {
     uint32_t raw = s->pin_in_raw;
-    uint32_t out = ot_sysrst_ctrl_get_pin_outputs(s);
     uint32_t val = 0;
 
     val |= ((raw >> OT_SYSRST_CTRL_IN_PWRB) & 1u) << 0u;
@@ -194,23 +164,8 @@ static uint32_t ot_sysrst_ctrl_get_pin_in_value(const OtSysrstCtrlState *s)
     val |= ((raw >> OT_SYSRST_CTRL_IN_KEY2) & 1u) << 3u;
     val |= ((raw >> OT_SYSRST_CTRL_IN_LID_OPEN) & 1u) << 4u;
     val |= ((raw >> OT_SYSRST_CTRL_IN_AC_PRESENT) & 1u) << 5u;
-
-    uint32_t ec_wire = ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & (out >> 1u)) & 1u;
-    uint32_t wp_wire =
-        ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & (out >> 7u)) & 1u;
-
-    uint32_t ec_attr = ot_pinmux_eg_get_dio_pad_attr(10u);
-    uint32_t wp_attr = ot_pinmux_eg_get_dio_pad_attr(11u);
-
-    uint32_t ec_raw =
-        (ec_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK) ? 0u : ec_wire;
-    uint32_t wp_raw =
-        (wp_attr & OT_PINMUX_PAD_ATTR_INPUT_DISABLE_MASK) ? 0u : wp_wire;
-
-    uint32_t ec_in = ec_raw ^ (ec_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
-    uint32_t wp_in = wp_raw ^ (wp_attr & OT_PINMUX_PAD_ATTR_INVERT_MASK);
-
-    val |= (ec_in << 6u) | (wp_in << 7u);
+    val |= ((raw >> OT_SYSRST_CTRL_IN_EC_RST_L) & 1u) << 6u;
+    val |= ((raw >> OT_SYSRST_CTRL_IN_FLASH_WP_L) & 1u) << 7u;
 
     return val;
 }
@@ -399,7 +354,7 @@ static void ot_sysrst_ctrl_check_events(OtSysrstCtrlState *s)
                 if (stretch == 0u) {
                     s->ec_rst_l_hw = true;
                 } else {
-                    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+                    int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
                     timer_mod_ns(s->ec_rst_timer,
                                  now + (int64_t)stretch * 4000LL);
                 }
@@ -450,7 +405,7 @@ static void ot_sysrst_ctrl_input_change(void *opaque, int irq, int level)
         uint32_t stretch = s->regs[R_EC_RST_CTL] & 0xffffu;
         if (stretch > 0u) {
             s->ec_rst_l_hw = false;
-            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+            int64_t now = qemu_clock_get_ns(OT_VIRTUAL_CLOCK);
             timer_mod_ns(s->ec_rst_timer, now + (int64_t)stretch * 4000LL);
         }
     }
@@ -576,6 +531,7 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
                 timer_del(s->ec_rst_timer);
                 s->ec_rst_l_hw = true;
             }
+            ot_sysrst_ctrl_update_outputs(s);
             ot_sysrst_ctrl_check_events(s);
         }
         break;
@@ -586,11 +542,13 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
             s->ulp_ac_latched = false;
             timer_del(s->ulp_timer);
         }
+        ot_sysrst_ctrl_update_outputs(s);
         ot_sysrst_ctrl_check_events(s);
         break;
     case R_PIN_OUT_CTL:
     case R_PIN_OUT_VALUE:
         s->regs[reg] = val32;
+        ot_sysrst_ctrl_update_outputs(s);
         ot_sysrst_ctrl_check_events(s);
         break;
     case R_ULP_STATUS:
@@ -603,6 +561,7 @@ static void ot_sysrst_ctrl_write(void *opaque, hwaddr addr, uint64_t val64,
     default:
         if (s->regs[R_REGWEN] & 1u) {
             s->regs[reg] = val32;
+            ot_sysrst_ctrl_update_outputs(s);
             ot_sysrst_ctrl_check_events(s);
         }
         break;
@@ -662,12 +621,11 @@ static void ot_sysrst_ctrl_reset_enter(Object *obj, ResetType type)
     s->regs[R_KEY_INTR_DEBOUNCE_CTL] = 2000u;
     s->regs[R_AUTO_BLOCK_DEBOUNCE_CTL] = 2000u;
 
-    s->last_pin_in_val = ot_sysrst_ctrl_get_pin_in_value(s);
-    s->last_key_invert_ctl = 0u;
-
     ibex_irq_set(&s->rst_req, 0);
     ibex_irq_set(&s->alert, 0);
     ot_sysrst_ctrl_update_outputs(s);
+    s->last_pin_in_val = ot_sysrst_ctrl_get_pin_in_value(s);
+    s->last_key_invert_ctl = 0u;
 }
 
 static void ot_sysrst_ctrl_init(Object *obj)
@@ -688,7 +646,7 @@ static void ot_sysrst_ctrl_init(Object *obj)
                     (1u << OT_SYSRST_CTRL_IN_FLASH_WP_L);
     s->ec_rst_l_hw = true;
     s->ec_rst_timer =
-        timer_new_ns(QEMU_CLOCK_REALTIME, &ot_sysrst_ctrl_ec_rst_timer_cb, s);
+        timer_new_ns(OT_VIRTUAL_CLOCK, &ot_sysrst_ctrl_ec_rst_timer_cb, s);
     s->combo_rst_timer =
         timer_new_ns(OT_VIRTUAL_CLOCK, &ot_sysrst_ctrl_combo_rst_timer_cb, s);
     s->ulp_timer =

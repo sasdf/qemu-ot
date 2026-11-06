@@ -344,9 +344,6 @@ struct OtUsbdevClass {
     ResettablePhases parent_phases;
 };
 
-/* Size of the communication buffer for the chardev. */
-#define CMD_BUF_SIZE 32u
-
 /* NOLINTNEXTLINE(misc-redundant-expression) */
 static_assert(USBDEV_PARAM_NUM_ALERTS == 1u,
               "This only supports a single alert (fault)");
@@ -554,10 +551,6 @@ struct OtUsbdevState {
     /* Buffer content */
     uint32_t buffer[USBDEV_BUFFER_SIZE / sizeof(uint32_t)];
 
-    /* Communication device and buffer for management. */
-    CharFrontend cmd_chr;
-    char cmd_buf[CMD_BUF_SIZE];
-    unsigned cmd_buf_pos;
     /* Communication device for the USB protocol. */
     CharFrontend usb_chr;
     OtUsbdevServer usb_server;
@@ -613,11 +606,7 @@ struct OtUsbdevState {
      */
     uint8_t next_ep_out_sched_xfer;
 
-    /* VBUS override mode. */
-    bool vbus_override;
-    /* VBUS gate: meaning depends on the vbus_override mode */
-    bool vbus_gate;
-    /* PINMUX MioInUsbdevSense (56): 0=ConstantZero, 1=ConstantOne, -1=pad */
+    /* PINMUX MioInUsbdevSense (56) level */
     int pinmux_vbus_sense;
     /* AON wake latched pullup and event states (u_usbdev_aon_wake /
      * u_wake_events_cdc) */
@@ -626,8 +615,6 @@ struct OtUsbdevState {
     uint32_t aon_wake_events;
     uint32_t aon_cdc_dst_qs;
 };
-
-static OtUsbdevState *ot_usbdev_instance;
 
 #define REG_NAME(_reg_) \
     ((((_reg_) < REGS_COUNT) && REG_NAMES[_reg_]) ? REG_NAMES[_reg_] : "?")
@@ -1172,25 +1159,7 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
         return;
     }
 
-    /*
-     * In VBUS override mode, VBUS sense is directly equal to
-     * the VBUS gate. Otherwise, it is driven by PINMUX MioInUsbdevSense
-     * (when set to ConstantOne/ConstantZero) or the AND between the gate
-     * and the host VBUS control.
-     */
-    bool vbus_sense;
-    if (s->pinmux_vbus_sense == 1 && !s->usb_server.client_connected) {
-        vbus_sense = true;
-    } else if (s->pinmux_vbus_sense == 0 && !s->usb_server.vbus_connected &&
-               !s->vbus_override) {
-        vbus_sense = false;
-    } else {
-        vbus_sense = s->vbus_gate;
-        if (!s->vbus_override) {
-            vbus_sense = vbus_sense && s->usb_server.vbus_connected;
-        }
-    }
-
+    bool vbus_sense = (s->pinmux_vbus_sense > 0);
     bool old_vbus_sense = (bool)FIELD_EX32(s->regs[R_USBSTAT], USBSTAT, SENSE);
     if (old_vbus_sense == vbus_sense) {
         return;
@@ -1251,30 +1220,14 @@ static void ot_usbdev_update_vbus(OtUsbdevState *s)
     ot_usbdev_update_irqs(s);
 }
 
-void ot_usbdev_set_pinmux_sense(int level)
+static void ot_usbdev_sense_in(void *opaque, int irq, int level)
 {
-    OtUsbdevState *s = ot_usbdev_instance;
-    if (!s) {
-        return;
-    }
+    OtUsbdevState *s = opaque;
+    g_assert(irq == 0);
     if (s->pinmux_vbus_sense != level) {
         s->pinmux_vbus_sense = level;
         ot_usbdev_update_vbus(s);
     }
-}
-
-/*
- * Update the VBUS gate.
- *
- * Changes will trigger events (see ot_usbdev_update_vbus).
- *
- * @gate New value of the gate.
- */
-static void ot_usbdev_set_vbus_gate(OtUsbdevState *s, bool gate)
-{
-    s->vbus_gate = gate;
-
-    ot_usbdev_update_vbus(s);
 }
 
 /*
@@ -2702,6 +2655,10 @@ static void ot_usbdev_server_process_vbus_changed(OtUsbdevState *s, bool vbus)
 
     server->vbus_connected = vbus;
     ot_usbdev_update_vbus(s);
+    if (vbus && ot_usbdev_has_vbus(s) && ot_usbdev_is_enabled(s) &&
+        !(s->regs[R_WAKE_EVENTS] & R_WAKE_EVENTS_MODULE_ACTIVE_MASK)) {
+        ot_usbdev_server_report_connected(s, true);
+    }
 }
 
 static void ot_usbdev_server_process_setup(OtUsbdevState *s)
@@ -3064,71 +3021,6 @@ static void ot_usbdev_chr_usb_event_handler(void *opaque, QEMUChrEvent event)
 }
 
 /*
- * Communication device handling
- */
-
-static int ot_usbdev_chr_cmd_can_receive(void *opaque)
-{
-    OtUsbdevState *s = opaque;
-
-    /* Return remaining size in the buffer. */
-    return (int)sizeof(s->cmd_buf) - (int)s->cmd_buf_pos;
-}
-
-/*
- * Process a nul-terminated command. A size (which does not count NUL) is
- * provided if necessary. The following commands are supported:
- * - "vbus_on": set the VBUS sensing signal to 1.
- * - "vbus_off": set the VBUS sensing signal to 0.
- */
-static void ot_usbdev_chr_process_cmd(OtUsbdevState *s, char *cmd,
-                                      size_t cmd_size)
-{
-    trace_ot_usbdev_chr_process_cmd(s->ot_id, cmd);
-
-    if (strncmp(cmd, "vbus_on", cmd_size) == 0) {
-        ot_usbdev_set_vbus_gate(s, true);
-    } else if (strncmp(cmd, "vbus_off", cmd_size) == 0) {
-        ot_usbdev_set_vbus_gate(s, false);
-    } else {
-        qemu_log_mask(LOG_UNIMP, "%s: %s: unsupported command %s\n", __func__,
-                      s->ot_id, cmd);
-    }
-}
-
-static void ot_usbdev_chr_cmd_receive(void *opaque, const uint8_t *buf,
-                                      int size)
-{
-    OtUsbdevState *s = opaque;
-
-    if (s->cmd_buf_pos + (unsigned)size > sizeof(s->cmd_buf)) {
-        error_report("%s: %s: Received too much data on the cmd chardev",
-                     __func__, s->ot_id);
-        return;
-    }
-    /* Copy data at the end of the buffer. */
-    memcpy(&s->cmd_buf[s->cmd_buf_pos], buf, (size_t)size);
-    s->cmd_buf_pos += (unsigned)size;
-    /* Process any line. */
-    while (true) {
-        /* Search end of line, stop if none is found. */
-        char *eol = memchr(s->cmd_buf, (int)'\n', s->cmd_buf_pos);
-        if (!eol) {
-            break;
-        }
-        *eol = 0;
-        /*
-         * Process command and then remove it from the buffer
-         * by shifting everything left.
-         */
-        size_t cmd_size = eol - s->cmd_buf;
-        ot_usbdev_chr_process_cmd(s, s->cmd_buf, cmd_size);
-        memmove(s->cmd_buf, eol + 1u, s->cmd_buf_pos - cmd_size - 1u);
-        s->cmd_buf_pos -= cmd_size + 1u;
-    }
-}
-
-/*
  * QEMU Initialization
  */
 static const Property ot_usbdev_properties[] = {
@@ -3138,17 +3030,9 @@ static const Property ot_usbdev_properties[] = {
     DEFINE_PROP_LINK("clock-src", OtUsbdevState, clock_src, TYPE_DEVICE,
                      DeviceState *),
     /*
-     * Communication device used to control the USBDEV block. Every command
-     * must be terminated by a newline. See ot_usbdev_chr_process_cmd for
-     * the list of supported devices.
-     */
-    DEFINE_PROP_CHR("chardev-cmd", OtUsbdevState, cmd_chr),
-    /*
      * Communication device used to emulate a USB host.
      */
     DEFINE_PROP_CHR("chardev-usb", OtUsbdevState, usb_chr),
-    /* VBUS control mode. */
-    DEFINE_PROP_BOOL("vbus-override", OtUsbdevState, vbus_override, false),
 };
 
 static const MemoryRegionOps ot_usbdev_ops = {
@@ -3303,11 +3187,6 @@ static void ot_usbdev_realize(DeviceState *dev, Error **errp)
     OtUsbdevState *s = OT_USBDEV(dev);
     (void)errp;
 
-    /* @todo: clarify if we need to track events/backend changes. */
-    qemu_chr_fe_set_handlers(&s->cmd_chr, &ot_usbdev_chr_cmd_can_receive,
-                             &ot_usbdev_chr_cmd_receive, NULL, NULL, s, NULL,
-                             true);
-
     qemu_chr_fe_set_handlers(&s->usb_chr, &ot_usbdev_chr_usb_can_receive,
                              &ot_usbdev_chr_usb_receive,
                              &ot_usbdev_chr_usb_event_handler, NULL, s, NULL,
@@ -3318,12 +3197,6 @@ static void ot_usbdev_realize(DeviceState *dev, Error **errp)
     g_assert(s->aonclk_name);
 
     qdev_init_gpio_in_named(DEVICE(s), &ot_usbdev_clock_input, "clock-in", 1);
-
-    /* If not in VBUS override mode, the VBUS gate starts on by default. */
-    if (!s->vbus_override) {
-        s->vbus_gate = true;
-    }
-    ot_usbdev_instance = s;
 }
 
 static void ot_usbdev_init(Object *obj)
@@ -3331,12 +3204,14 @@ static void ot_usbdev_init(Object *obj)
     OtUsbdevState *s = OT_USBDEV(obj);
 
     s->pclk = 1u;
-    s->pinmux_vbus_sense = -1;
+    s->pinmux_vbus_sense = 0;
     for (unsigned idx = 0u; idx < ARRAY_SIZE(s->irqs); idx++) {
         ibex_sysbus_init_irq(obj, &s->irqs[idx]);
     }
     ibex_qdev_init_irq(obj, &s->alert, OT_DEVICE_ALERT);
     ibex_qdev_init_irq(obj, &s->wkup, OT_USBDEV_WKUP);
+    qdev_init_gpio_in_named(DEVICE(obj), &ot_usbdev_sense_in,
+                            OT_USBDEV_SENSE, 1);
 
     memory_region_init(&s->mmio.main, obj, TYPE_OT_USBDEV ".mmio",
                        USBDEV_DEVICE_SIZE);
